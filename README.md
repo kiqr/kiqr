@@ -14,7 +14,7 @@ KIQR - CLI & SDKS
   </thead>
   <tbody>
     <tr>
-      <td>packages/cli</td>
+      <td>apps/cli</td>
       <td><a href="https://www.npmjs.com/package/@kiqr%2Fcli" target="_blank"><img src="https://badge.fury.io/js/@kiqr%2Fcli.svg" /></a></td>
       <td>@kiqr/cli</td>
       <td>Command line application</td>
