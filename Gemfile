@@ -8,7 +8,7 @@ gemspec
 
 gem "puma"
 gem "rails", RAILS_VERSION
-gem "sqlite3", "~> 1.4"
+gem "sqlite3", "~> 2.0"
 gem "sprockets-rails"
 
 # Start debugger with binding.b [https://github.com/ruby/debug]
