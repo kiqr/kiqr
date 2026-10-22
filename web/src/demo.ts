@@ -5,9 +5,11 @@ import type { KiqrEvent } from "./api";
 declare global {
   interface Window {
     __KIQR_DEMO__?: boolean;
+    __KIQR_DEMO_START__?: string;
   }
 }
-export const DEMO = typeof location !== "undefined" && (new URLSearchParams(location.search).has("demo") || window.__KIQR_DEMO__ === true);
+export const DEMO =
+  typeof window !== "undefined" && (window.__KIQR_DEMO__ === true || (typeof location !== "undefined" && /[?&]demo\b/.test(location.search)));
 
 const site = "https://unblockingapi.com";
 const pages: [string, string | null, number][] = [

@@ -1,6 +1,6 @@
-import { StrictMode } from "react";
+import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, MemoryRouter, Navigate, Route, Routes } from "react-router-dom";
 import { DEMO } from "./demo";
 import "./index.css";
 import { Shell } from "./Shell";
@@ -9,8 +9,10 @@ import { ProjectPage } from "./pages/Project";
 import { CrawlPage } from "./pages/Crawl";
 import { Connections, Placeholder, ProjectSettings, Settings } from "./pages/Settings";
 
-// Demo mode (previews, the kiqr.dev site) uses hash routing so a single file works anywhere.
-const Router = DEMO ? HashRouter : BrowserRouter;
+// Demo mode (previews, the kiqr.dev site) keeps routing in memory so the single
+// file works anywhere, including sandboxed preview frames with no real URL.
+const start = (typeof window !== "undefined" && window.__KIQR_DEMO_START__) || "/p/unblockingapi-com/crawl";
+const Router = DEMO ? ({ children }: { children: ReactNode }) => <MemoryRouter initialEntries={[start]}>{children}</MemoryRouter> : BrowserRouter;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
