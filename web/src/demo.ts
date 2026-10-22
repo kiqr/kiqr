@@ -36,17 +36,42 @@ const pages: [string, string | null, number][] = [
 ];
 const samples: Record<string, { section: string; field: string; value: string; quote: string }[]> = {
   "/": [
-    { section: "company", field: "tagline", value: "A real browser and residential proxies behind one HTTP call.", quote: "No SDK needed" },
+    { section: "company", field: "name", value: "UnblockingAPI", quote: "UnblockingAPI" },
+    { section: "positioning", field: "value_props", value: "A real browser and residential proxies behind one HTTP call, no SDK needed.", quote: "No SDK needed" },
     { section: "audience", field: "personas", value: "Developers building scrapers, monitors and aggregators.", quote: "for developers" },
+    { section: "voice", field: "tone", value: "Plain and technical; short sentences, no superlatives.", quote: "Fetch any public page." },
   ],
   "/pricing": [
-    { section: "pricing", field: "plans", value: "Pay as you go, Scout, Builder, Growth — concurrency 5 to 50.", quote: "Scout: 10 requests in flight" },
-    { section: "pricing", field: "billing", value: "One credit per successful fetch; failures are free.", quote: "Failures cost nothing" },
+    { section: "pricing", field: "plans", value: "Pay as you go, Scout, Builder, Growth — concurrency 5 to 50 requests in flight.", quote: "Scout: 10 requests in flight" },
+    { section: "pricing", field: "billing", value: "One credit per successful fetch; failed fetches are free.", quote: "Failures cost nothing" },
+    { section: "pricing", field: "free_tier", value: "1,000 free credits on sign-up.", quote: "Start with 1,000 credits" },
   ],
-  "/customers": [{ section: "trust", field: "logos", value: "Customer logos on the home page: four named companies.", quote: "Trusted by" }],
-  "/about": [{ section: "company", field: "founded", value: "Founded in 2024 in Madrid.", quote: "started in Madrid in 2024" }],
-  "/compare/brightdata": [{ section: "competitors", field: "named_competitors", value: "Bright Data, compared on price and setup time.", quote: "vs Bright Data" }],
-  "/integrations": [{ section: "integrations", field: "integrations", value: "Zapier, n8n, Make, Google Sheets.", quote: "Works with Zapier" }],
+  "/docs": [{ section: "products", field: "offering", value: "REST API: POST /unblock with a URL; returns cleaned HTML or JSON via templates.", quote: "POST /unblock" }],
+  "/blog": [{ section: "content", field: "posts", value: "A developer blog with tutorials on proxies, scraping at scale and rank tracking.", quote: "From the blog" }],
+  "/customers": [
+    { section: "trust", field: "logos", value: "Four customer logos on the customers page, including Acme.", quote: "Trusted by" },
+    { section: "trust", field: "testimonials", value: "Two quoted testimonials from engineering leads.", quote: "cut our scraping costs in half" },
+  ],
+  "/about": [
+    { section: "company", field: "founded", value: "Founded in 2024 in Madrid by two engineers.", quote: "started in Madrid in 2024" },
+    { section: "channels", field: "social", value: "X and GitHub accounts linked in the footer.", quote: "Follow us" },
+  ],
+  "/docs/getting-started": [{ section: "integrations", field: "stack", value: "Examples in JavaScript, Python and curl.", quote: "fetch in JavaScript" }],
+  "/docs/templates": [{ section: "products", field: "features", value: "Templates parse well-known sites into JSON; users can publish their own.", quote: "publish a template" }],
+  "/docs/api": [{ section: "seo", field: "keywords", value: "Pages target 'web unblocking API', 'residential proxy API', 'scraping API'.", quote: "web unblocking API" }],
+  "/blog/residential-vs-datacenter-proxies": [{ section: "content", field: "posts", value: "Residential vs datacenter proxies — explainer, 2026.", quote: "" }],
+  "/blog/scraping-at-scale": [{ section: "audience", field: "jobs_to_be_done", value: "Fetch thousands of pages reliably without maintaining proxy pools.", quote: "without babysitting proxies" }],
+  "/customers/acme": [{ section: "trust", field: "case_studies", value: "Acme case study: 2M pages a month, migrated in a week.", quote: "migrated in a week" }],
+  "/compare/brightdata": [{ section: "competitors", field: "named_competitors", value: "Bright Data — compared on price and setup time.", quote: "vs Bright Data" }],
+  "/compare/scrapingbee": [{ section: "competitors", field: "named_competitors", value: "ScrapingBee — compared on JavaScript rendering and templates.", quote: "vs ScrapingBee" }],
+  "/integrations": [
+    { section: "integrations", field: "integrations", value: "Zapier, n8n, Make and Google Sheets.", quote: "Works with Zapier" },
+    { section: "channels", field: "community", value: "A Discord server for developers.", quote: "Join the Discord" },
+  ],
+  "/docs/fetch-tuning": [{ section: "products", field: "features", value: "Scroll, wait-for-selector, consent-wall rules and country selection.", quote: "wait_for" }],
+  "/blog/rank-tracker-tutorial": [{ section: "content", field: "posts", value: "Tutorial: build a Google rank tracker in an afternoon.", quote: "" }],
+  "/changelog": [{ section: "content", field: "changelog", value: "Monthly changelog since March 2025.", quote: "Changelog" }],
+  "/contact": [{ section: "company", field: "contact", value: "Email support and a sales form.", quote: "Talk to sales" }],
 };
 
 export function runDemo(project: string, emit: (e: KiqrEvent) => void): () => void {

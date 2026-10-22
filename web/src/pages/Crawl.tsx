@@ -3,12 +3,38 @@ import { Link, useParams } from "react-router-dom";
 import { api, useAsync, useEvents, type KiqrEvent } from "../api";
 import "../crawl.css";
 
-type NodeState = "queued" | "live" | "read" | "thinking" | "parsed" | "blocked" | "failed";
-type Node = { url: string; from: string | null; state: NodeState; meta: string; order: number; depth: number; angle: number };
-type FactRow = { id: number; url: string; section: string; field: string; value: string; quote: string };
+type PageState = "queued" | "live" | "read" | "thinking" | "parsed" | "blocked" | "failed";
+type Page = { url: string; state: PageState; meta: string; order: number };
+type Fact = { id: number; url: string; section: string; field: string; value: string; quote: string; at: number };
 
-const W = 1000;
-const H = 440;
+const SECTIONS: [string, string][] = [
+  ["company", "Company"],
+  ["products", "Products & services"],
+  ["pricing", "Pricing"],
+  ["audience", "Audience"],
+  ["positioning", "Positioning"],
+  ["voice", "Brand voice"],
+  ["competitors", "Competitors"],
+  ["seo", "SEO"],
+  ["channels", "Channels"],
+  ["content", "Content"],
+  ["integrations", "Integrations"],
+  ["trust", "Trust"],
+];
+const HINTS: Record<string, string> = {
+  company: "who they are",
+  products: "what they sell",
+  pricing: "plans and prices",
+  audience: "who it's for",
+  positioning: "why them",
+  voice: "how they write",
+  competitors: "who they're against",
+  seo: "what they rank for",
+  channels: "where they talk",
+  content: "what they've published",
+  integrations: "what it works with",
+  trust: "proof and logos",
+};
 
 function pathOf(u: string) {
   try {
@@ -18,46 +44,25 @@ function pathOf(u: string) {
     return u;
   }
 }
-function hash(s: string) {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return (h >>> 0) / 4294967295;
-}
-function depthOf(u: string) {
-  const p = pathOf(u);
-  return p === "/" ? 0 : Math.min(3, p.split("/").filter(Boolean).length);
-}
 
 export function CrawlPage() {
   const { slug = "" } = useParams();
   const project = useAsync(() => api.project(slug), [slug]);
-  const [nodes, setNodes] = useState<Map<string, Node>>(new Map());
-  const [facts, setFacts] = useState<FactRow[]>([]);
-  const [factCount, setFactCount] = useState(0);
+  const [pages, setPages] = useState<Map<string, Page>>(new Map());
+  const [facts, setFacts] = useState<Fact[]>([]);
   const [waiting, setWaiting] = useState(0);
   const [started, setStarted] = useState<{ max: number; concurrency: number; ai: number } | null>(null);
   const [done, setDone] = useState<{ pages: number; blocked: number; failed: number } | null>(null);
+  const [showPages, setShowPages] = useState(false);
+  const [lit, setLit] = useState<Record<string, number>>({});
   const order = useRef(0);
   const factId = useRef(0);
 
-  const upsert = (url: string, patch: Partial<Node>, from: string | null = null) =>
-    setNodes((m) => {
+  const upsert = (url: string, patch: Partial<Page>) =>
+    setPages((m) => {
       const n = new Map(m);
       const prev = n.get(url);
-      if (prev) n.set(url, { ...prev, ...patch });
-      else {
-        const o = order.current++;
-        n.set(url, {
-          url,
-          from: from && from !== "sitemap" ? from : null,
-          state: "queued",
-          meta: "",
-          order: o,
-          depth: depthOf(url),
-          angle: hash(url) * Math.PI * 2,
-          ...patch,
-        });
-      }
+      n.set(url, prev ? { ...prev, ...patch } : { url, state: "queued", meta: "", order: order.current++, ...patch });
       return n;
     });
 
@@ -65,16 +70,13 @@ export function CrawlPage() {
     const url = e.url as string | undefined;
     switch (e.type) {
       case "crawl_started":
-        setNodes(new Map());
+        setPages(new Map());
         setFacts([]);
-        setFactCount(0);
         setWaiting(0);
         setDone(null);
+        setLit({});
         order.current = 0;
         setStarted({ max: e.max_pages as number, concurrency: e.concurrency as number, ai: e.ai_concurrency as number });
-        break;
-      case "page_discovered":
-        upsert(url!, { meta: "queued" }, (e.from as string | null) ?? null);
         break;
       case "page_fetching":
         upsert(url!, { state: "live", meta: e.via === "unblockingapi" ? "via UnblockingAPI" : "reading" });
@@ -90,9 +92,13 @@ export function CrawlPage() {
         const n = e.facts as number;
         setWaiting(e.waiting as number);
         upsert(url!, { state: "parsed", meta: `${n} fact${n === 1 ? "" : "s"}` });
-        setFactCount((c) => c + n);
-        const preview = (e.preview as Omit<FactRow, "id" | "url">[]) ?? [];
-        setFacts((f) => [...preview.map((p) => ({ ...p, id: factId.current++, url: url! })), ...f].slice(0, 60));
+        const preview = (e.preview as Omit<Fact, "id" | "url" | "at">[]) ?? [];
+        const now = Date.now();
+        const rows = preview.map((p, i) => ({ ...p, id: factId.current++, url: url!, at: now + i * 350 }));
+        setFacts((f) => [...rows, ...f]);
+        const touched: Record<string, number> = {};
+        rows.forEach((r) => (touched[r.section] = now));
+        setLit((l) => ({ ...l, ...touched }));
         break;
       }
       case "page_blocked":
@@ -107,17 +113,39 @@ export function CrawlPage() {
     }
   });
 
-  const list = useMemo(() => [...nodes.values()].sort((a, b) => a.order - b.order), [nodes]);
-  const read = list.filter((n) => n.state === "read" || n.state === "thinking" || n.state === "parsed").length;
-  const blocked = list.filter((n) => n.state === "blocked" || n.state === "failed").length;
+  // Sections stay lit for a moment after a fact lands.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((x) => x + 1), 400);
+    return () => clearInterval(t);
+  }, []);
+
+  const list = useMemo(() => [...pages.values()].sort((a, b) => a.order - b.order), [pages]);
+  const read = list.filter((p) => p.state === "read" || p.state === "thinking" || p.state === "parsed").length;
+  const blocked = list.filter((p) => p.state === "blocked" || p.state === "failed").length;
   const host = project.data?.name ?? slug;
   const running = started !== null && done === null;
-  const seemoBusy = waiting > 0 || list.some((n) => n.state === "thinking");
+  const seemoBusy = waiting > 0 || list.some((p) => p.state === "thinking");
+  const bySection = useMemo(() => {
+    const m: Record<string, Fact[]> = {};
+    for (const f of facts) (m[f.section] ??= []).push(f);
+    return m;
+  }, [facts]);
+  const pct = started ? Math.min(100, Math.round((read / started.max) * 100)) : 0;
+  const latestFact = facts[0];
+
+  const say = done
+    ? `Done. I read ${done.pages} pages and found ${facts.length} facts${done.blocked ? `; ${done.blocked} ${done.blocked === 1 ? "page" : "pages"} wouldn't load` : ""}.`
+    : seemoBusy && latestFact
+      ? `Reading ${pathOf(latestFact.url)} — ${HINTS[latestFact.section] ?? latestFact.section}.`
+      : running
+        ? "Fetching pages. I start reading as soon as the first one lands."
+        : "Ready when you are.";
 
   return (
     <div>
       <div className="crawl-head">
-        <h1 className="d2">{done ? `Read ${host}` : running ? `Reading ${host}` : `Crawl ${host}`}</h1>
+        <h1 className="d2">{done ? `What I learned about ${host}` : running ? `Learning about ${host}` : `Crawl ${host}`}</h1>
         {running && (
           <span className="chip acc live">
             <b />
@@ -131,11 +159,6 @@ export function CrawlPage() {
           </span>
         )}
         <span className="sp" />
-        {started && !done && (
-          <span className="lbl">
-            {started.concurrency} fetches, {started.ai} Seemo reads in parallel
-          </span>
-        )}
         {!running && project.data && (
           <button className="btn g" onClick={() => api.crawl(slug)}>
             {done || project.data.last_crawl ? "Crawl again" : "Start crawl"}
@@ -148,51 +171,84 @@ export function CrawlPage() {
         )}
       </div>
 
-      <div className="stats">
-        <Stat n={read} label={started ? `of ${started.max} pages read` : "pages read"} hot={running} />
-        <Stat n={factCount} label="facts found" hot={seemoBusy} />
-        <Stat n={waiting} label="waiting for Seemo" hot={waiting > 0} />
-        <Stat n={blocked} label="blocked or failed" />
+      <div className={`strip ${seemoBusy ? "busy" : ""}`}>
+        <span className="av" />
+        <div className="say">
+          <b>Seemo</b> · {say}
+          {started && !done && (
+            <small>
+              {started.concurrency} pages fetched in parallel, {started.ai} read by Seemo at a time
+              {waiting > 0 && ` · ${waiting} waiting`}
+            </small>
+          )}
+        </div>
+        <div className="nums">
+          <div className={running ? "hot" : ""}>
+            <div className="n">
+              <Count n={read} />
+            </div>
+            <div className="l">{started ? `of ${started.max} pages` : "pages"}</div>
+          </div>
+          <div className={seemoBusy ? "hot" : ""}>
+            <div className="n">
+              <Count n={facts.length} />
+            </div>
+            <div className="l">facts</div>
+          </div>
+          <div>
+            <div className="n">{blocked}</div>
+            <div className="l">blocked</div>
+          </div>
+        </div>
+        <div className={`bar ${running ? "live" : ""}`}>
+          <i style={{ width: `${done ? 100 : pct}%` }} />
+        </div>
       </div>
 
-      <div className={`map ${done ? "done" : ""}`}>
-        {running && <div className="sweep" />}
-        <SiteMap nodes={list} />
-        <div className={`seemo-badge ${seemoBusy ? "busy" : ""}`}>
-          <span className="av" />
-          {seemoBusy ? `Seemo is reading ${waiting > 1 ? `${waiting} pages` : "a page"}` : done ? "Seemo is done" : "Seemo is waiting for pages"}
+      {!started && !done && list.length === 0 ? (
+        <div className="big">
+          <h2 className="d2">{project.data?.last_crawl ? "The last crawl is in the profile" : "Nothing read yet"}</h2>
+          <p className="muted">Start a crawl to watch the profile build itself.</p>
         </div>
-        <div className="legend">
-          <span>
-            <i style={{ background: "var(--line-2)" }} />
-            queued
-          </span>
-          <span>
-            <i style={{ background: "var(--accent)" }} />
-            fetched
-          </span>
-          <span>
-            <i style={{ background: "var(--signal)" }} />
-            with Seemo
-          </span>
-          <span>
-            <i style={{ background: "var(--ink)" }} />
-            understood
-          </span>
-          <span>
-            <i style={{ background: "var(--warn)" }} />
-            blocked
-          </span>
+      ) : (
+        <div className="grid">
+          {SECTIONS.map(([id, title]) => {
+            const rows = bySection[id] ?? [];
+            const isLit = lit[id] !== undefined && Date.now() - lit[id] < 1800;
+            return (
+              <div key={id} className={`sec ${rows.length === 0 ? "empty" : ""} ${isLit ? "lit" : ""} ${done ? "done" : ""}`}>
+                <h3>
+                  {title}
+                  {rows.length > 0 && <span className={`chip ${isLit ? "acc" : ""}`}>{rows.length}</span>}
+                </h3>
+                {rows.length === 0 ? (
+                  <div className="hint">
+                    {running ? <i /> : null}
+                    {running ? `listening for ${HINTS[id]}` : `nothing yet about ${HINTS[id]}`}
+                  </div>
+                ) : (
+                  <>
+                    <ul>
+                      {rows.slice(0, 3).map((f) => (
+                        <li key={f.id} className={Date.now() - f.at < 2500 ? "new" : ""}>
+                          <div className="f">
+                            {f.field.replace(/_/g, " ")}
+                            <code>{pathOf(f.url)}</code>
+                          </div>
+                          <div className="v">
+                            <Typed text={f.value} startAt={f.at} />
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                    {rows.length > 3 && <div className="more">+{rows.length - 3} more in the profile</div>}
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
-        {!started && !done && list.length === 0 && (
-          <div className="big">
-            <div>
-              <h2 className="d2">{project.data?.last_crawl ? "Last crawl is in the profile" : "Nothing read yet"}</h2>
-              <p className="muted">Start a crawl to watch the site map build.</p>
-            </div>
-          </div>
-        )}
-      </div>
+      )}
 
       {done && done.blocked > 0 && (
         <p className="muted" style={{ marginBottom: 18 }}>
@@ -200,99 +256,64 @@ export function CrawlPage() {
         </p>
       )}
 
-      <div className="streams">
-        <div className="stream">
-          <h3 className="d3">
-            Pages <span className="chip">{list.length}</span>
-          </h3>
-          {list.length === 0 && <p className="faint">Waiting for the first page.</p>}
-          {[...list].reverse().map((n) => (
-            <div key={n.url} className={`row ${n.state}`}>
-              <span className="st" />
-              <span className="u" title={n.url}>
-                {pathOf(n.url)}
+      {list.length > 0 && (
+        <div className="ticker">
+          <span className="lbl">Pages</span>
+          <div className="lane">
+            {[...list].reverse().slice(0, 12).map((p) => (
+              <span key={p.url} className={`pg ${p.state}`} title={`${p.url} — ${p.meta}`}>
+                <i />
+                {pathOf(p.url)}
               </span>
-              <span className="m">{n.meta}</span>
+            ))}
+          </div>
+          <button className="btn t toggle" onClick={() => setShowPages((s) => !s)}>
+            {showPages ? "Hide" : `All ${list.length}`}
+          </button>
+        </div>
+      )}
+      {showPages && (
+        <div className="pages">
+          {[...list].reverse().map((p) => (
+            <div key={p.url} className={`row ${p.state}`}>
+              <span className="st" />
+              <span className="u" title={p.url}>
+                {pathOf(p.url)}
+              </span>
+              <span className="m">{p.meta}</span>
             </div>
           ))}
         </div>
-        <div className="stream">
-          <h3 className="d3">
-            Seemo found <span className="chip">{factCount}</span>
-          </h3>
-          {facts.length === 0 && <p className="faint">Facts appear here as Seemo reads each page.</p>}
-          {facts.map((f, i) => (
-            <div key={f.id} className={`fact ${i === 0 ? "new" : ""}`}>
-              <div className="k">
-                {f.field.replace(/_/g, " ")} <span className="chip">{f.section}</span>
-              </div>
-              <div className="v">{f.value}</div>
-              <div className="e">
-                <code>{pathOf(f.url)}</code> {f.quote && `“${f.quote}”`}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
 }
 
-function Stat({ n, label, hot }: { n: number; label: string; hot?: boolean }) {
+function Count({ n }: { n: number }) {
   const [shown, setShown] = useState(n);
   useEffect(() => {
     if (shown === n) return;
-    const step = Math.max(1, Math.ceil(Math.abs(n - shown) / 8));
-    const t = setTimeout(() => setShown((s) => (s < n ? Math.min(n, s + step) : Math.max(n, s - step))), 30);
+    const step = Math.max(1, Math.ceil(Math.abs(n - shown) / 6));
+    const t = setTimeout(() => setShown((s) => (s < n ? Math.min(n, s + step) : Math.max(n, s - step))), 40);
     return () => clearTimeout(t);
   }, [n, shown]);
-  return (
-    <div className={`stat ${hot ? "hot" : ""}`}>
-      <div className="n">{shown}</div>
-      <div className="l">{label}</div>
-    </div>
-  );
+  return <>{shown}</>;
 }
 
-function SiteMap({ nodes }: { nodes: Node[] }) {
-  const cx = W / 2;
-  const cy = H / 2;
-  const rings = [0, 95, 160, 205];
-  const pos = (n: Node) => {
-    if (n.depth === 0 && pathOf(n.url) === "/") return { x: cx, y: cy };
-    const r = rings[n.depth] + (hash(n.url + "r") - 0.5) * 24;
-    return { x: cx + Math.cos(n.angle) * r * 2.1, y: cy + Math.sin(n.angle) * r };
-  };
-  const byUrl = new Map(nodes.map((n) => [n.url, n]));
+/** Types the text in, starting at `startAt`, ~40 characters per second. */
+function Typed({ text, startAt }: { text: string; startAt: number }) {
+  const [len, setLen] = useState(() => (Date.now() - startAt > 3000 ? text.length : 0));
+  useEffect(() => {
+    if (len >= text.length) return;
+    const delay = Math.max(0, startAt - Date.now());
+    const t = setTimeout(() => setLen((l) => Math.min(text.length, l + 2)), len === 0 ? delay : 25);
+    return () => clearTimeout(t);
+  }, [len, text, startAt]);
+  const typing = len < text.length;
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      {rings.slice(1).map((r) => (
-        <ellipse key={r} className="ring" cx={cx} cy={cy} rx={r * 2.1} ry={r} />
-      ))}
-      {nodes.map((n) => {
-        const from = n.from ? byUrl.get(n.from) : undefined;
-        if (!from) return null;
-        const a = pos(from);
-        const b = pos(n);
-        return <line key={`e-${n.url}`} className="edge" x1={a.x} y1={a.y} x2={b.x} y2={b.y} />;
-      })}
-      {nodes.map((n) => {
-        const p = pos(n);
-        const isRoot = pathOf(n.url) === "/";
-        const label = pathOf(n.url);
-        return (
-          <g key={n.url} className={`node ${n.state} ${isRoot ? "root" : ""}`} transform={`translate(${p.x} ${p.y})`}>
-            <title>{n.url}</title>
-            {(n.state === "live" || n.state === "thinking") && <circle className="halo" r="7" />}
-            <circle className="c" r={isRoot ? 9 : 6} />
-            {(isRoot || n.depth <= 1 || n.state === "thinking" || n.state === "live") && (
-              <text x="0" y={isRoot ? -14 : -11} textAnchor="middle">
-                {label.length > 22 ? label.slice(0, 21) + "…" : label}
-              </text>
-            )}
-          </g>
-        );
-      })}
-    </svg>
+    <>
+      {text.slice(0, len)}
+      {typing && <span className="cur" />}
+    </>
   );
 }
