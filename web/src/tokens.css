@@ -1,47 +1,27 @@
-/* KIQR design tokens — the source of truth is DESIGN.md / the design system. */
+/* KIQR design tokens. Light only — the audience is business owners, and the product is one calm, bright workspace. Source: DESIGN.md */
 :root {
-  --surface: #ffffff;
-  --surface-raised: #f6f8fb;
-  --line: #e3e8ef;
-  --line-strong: #c9d1dc;
-  --ink: #10213a;
-  --ink-muted: #5b687b;
-  --ink-faint: #8b95a7;
-  --blue: #1442c4;
-  --blue-hover: #0f36a3;
-  --blue-wash: #edf1fc;
-  --blue-line: #b9c8f2;
-  --on-blue: #ffffff;
-  --success: #1f7a45;
-  --warning: #9a6a12;
-  --danger: #b4322b;
-  --focus: var(--blue);
+  --bg: #f7f6f2;          /* warm paper: the app ground */
+  --bg-2: #ffffff;        /* cards, panels, inputs */
+  --bg-3: #ecebe6;        /* subtle fills: chips, progress tracks, hover */
+  --line: #e2e0d9;
+  --line-2: #cfccc3;      /* input and outlined-button borders */
+  --ink: #121212;
+  --ink-2: #55534d;
+  --ink-3: #8a877f;
+  --accent: #2b4cff;      /* the one blue: actions, links, live state */
+  --accent-2: #1f38d1;
+  --accent-soft: #e6eaff;
+  --signal: #d7ff43;      /* lime: Seemo's mark and highlights only */
+  --signal-ink: #1a2000;
+  --ok: #16803c;  --ok-soft: #e3f5e8;
+  --warn: #b45309; --warn-soft: #fdf0dc;
+  --bad: #c2320e;  --bad-soft: #fde4dc;
 
-  --font-sans: "Manrope", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --sans: "Inter", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
 
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --space-12: 48px;
-  --space-16: 64px;
-
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-  --radius-pill: 999px;
-
-  --shadow-float: 0 12px 32px rgba(16, 33, 58, 0.14), 0 1px 2px rgba(16, 33, 58, 0.08);
+  --r-sm: 8px; --r: 12px; --r-lg: 20px;
+  --sh: 0 1px 2px rgba(18,18,18,.06), 0 8px 24px rgba(18,18,18,.06);
+  --sh-lg: 0 2px 4px rgba(18,18,18,.08), 0 24px 48px rgba(18,18,18,.14);
 }
-
-.display-xl { font: 300 44px/50px var(--font-sans); letter-spacing: -0.02em; }
-.display    { font: 300 32px/38px var(--font-sans); letter-spacing: -0.015em; }
-.title      { font: 400 22px/28px var(--font-sans); letter-spacing: -0.01em; }
-.heading    { font: 500 16px/24px var(--font-sans); }
-.body       { font: 400 15px/24px var(--font-sans); }
-.body-sm    { font: 400 13px/20px var(--font-sans); }
-.caption    { font: 400 12px/16px var(--font-sans); }
-.mono       { font: 400 13px/20px var(--font-mono); }

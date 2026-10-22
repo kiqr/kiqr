@@ -1,54 +1,200 @@
+import { useState } from "react";
+import { useParams } from "react-router-dom";
 import { api, useAsync } from "../api";
 
 export function Settings() {
   const health = useAsync(() => api.health(), []);
   const h = health.data;
   return (
-    <div style={{ maxWidth: 640 }}>
-      <h1 className="display" style={{ marginBottom: "var(--space-12)" }}>
-        Settings
-      </h1>
-      <section className="section">
-        <h2 className="title">Models</h2>
-        <p className="section-desc">Which model runs each task. Set in <code>config.yaml</code>; keys live in <code>.env</code>.</p>
-        {h?.providers.map((p) => (
-          <div key={p.task} className="pf">
-            <div className="pf-name">{p.task}</div>
-            <div className="pf-value">
-              <code>{p.model}</code>
+    <div style={{ maxWidth: 720 }}>
+      <div className="topbar">
+        <h1 className="d2">Settings</h1>
+      </div>
+      <section className="sect">
+        <header>
+          <h2 className="d3">Models</h2>
+          <p>
+            Set in <code>config.yaml</code> as provider/model. Keys live in <code>.env</code>.
+          </p>
+        </header>
+        <div className="kv">
+          {h?.providers.map((p) => (
+            <div key={p.task}>
+              <div className="k">
+                {p.task}
+                <small>{p.task === "extract" ? "reads each page" : p.task === "synthesize" ? "builds the profile" : "talks with you"}</small>
+              </div>
+              <div>
+                <code>{p.model}</code>{" "}
+                <span className={`chip ${p.available ? "ok" : "warn"}`}>
+                  <b />
+                  {p.available ? "available" : "not available"}
+                </span>
+              </div>
             </div>
-            <div className="pf-evidence" style={{ color: p.available ? "var(--success)" : "var(--warning)" }}>
-              {p.available ? "Available" : "Not available — add the key to .env or install the CLI"}
+          ))}
+        </div>
+      </section>
+      <section className="sect">
+        <header>
+          <h2 className="d3">Storage</h2>
+          <p>Plain files under a local git repository. Every change is a commit.</p>
+        </header>
+        <div className="kv">
+          <div>
+            <div className="k">Home</div>
+            <div>
+              <code>{h?.home}</code>
             </div>
           </div>
-        ))}
-      </section>
-      <section className="section">
-        <h2 className="title">Connections</h2>
-        <p className="section-desc">Services KIQR can use on your behalf.</p>
-        <div className="pf">
-          <div className="pf-name">UnblockingAPI</div>
-          <div className="pf-value">Reads pages that block crawlers or need JavaScript.</div>
-          <div className="pf-evidence">
-            {h?.unblockingapi ? "Connected." : (
-              <>
-                Not connected. Add <code>UNBLOCKINGAPI_KEY</code> to <code>.env</code> and restart the daemon.
-              </>
-            )}
+          <div>
+            <div className="k">Version</div>
+            <div>KIQR {h?.version}</div>
           </div>
         </div>
       </section>
-      <section className="section">
-        <h2 className="title">Storage</h2>
-        <p className="section-desc">Everything lives in plain files under a local git repository. Every change is a commit.</p>
-        <div className="pf">
-          <div className="pf-name">Home</div>
-          <div className="pf-value">
-            <code>{h?.home}</code>
+    </div>
+  );
+}
+
+export function Connections() {
+  const health = useAsync(() => api.health(), []);
+  const h = health.data;
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <div className="topbar">
+        <h1 className="d2">Connections</h1>
+      </div>
+      <section className="sect">
+        <div className="kv">
+          <div>
+            <div className="k">
+              UnblockingAPI
+              <small>Reads pages that block crawlers or need JavaScript.</small>
+            </div>
+            <div>
+              {h?.unblockingapi ? (
+                <span className="chip ok">
+                  <b />
+                  connected
+                </span>
+              ) : (
+                <span className="muted">
+                  Add <code>UNBLOCKINGAPI_KEY</code> to <code>.env</code> and restart the daemon.
+                </span>
+              )}
+            </div>
           </div>
-          <div className="pf-evidence">KIQR {h?.version}</div>
+          <div>
+            <div className="k">
+              kiqr.cloud
+              <small>One-click OAuth for Gmail, Stripe, LinkedIn and more.</small>
+            </div>
+            <div className="muted">Coming soon. The open-source client never needs it.</div>
+          </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+export function ProjectSettings() {
+  const { slug = "" } = useParams();
+  const project = useAsync(() => api.project(slug), [slug]);
+  const [maxPages, setMaxPages] = useState<string>("");
+  const [conc, setConc] = useState<string>("");
+  const [ai, setAi] = useState<string>("");
+  const [saved, setSaved] = useState(false);
+  const p = project.data;
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await api.crawlSettings(slug, {
+      max_pages: maxPages ? Number(maxPages) : undefined,
+      concurrency: conc ? Number(conc) : undefined,
+      ai_concurrency: ai ? Number(ai) : undefined,
+    });
+    setSaved(true);
+    project.reload();
+  };
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <div className="topbar">
+        <h1 className="d2">Project settings</h1>
+      </div>
+      <form onSubmit={save}>
+        <section className="sect">
+          <header>
+            <h2 className="d3">Crawl</h2>
+            <p>Applies to the next crawl. Leave a field empty to use the global default.</p>
+          </header>
+          <div className="kv">
+            <div>
+              <div className="k">
+                Max pages<small>Default 200</small>
+              </div>
+              <input className="input" type="number" min={1} max={5000} placeholder={String(p?.crawl.max_pages ?? "")} value={maxPages} onChange={(e) => setMaxPages(e.target.value)} />
+            </div>
+            <div>
+              <div className="k">
+                Pages fetched in parallel<small>1–10, default 5. Fetching is done by KIQR, never by the model.</small>
+              </div>
+              <input className="input" type="number" min={1} max={10} placeholder={String(p?.crawl.concurrency ?? "")} value={conc} onChange={(e) => setConc(e.target.value)} />
+            </div>
+            <div>
+              <div className="k">
+                Pages Seemo reads in parallel<small>1–10, default 3. Reading is queued and never slows fetching.</small>
+              </div>
+              <input className="input" type="number" min={1} max={10} placeholder={String(p?.crawl.ai_concurrency ?? "")} value={ai} onChange={(e) => setAi(e.target.value)} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center" }}>
+            <button className="btn p">Save</button>
+            {saved && <span className="chip ok">saved</span>}
+          </div>
+        </section>
+      </form>
+      <section className="sect">
+        <header>
+          <h2 className="d3">Project</h2>
+        </header>
+        <div className="kv">
+          <div>
+            <div className="k">Website</div>
+            <div>
+              <code>{p?.url}</code>
+            </div>
+          </div>
+          <div>
+            <div className="k">
+              Remove project<small>Deletes the profile, facts and history for this site.</small>
+            </div>
+            <div>
+              <button
+                className="btn g bad"
+                onClick={async () => {
+                  if (window.confirm(`Remove ${p?.name} and everything under it?`)) {
+                    await api.deleteProject(slug);
+                    location.href = "/";
+                  }
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export function Placeholder({ title, text }: { title: string; text: string }) {
+  return (
+    <div>
+      <div className="topbar">
+        <h1 className="d2">{title}</h1>
+      </div>
+      <p className="empty">{text}</p>
     </div>
   );
 }

@@ -23,6 +23,8 @@ pub struct Project {
 pub struct CrawlSettings {
     /// `None` means the global default from `config.yaml`.
     pub max_pages: Option<usize>,
+    pub concurrency: Option<usize>,
+    pub ai_concurrency: Option<usize>,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
 }

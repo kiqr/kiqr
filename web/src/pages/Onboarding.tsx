@@ -14,17 +14,19 @@ export function Onboarding({ forceNew = false }: { forceNew?: boolean }) {
   if (!forceNew && projects.data && projects.data.length > 0) {
     return <Navigate to={`/p/${projects.data[0].slug}`} replace />;
   }
+  const first = (projects.data?.length ?? 0) === 0;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (!/^https?:\/\//i.test(url.trim())) {
-      setError("Enter a full address, starting with https://.");
+    const raw = url.trim().replace(/^https?:\/\//i, "");
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(raw)) {
+      setError("Enter a website address, like acme.com.");
       return;
     }
     setBusy(true);
     try {
-      const p = await api.createProject(url.trim());
+      const p = await api.createProject(`https://${raw}`);
       reloadProjects();
       navigate(`/p/${p.slug}/crawl`);
     } catch (err) {
@@ -34,26 +36,23 @@ export function Onboarding({ forceNew = false }: { forceNew?: boolean }) {
   };
 
   return (
-    <div className="onboarding">
-      <h1 className="display-xl">
-        Tell us your website.
-        <br />
-        Seemo does the rest.
-      </h1>
+    <div className="onb">
+      <h1 className="d1">{first ? "Give Seemo your website." : "Add another website."}</h1>
+      <p className="lead">
+        {first
+          ? "You're hiring your first AI marketer. Seemo reads up to 200 pages and builds a business profile with evidence for every fact. You can edit anything."
+          : "Each project gets its own profile, crawl history and conversations with Seemo."}
+      </p>
       <form onSubmit={submit}>
-        <input
-          className={`input ${error ? "error" : ""}`}
-          placeholder="https://"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          aria-label="Website"
-          autoFocus
-        />
-        <button className="btn primary" disabled={busy}>
-          {busy ? "Starting" : "Start crawl"}
-        </button>
+        <div className={`field ${error ? "bad" : ""}`}>
+          <span>https://</span>
+          <input placeholder="your-site.com" value={url} onChange={(e) => setUrl(e.target.value)} aria-label="Website" autoFocus />
+          <button className="btn a" disabled={busy}>
+            {busy ? "Starting…" : "Start crawl"}
+          </button>
+        </div>
       </form>
-      <p className={`help ${error ? "error" : ""}`}>{error ?? "We'll read up to 200 pages and build a business profile you can edit. Change the limit in settings."}</p>
+      <p className={`help ${error ? "bad" : ""}`}>{error ?? "Runs on your machine with your own Claude or Codex login. No account needed."}</p>
     </div>
   );
 }

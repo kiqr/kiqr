@@ -35,6 +35,12 @@ enum Command {
         /// Override the page limit for this crawl
         #[arg(long)]
         max_pages: Option<usize>,
+        /// Pages fetched in parallel (1–10)
+        #[arg(long)]
+        concurrency: Option<usize>,
+        /// Pages read by the model in parallel (1–10)
+        #[arg(long)]
+        ai_concurrency: Option<usize>,
         /// Stream progress until the crawl finishes
         #[arg(long, short)]
         watch: bool,
@@ -164,8 +170,12 @@ impl Client {
                     println!("Removed {slug}");
                 }
             },
-            Command::Crawl { slug, max_pages, watch } => {
-                let q = max_pages.map(|n| format!("?max_pages={n}")).unwrap_or_default();
+            Command::Crawl { slug, max_pages, concurrency, ai_concurrency, watch } => {
+                let mut qs = Vec::new();
+                if let Some(n) = max_pages { qs.push(format!("max_pages={n}")); }
+                if let Some(n) = concurrency { qs.push(format!("concurrency={n}")); }
+                if let Some(n) = ai_concurrency { qs.push(format!("ai_concurrency={n}")); }
+                let q = if qs.is_empty() { String::new() } else { format!("?{}", qs.join("&")) };
                 let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/crawl{q}"), &serde_json::json!({})).await?;
                 if watch {
                     self.watch(&slug).await?;
@@ -299,12 +309,13 @@ fn print_event(ev: &Event) {
     let t = ev.at.format("%H:%M:%S");
     let line = match &ev.kind {
         EventKind::ProjectCreated { slug, url } => format!("project {slug} added ({url})"),
-        EventKind::CrawlStarted { max_pages } => format!("reading up to {max_pages} pages"),
-        EventKind::PageDiscovered { url } => format!("found    {url}"),
+        EventKind::CrawlStarted { max_pages, concurrency, ai_concurrency } => format!("reading up to {max_pages} pages, {concurrency} fetches and {ai_concurrency} model reads in parallel"),
+        EventKind::PageDiscovered { url, .. } => format!("found    {url}"),
+        EventKind::PageQueued { url, waiting } => format!("queued   {url}  {waiting} waiting for the model"),
         EventKind::PageFetching { url, via } => format!("reading  {url}{}", if via == "unblockingapi" { "  via UnblockingAPI" } else { "" }),
         EventKind::PageFetched { url, status, ms, via, .. } => format!("read     {url}  {status} {ms} ms{}", if via == "unblockingapi" { " via UnblockingAPI" } else { "" }),
         EventKind::PageBlocked { url, reason } => format!("blocked  {url}  {reason}"),
-        EventKind::PageParsed { url, facts } => format!("parsed   {url}  {facts} facts"),
+        EventKind::PageParsed { url, facts, .. } => format!("parsed   {url}  {facts} facts"),
         EventKind::PageFailed { url, error } => format!("failed   {url}  {error}"),
         EventKind::CrawlFinished { pages, blocked, failed } => format!("done: {pages} pages read, {blocked} blocked, {failed} failed"),
         EventKind::ProfileUpdated { section, by } => format!("profile  {section} updated by {by}"),

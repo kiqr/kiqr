@@ -8,7 +8,10 @@ export function ProjectPage() {
   const project = useAsync(() => api.project(slug), [slug]);
   const profile = useAsync(() => api.profile(slug), [slug]);
   useEvents(slug, (e) => {
-    if (e.type === "profile_updated" || e.type === "crawl_finished") profile.reload();
+    if (e.type === "profile_updated" || e.type === "crawl_finished") {
+      profile.reload();
+      project.reload();
+    }
   });
 
   if (project.error) return <p className="empty">{project.error}</p>;
@@ -22,30 +25,51 @@ export function ProjectPage() {
 
   return (
     <div>
-      <div className="page-head">
-        <h1 className="display">Business profile</h1>
-        <span className="spacer" />
+      <div className="topbar">
+        <h1 className="d2">Business profile</h1>
+        {p?.last_crawl && (
+          <span className="chip ok">
+            <b />
+            {p.last_crawl.pages} pages · {new Date(p.last_crawl.finished_at).toLocaleDateString()}
+          </span>
+        )}
+        <span className="sp" />
         {p && (
           <>
-            <button className="btn secondary" onClick={recrawl}>
-              Re-crawl site
+            <button className="btn g" onClick={recrawl}>
+              Re-crawl
             </button>
-            <Link to={`/p/${slug}/crawl`} className="btn text">
-              Crawl log
-            </Link>
+            <a className="btn p" href={`/api/projects/${slug}/profile.md`} download={`${slug}-profile.md`}>
+              Export
+            </a>
           </>
         )}
       </div>
-      {p && (
-        <p className="body-sm" style={{ color: "var(--ink-muted)", marginTop: "calc(-1 * var(--space-8))", marginBottom: "var(--space-12)" }}>
-          <code>{p.url}</code>
-          {p.last_crawl && ` — ${p.last_crawl.pages} pages read ${new Date(p.last_crawl.finished_at).toLocaleString()}`}
-        </p>
+      {sections.length > 0 && (
+        <div className="tabs">
+          {sections.map((s) => (
+            <button key={s.id} className="chip" onClick={() => document.getElementById(`s-${s.id}`)?.scrollIntoView({ behavior: "smooth" })}>
+              {s.title}
+            </button>
+          ))}
+        </div>
       )}
       {sections.length === 0 && (
-        <p className="empty">
-          No profile yet. {p?.last_crawl ? "The crawl finished but no facts were extracted; check the model in settings." : "The crawl is running; facts will appear as pages are read."}
-        </p>
+        <div className="empty">
+          {p?.last_crawl ? (
+            <>
+              The crawl finished but no facts were extracted. Check the models in <Link to="/settings">settings</Link>, then{" "}
+              <button className="btn t" onClick={() => api.synthesize(slug)}>
+                build the profile
+              </button>
+              .
+            </>
+          ) : (
+            <>
+              No profile yet. <Link to={`/p/${slug}/crawl`}>Watch the crawl</Link>; sections appear as Seemo finishes them.
+            </>
+          )}
+        </div>
       )}
       {sections.map((s) => (
         <SectionView key={s.id} slug={slug} section={s} onSaved={profile.reload} />
@@ -60,9 +84,11 @@ function SectionView({ slug, section, onSaved }: { slug: string; section: Sectio
     onSaved();
   };
   return (
-    <section className="section">
-      <h2 className="title">{section.title}</h2>
-      <p className="section-desc">{section.description}</p>
+    <section className="sect" id={`s-${section.id}`}>
+      <header>
+        <h2 className="d3">{section.title}</h2>
+        <p>{section.description}</p>
+      </header>
       {section.fields.map((f, i) => (
         <FieldView
           key={f.name}
@@ -79,71 +105,72 @@ function FieldView({ field, onChange, onRemove }: { field: Field; onChange: (f: 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(field.value);
   const low = field.confidence > 0 && field.confidence < 0.6;
-  const confirmRemove = () => {
-    if (window.confirm(`Remove "${field.name}" from the profile?`)) onRemove();
-  };
   return (
     <div className="pf">
-      <div className="pf-name">
-        {field.name}
-        {field.locked && <span className="lock">Locked by you</span>}
-        <span className="pf-actions">
-          <button className="btn text" onClick={() => setEditing(true)}>
-            Edit
-          </button>
-          <button className="btn text" onClick={() => onChange({ ...field, locked: !field.locked })}>
-            {field.locked ? "Unlock" : "Lock"}
-          </button>
-          <button className="btn text" onClick={confirmRemove}>
-            Remove
-          </button>
-        </span>
+      <div className="k">
+        {field.name.replace(/_/g, " ")}
+        {field.locked && <span className="chip">locked by you</span>}
+        {!field.locked && low && (
+          <span className="chip warn">
+            <b />
+            needs review
+          </span>
+        )}
+      </div>
+      <div className="acts">
+        <button className="btn t" onClick={() => setEditing(true)}>
+          Edit
+        </button>
+        <button className="btn t" onClick={() => onChange({ ...field, locked: !field.locked })}>
+          {field.locked ? "Unlock" : "Lock"}
+        </button>
+        <button className="btn t" onClick={() => window.confirm(`Remove "${field.name}" from the profile?`) && onRemove()}>
+          Remove
+        </button>
       </div>
       {editing ? (
-        <div className="pf-edit">
+        <div className="edit">
           <textarea className="input" value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus />
-          <div className="actions">
+          <div className="acts2">
             <button
-              className="btn primary"
+              className="btn p"
               onClick={() => {
                 onChange({ ...field, value: draft, locked: true, edited_at: new Date().toISOString() });
                 setEditing(false);
               }}
             >
-              Save changes
+              Save and lock
             </button>
-            <button className="btn text" onClick={() => setEditing(false)}>
+            <button className="btn g" onClick={() => setEditing(false)}>
               Cancel
             </button>
           </div>
-          <p className="help">Saving locks the field so re-crawls keep your value.</p>
+          <p className="help">Locked fields keep your value through every re-crawl.</p>
         </div>
       ) : (
-        <div className="pf-value body">{field.value}</div>
+        <div className="v">{field.value}</div>
       )}
-      {field.evidence.slice(0, 3).map((e, i) => (
-        <div key={i} className="pf-evidence">
-          From <code>{pathOf(e.url)}</code> — “{e.quote}”
-        </div>
-      ))}
-      {field.locked && field.edited_at && <div className="pf-evidence">Edited {new Date(field.edited_at).toLocaleDateString()}. Survives re-crawls.</div>}
-      {!field.locked && field.confidence > 0 && (
-        <div className={`pf-conf ${low ? "low" : ""}`}>
-          <span className="bar">
-            <i style={{ width: `${Math.round(field.confidence * 100)}%` }} />
+      <div className="e">
+        {field.evidence.slice(0, 3).map((e, i) => (
+          <span key={i}>
+            <code>{pathOf(e.url)}</code> {e.quote && `“${e.quote}”`}
           </span>
-          Confidence {field.confidence.toFixed(2)}
-          {low && ", needs review"}
-        </div>
-      )}
+        ))}
+        {field.locked && field.edited_at && <span>Edited {new Date(field.edited_at).toLocaleDateString()}</span>}
+        {!field.locked && field.confidence > 0 && (
+          <span className={`conf ${low ? "low" : ""}`}>
+            <i style={{ "--w": `${Math.round(field.confidence * 100)}%` } as React.CSSProperties} />
+            {field.confidence.toFixed(2)}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
 
 function pathOf(u: string) {
   try {
-    const x = new URL(u);
-    return x.pathname || "/";
+    return new URL(u).pathname || "/";
   } catch {
     return u;
   }

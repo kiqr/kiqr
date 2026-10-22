@@ -1,16 +1,20 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { DEMO } from "./demo";
 import "./index.css";
 import { Shell } from "./Shell";
 import { Onboarding } from "./pages/Onboarding";
 import { ProjectPage } from "./pages/Project";
 import { CrawlPage } from "./pages/Crawl";
-import { Settings } from "./pages/Settings";
+import { Connections, Placeholder, ProjectSettings, Settings } from "./pages/Settings";
+
+// Demo mode (previews, the kiqr.dev site) uses hash routing so a single file works anywhere.
+const Router = DEMO ? HashRouter : BrowserRouter;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <BrowserRouter>
+    <Router>
       <Routes>
         <Route element={<Shell />}>
           <Route index element={<Navigate to="/projects" replace />} />
@@ -18,9 +22,14 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/new" element={<Onboarding forceNew />} />
           <Route path="/p/:slug" element={<ProjectPage />} />
           <Route path="/p/:slug/crawl" element={<CrawlPage />} />
+          <Route path="/p/:slug/competitors" element={<Placeholder title="Competitors" text="Competitor profiles arrive in a later release: Seemo will crawl the sites you name and position you against them." />} />
+          <Route path="/p/:slug/tasks" element={<Placeholder title="Tasks" text="Marketing tasks arrive once the profile is solid: content, social posts, email, ads." />} />
+          <Route path="/p/:slug/chats" element={<Placeholder title="Chats with Seemo" text="Conversations are saved per project and will be listed here." />} />
+          <Route path="/p/:slug/settings" element={<ProjectSettings />} />
+          <Route path="/connections" element={<Connections />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
       </Routes>
-    </BrowserRouter>
+    </Router>
   </StrictMode>,
 );

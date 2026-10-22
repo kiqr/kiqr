@@ -1,5 +1,6 @@
 /target
 /web/node_modules
+/web/dist-demo
 *.log
 .DS_Store
 .env

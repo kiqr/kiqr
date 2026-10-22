@@ -28,6 +28,7 @@ pub fn router(app: App) -> Router {
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/{slug}", get(get_project).delete(delete_project))
         .route("/api/projects/{slug}/crawl", post(start_crawl))
+        .route("/api/projects/{slug}/settings", put(put_settings))
         .route("/api/projects/{slug}/synthesize", post(start_synthesize))
         .route("/api/projects/{slug}/profile", get(get_profile))
         .route("/api/projects/{slug}/profile/{section}", put(put_section))
@@ -136,16 +137,37 @@ async fn delete_project(State(app): State<App>, Path(slug): Path<String>) -> Res
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
+async fn put_settings(State(app): State<App>, Path(slug): Path<String>, Json(q): Json<CrawlOpts>) -> ApiResult<Project> {
+    let mut project = Project::load(&app.store, &slug)?;
+    project.crawl.max_pages = q.max_pages;
+    project.crawl.concurrency = q.concurrency.map(|n| n.clamp(1, 10));
+    project.crawl.ai_concurrency = q.ai_concurrency.map(|n| n.clamp(1, 10));
+    project.save(&app.store)?;
+    app.store.commit(&format!("project({slug}): crawl settings")).await?;
+    Ok(Json(project))
+}
+
+#[derive(Deserialize, Default)]
 struct CrawlOpts {
     max_pages: Option<usize>,
+    concurrency: Option<usize>,
+    ai_concurrency: Option<usize>,
 }
 
 async fn start_crawl(State(app): State<App>, Path(slug): Path<String>, Query(q): Query<CrawlOpts>) -> ApiResult<serde_json::Value> {
     let mut project = Project::load(&app.store, &slug)?;
-    if let Some(n) = q.max_pages {
-        project.crawl.max_pages = Some(n);
+    if q.max_pages.is_some() || q.concurrency.is_some() || q.ai_concurrency.is_some() {
+        if let Some(n) = q.max_pages {
+            project.crawl.max_pages = Some(n);
+        }
+        if let Some(n) = q.concurrency {
+            project.crawl.concurrency = Some(n);
+        }
+        if let Some(n) = q.ai_concurrency {
+            project.crawl.ai_concurrency = Some(n);
+        }
         project.save(&app.store)?;
+        app.store.commit(&format!("project({slug}): crawl settings")).await?;
     }
     if app.jobs.read().await.contains(&format!("crawl:{slug}")) {
         return Err(ApiError(StatusCode::CONFLICT, "a crawl is already running for this project".into()));
@@ -177,7 +199,14 @@ fn spawn_crawl(app: App, project: Project) {
             None
         };
         let result = async {
-            let crawler = Crawler::new(app.store.clone(), app.bus.clone(), cfg.crawl.concurrency, cfg.crawl.escalate_to_unblockingapi, extractor.clone())?;
+            let crawler = Crawler::new(
+                app.store.clone(),
+                app.bus.clone(),
+                project.crawl.concurrency.unwrap_or(cfg.crawl.concurrency),
+                project.crawl.ai_concurrency.unwrap_or(cfg.crawl.ai_concurrency),
+                cfg.crawl.escalate_to_unblockingapi,
+                extractor.clone(),
+            )?;
             crawler.run(&project, max_pages).await?;
             if let Some(ex) = extractor {
                 if provider::available(&cfg.models.synthesize).await {

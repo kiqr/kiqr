@@ -60,10 +60,9 @@ impl Extractor {
     }
 
     /// Extract facts from one page and write them to `facts/<hash>.yaml`.
-    /// Returns how many facts were found.
-    pub async fn extract_page(&self, slug: &str, url: &Url, title: &str, markdown: &str) -> Result<usize> {
+    pub async fn extract_page(&self, slug: &str, url: &Url, title: &str, markdown: &str) -> Result<Vec<Fact>> {
         if markdown.trim().len() < 40 {
-            return Ok(0);
+            return Ok(vec![]);
         }
         let (prov, model) = provider::resolve(&self.config.models.extract)?;
         let system = skill_text(&self.store, "extract-facts", BUILTIN_EXTRACT);
@@ -81,7 +80,7 @@ impl Extractor {
         }
         let key = hash(url.as_str());
         self.store.write_yaml(&self.store.home().facts_dir(slug).join(format!("{key}.yaml")), &facts)?;
-        Ok(facts.len())
+        Ok(facts)
     }
 
     /// Merge all facts into the profile, section by section, honouring locks,

@@ -63,6 +63,22 @@ pub struct Crawler {
     unblocking: Option<Arc<UnblockingFetcher>>,
     extractor: Option<Arc<Extractor>>,
     concurrency: usize,
+    ai_concurrency: usize,
+    ai_tx: Option<tokio::sync::mpsc::UnboundedSender<ExtractJob>>,
+}
+
+struct ExtractJob {
+    url: Url,
+    title: String,
+    markdown: String,
+}
+
+/// Per-run options, settable before each crawl.
+#[derive(Clone, Debug, Default)]
+pub struct CrawlOptions {
+    pub max_pages: Option<usize>,
+    pub concurrency: Option<usize>,
+    pub ai_concurrency: Option<usize>,
 }
 
 struct State {
@@ -76,9 +92,18 @@ struct State {
 }
 
 impl Crawler {
-    pub fn new(store: Store, bus: EventBus, concurrency: usize, escalate: bool, extractor: Option<Arc<Extractor>>) -> Result<Self> {
+    pub fn new(store: Store, bus: EventBus, concurrency: usize, ai_concurrency: usize, escalate: bool, extractor: Option<Arc<Extractor>>) -> Result<Self> {
         let unblocking = if escalate { UnblockingFetcher::from_env().map(Arc::new) } else { None };
-        Ok(Self { store, bus, local: Arc::new(LocalFetcher::new()?), unblocking, extractor, concurrency })
+        Ok(Self {
+            store,
+            bus,
+            local: Arc::new(LocalFetcher::new()?),
+            unblocking,
+            extractor,
+            concurrency: concurrency.clamp(1, 10),
+            ai_concurrency: ai_concurrency.clamp(1, 10),
+            ai_tx: None,
+        })
     }
 
     pub fn has_escalation(&self) -> bool {
@@ -92,7 +117,24 @@ impl Crawler {
         let cache = self.store.home().cache_dir(&slug).join("pages");
         std::fs::create_dir_all(&cache)?;
 
-        self.bus.emit(Some(&slug), EventKind::CrawlStarted { max_pages });
+        self.bus.emit(
+            Some(&slug),
+            EventKind::CrawlStarted { max_pages, concurrency: self.concurrency, ai_concurrency: self.ai_concurrency },
+        );
+
+        // The model reads pages from a queue with its own parallelism, so a slow
+        // model never slows the fetcher down.
+        let (ai_tx, ai_rx) = tokio::sync::mpsc::unbounded_channel::<ExtractJob>();
+        let ai_pool = tokio::spawn(ai_worker_pool(
+            ai_rx,
+            self.extractor.clone(),
+            self.bus.clone(),
+            slug.clone(),
+            self.ai_concurrency,
+        ));
+        let mut me = self.clone_for_task();
+        me.ai_tx = Some(ai_tx);
+        let this_run = Arc::new(me);
 
         let robots = self.load_robots(&start).await;
         let state = Arc::new(Mutex::new(State {
@@ -108,9 +150,12 @@ impl Crawler {
         {
             let mut st = state.lock().await;
             push(&mut st, &start, 1000);
+            self.bus.emit(Some(&slug), EventKind::PageDiscovered { url: start.to_string(), from: None });
             for u in self.load_sitemap(&start).await {
                 if canonical_host(&u) == host {
-                    push(&mut st, &u, priority_for(&u) + 10);
+                    if let Some(key) = push(&mut st, &u, priority_for(&u) + 10) {
+                        self.bus.emit(Some(&slug), EventKind::PageDiscovered { url: key, from: Some("sitemap".into()) });
+                    }
                 }
             }
         }
@@ -139,7 +184,7 @@ impl Crawler {
                         }
                     }
                     let permit = sem.clone().acquire_owned().await?;
-                    let this = self.clone_for_task();
+                    let this = this_run.clone();
                     let st = state.clone();
                     let cache = cache.clone();
                     let slug = slug.clone();
@@ -159,6 +204,9 @@ impl Crawler {
             }
         }
         while in_flight.join_next().await.is_some() {}
+        // Close the reading queue and wait for the model to finish what is left.
+        drop(this_run);
+        let _ = ai_pool.await;
 
         let st = state.lock().await;
         let summary = CrawlSummary { finished_at: Utc::now(), pages: st.fetched, blocked: st.blocked, failed: st.failed };
@@ -183,6 +231,8 @@ impl Crawler {
             unblocking: self.unblocking.clone(),
             extractor: self.extractor.clone(),
             concurrency: self.concurrency,
+            ai_concurrency: self.ai_concurrency,
+            ai_tx: self.ai_tx.clone(),
         }
     }
 
@@ -265,24 +315,26 @@ impl Crawler {
             },
         );
 
-        {
+        let discovered = {
             let mut st = state.lock().await;
             st.fetched += 1;
+            let mut new = Vec::new();
             for link in &page.links {
                 if canonical_host(link) == host && is_page(link) {
                     let p = priority_for(link);
-                    push(&mut st, link, p);
+                    if let Some(key) = push(&mut st, link, p) {
+                        new.push(key);
+                    }
                 }
             }
+            new
+        };
+        for key in discovered {
+            self.bus.emit(Some(slug), EventKind::PageDiscovered { url: key, from: Some(url.to_string()) });
         }
 
-        if let Some(ex) = &self.extractor {
-            match ex.extract_page(slug, &url, &page.title, &page.markdown).await {
-                Ok(n) => self.bus.emit(Some(slug), EventKind::PageParsed { url: url.to_string(), facts: n }),
-                Err(e) => tracing::warn!(%url, error = %e, "extraction failed"),
-            }
-        } else {
-            self.bus.emit(Some(slug), EventKind::PageParsed { url: url.to_string(), facts: 0 });
+        if let Some(tx) = &self.ai_tx {
+            let _ = tx.send(ExtractJob { url: url.clone(), title: page.title.clone(), markdown: page.markdown.clone() });
         }
     }
 
@@ -329,15 +381,65 @@ impl Crawler {
     }
 }
 
-fn push(st: &mut State, url: &Url, priority: i32) {
+/// Enqueue a URL once. Returns the canonical key when it was new.
+fn push(st: &mut State, url: &Url, priority: i32) -> Option<String> {
     let mut u = url.clone();
     u.set_fragment(None);
     strip_tracking(&mut u);
     let key = u.to_string();
     if st.seen.insert(key.clone()) {
         st.order += 1;
-        st.queue.insert((-priority, st.order, key));
+        st.queue.insert((-priority, st.order, key.clone()));
+        Some(key)
+    } else {
+        None
     }
+}
+
+/// Reads fetched pages with the model, `ai_concurrency` at a time, emitting
+/// queue depth so the UI can show Seemo working through the backlog.
+async fn ai_worker_pool(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<ExtractJob>,
+    extractor: Option<Arc<Extractor>>,
+    bus: EventBus,
+    slug: String,
+    ai_concurrency: usize,
+) {
+    let sem = Arc::new(Semaphore::new(ai_concurrency));
+    let waiting = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut tasks = tokio::task::JoinSet::new();
+    while let Some(job) = rx.recv().await {
+        let n = waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        bus.emit(Some(&slug), EventKind::PageQueued { url: job.url.to_string(), waiting: n });
+        let permit = match sem.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        let (ex, bus, slug, waiting) = (extractor.clone(), bus.clone(), slug.clone(), waiting.clone());
+        tasks.spawn(async move {
+            let _permit = permit;
+            let facts = match &ex {
+                Some(ex) => match ex.extract_page(&slug, &job.url, &job.title, &job.markdown).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!(url = %job.url, error = %e, "extraction failed");
+                        vec![]
+                    }
+                },
+                None => vec![],
+            };
+            let left = waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
+            let preview = facts
+                .iter()
+                .take(6)
+                .map(|f| crate::events::FactPreview { section: f.section.clone(), field: f.field.clone(), value: f.value.clone(), quote: f.quote.clone() })
+                .collect();
+            bus.emit(Some(&slug), EventKind::PageParsed { url: job.url.to_string(), facts: facts.len(), waiting: left, preview });
+        });
+        // Reap finished tasks so the set does not grow unbounded.
+        while tasks.try_join_next().is_some() {}
+    }
+    while tasks.join_next().await.is_some() {}
 }
 
 fn strip_tracking(u: &mut Url) {

@@ -7,6 +7,7 @@ export function SeemoWidget({ project }: { project: string | null }) {
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [unread, setUnread] = useState(0);
+  const [busy, setBusy] = useState(false);
   const end = useRef<HTMLDivElement>(null);
 
   useEvents(project, (e) => {
@@ -14,6 +15,9 @@ export function SeemoWidget({ project }: { project: string | null }) {
       setMsgs((m) => [...m, { from: "seemo", text: e.text as string, at: new Date(e.at) }]);
       if (!open) setUnread((n) => n + 1);
     }
+    if (e.type === "page_queued") setBusy(true);
+    if (e.type === "page_parsed") setBusy((e.waiting as number) > 0);
+    if (e.type === "crawl_finished") setBusy(false);
   });
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
@@ -25,47 +29,45 @@ export function SeemoWidget({ project }: { project: string | null }) {
   if (!open) {
     return (
       <button
-        className="seemo-launcher"
+        className={`seemo-launch ${busy ? "busy" : ""}`}
         aria-label="Open Seemo"
         onClick={() => {
           setOpen(true);
           setUnread(0);
         }}
       >
-        {unread > 0 ? unread : "s"}
+        {unread > 0 && <span className="n">{unread}</span>}
       </button>
     );
   }
 
   return (
     <div className="seemo" role="dialog" aria-label="Seemo">
-      <div className="seemo-top">
-        <span className="avatar">s</span>
+      <div className="top">
+        <span className="av" />
         <div>
-          <div className="who">Seemo</div>
-          <div className="ctx">{project ?? "No project selected"}</div>
+          <b>Seemo</b>
+          <small>{project ? `${project} · CMO` : "No project selected"}</small>
         </div>
-        <button className="close" aria-label="Close" onClick={() => setOpen(false)}>
+        <button className="x" aria-label="Close" onClick={() => setOpen(false)}>
           ×
         </button>
       </div>
-      <div className="seemo-msgs">
-        {msgs.length === 0 && (
-          <div className="m seemo-m body">
-            {project ? "I'll tell you what I find as I read the site." : "Add a project and I'll read its website."}
-          </div>
-        )}
+      <div className="msgs">
+        {msgs.length === 0 && <div className="ms s">{project ? "I'll tell you what I find as I read the site." : "Add a project and I'll read its website."}</div>}
         {msgs.map((m, i) => (
-          <div key={i} className={`m ${m.from === "seemo" ? "seemo-m" : "you"} body`}>
+          <div key={i} className={`ms ${m.from === "seemo" ? "s" : "y"}`}>
             {m.text}
             <span className="t">{m.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
           </div>
         ))}
         <div ref={end} />
       </div>
-      <div className="seemo-input">
+      <div className="inp">
         <input placeholder="Chat arrives in the next release" disabled />
-        <button disabled>Send</button>
+        <button disabled aria-label="Send">
+          ↑
+        </button>
       </div>
     </div>
   );

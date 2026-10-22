@@ -11,6 +11,8 @@ KIQR is a self-hosted marketing agent. You give it a website; it crawls it, buil
 - **Built-in fetcher first; UnblockingAPI on escalation.** Pages that return 401/403/429/503, show a bot challenge or are empty JavaScript shells are retried through UnblockingAPI when a key is present. Without a key they are reported as unreadable, and UnblockingAPI is mentioned exactly there: in the crawl summary, in Settings, and once by Seemo.
 - **Providers.** `provider/model` strings per task (`extract`, `synthesize`, `chat`): `anthropic/…`, `openai/…` over HTTP with keys; `claude-cli/…`, `codex-cli/…` through the local CLIs with the user's login. Docker runs on API keys or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`.
 - **`web/dist` is committed** so `cargo install --git` works without Node. Rebuild it (`npm run build`) in the same commit as any UI change; a release workflow should take this over.
+- **Crawling is two independent stages.** KIQR fetches pages itself (reqwest, or UnblockingAPI on escalation), `concurrency` at a time (default 5, max 10). Every fetched page is queued for the model, which reads `ai_concurrency` pages at a time (default 3). A slow model never slows the fetcher. Both are per-project settings and can be set per run.
+- **Demo mode.** `?demo` (or `window.__KIQR_DEMO__`) replays a scripted crawl into the real screens without a daemon; `web/vite.demo.config.ts` builds one self-contained HTML file for previews and the site.
 - **SSE, not WebSockets.** All state changes flow daemon → client as events; actions are POSTs. `kiqr crawl --watch` prints the same stream.
 - **Skills.** Prompts are `SKILL.md` files. Built-in ones ship in `skills/`; copies in `~/.kiqr/skills/` override them so users can tune extraction and synthesis.
 - **Seemo** is the persona, defined in `seemo/PERSONA.md` (installed to `~/.kiqr/seemo/PERSONA.md`). Chat is scoped to the active project and always starts from that project's `PROFILE.md`.
@@ -59,7 +61,8 @@ GET  /api/events?project=                SSE
 
 ## Roadmap
 
-1. ~~Workspace, store + git, events, crawler, extraction, synthesis, CLI, web UI~~ (this commit)
+1. ~~Workspace, store + git, events, crawler, extraction, synthesis, CLI, web UI~~
+1b. ~~Parallel fetch with a separate model queue; project selector and project-scoped navigation; the animated crawl map; design v2 (warm paper, Bricolage + Inter)~~
 2. Seemo chat: `POST /api/projects/:slug/chat`, transcript in `chats/`, tools to read/edit the profile and start re-crawls, approval gate for side effects
 3. Re-crawl diffs in the UI from git history; scheduled re-crawls
 4. Competitor sub-profiles

@@ -25,7 +25,10 @@ pub struct DaemonConfig {
 #[serde(default)]
 pub struct CrawlDefaults {
     pub max_pages: usize,
+    /// Pages fetched in parallel (1–10). Fetching is done by KIQR itself, never by the model.
     pub concurrency: usize,
+    /// Pages read by the model in parallel. Reading is queued and never blocks fetching.
+    pub ai_concurrency: usize,
     /// Escalate blocked or JavaScript-only pages to UnblockingAPI when a key is
     /// present. Pages that cannot be read are still reported either way.
     pub escalate_to_unblockingapi: bool,
@@ -53,7 +56,7 @@ impl Default for DaemonConfig {
 }
 impl Default for CrawlDefaults {
     fn default() -> Self {
-        Self { max_pages: 200, concurrency: 4, escalate_to_unblockingapi: true }
+        Self { max_pages: 200, concurrency: 5, ai_concurrency: 3, escalate_to_unblockingapi: true }
     }
 }
 impl Default for Models {

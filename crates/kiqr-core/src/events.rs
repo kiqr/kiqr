@@ -17,17 +17,28 @@ pub struct Event {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventKind {
     ProjectCreated { slug: String, url: String },
-    CrawlStarted { max_pages: usize },
-    PageDiscovered { url: String },
+    CrawlStarted { max_pages: usize, concurrency: usize, ai_concurrency: usize },
+    PageDiscovered { url: String, from: Option<String> },
     PageFetching { url: String, via: String },
     PageFetched { url: String, status: u16, bytes: usize, ms: u64, via: String },
     PageBlocked { url: String, reason: String },
-    PageParsed { url: String, facts: usize },
+    /// A page is waiting for, or being read by, the model. `waiting` is the queue depth.
+    PageQueued { url: String, waiting: usize },
+    PageParsed { url: String, facts: usize, waiting: usize, preview: Vec<FactPreview> },
     PageFailed { url: String, error: String },
     CrawlFinished { pages: usize, blocked: usize, failed: usize },
     ProfileUpdated { section: String, by: String },
     SeemoSays { text: String },
     Committed { message: String },
+}
+
+/// A few of the facts a page produced, for the live feed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FactPreview {
+    pub section: String,
+    pub field: String,
+    pub value: String,
+    pub quote: String,
 }
 
 #[derive(Clone)]

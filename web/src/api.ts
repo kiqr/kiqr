@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { DEMO, demoProject, runDemo } from "./demo";
 
 export type Project = {
   slug: string;
   name: string;
   url: string;
   created_at: string;
-  crawl: { max_pages: number | null; include: string[]; exclude: string[] };
+  crawl: { max_pages: number | null; concurrency: number | null; ai_concurrency: number | null; include: string[]; exclude: string[] };
   last_crawl: { finished_at: string; pages: number; blocked: number; failed: number } | null;
 };
 
@@ -37,6 +38,7 @@ export type Health = {
 };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  if (DEMO) return demoRequest<T>(path);
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...init });
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => ({}));
@@ -51,6 +53,8 @@ export const api = {
   createProject: (url: string) => req<Project>("/api/projects", { method: "POST", body: JSON.stringify({ url }) }),
   deleteProject: (slug: string) => req<void>(`/api/projects/${slug}`, { method: "DELETE" }),
   crawl: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/crawl`, { method: "POST", body: "{}" }),
+  crawlSettings: (slug: string, s: { max_pages?: number; concurrency?: number; ai_concurrency?: number }) =>
+    req<Project>(`/api/projects/${slug}/settings`, { method: "PUT", body: JSON.stringify(s) }),
   synthesize: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/synthesize`, { method: "POST", body: "{}" }),
   profile: (slug: string) => req<Section[]>(`/api/projects/${slug}/profile`),
   saveSection: (slug: string, section: Section) =>
@@ -58,11 +62,21 @@ export const api = {
   history: (slug: string) => req<{ hash: string; at: string; message: string }[]>(`/api/projects/${slug}/history`),
 };
 
+function demoRequest<T>(path: string): Promise<T> {
+  if (path === "/api/projects") return Promise.resolve([demoProject] as T);
+  if (path.startsWith("/api/projects/") && path.split("/").length === 4) return Promise.resolve(demoProject as T);
+  if (path.endsWith("/profile")) return Promise.resolve([] as T);
+  if (path === "/api/health")
+    return Promise.resolve({ ok: true, version: "demo", home: "~/.kiqr", providers: [{ task: "extract", model: "claude-cli/haiku", available: true }], unblockingapi: false } as T);
+  return Promise.resolve({} as T);
+}
+
 /** Subscribe to the daemon's event stream, optionally for one project. */
 export function useEvents(project: string | null, onEvent: (e: KiqrEvent) => void) {
   const handler = useRef(onEvent);
   handler.current = onEvent;
   useEffect(() => {
+    if (DEMO) return runDemo(project ?? demoProject.slug, (e) => handler.current(e));
     const url = project ? `/api/events?project=${encodeURIComponent(project)}` : "/api/events";
     const es = new EventSource(url);
     es.onmessage = (m) => {
