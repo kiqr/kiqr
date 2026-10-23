@@ -53,6 +53,14 @@ impl Home {
     pub fn profile_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("profile")
     }
+    /// The business brief: one summary document on top of the sections.
+    pub fn brief_file(&self, slug: &str) -> PathBuf {
+        self.profile_dir(slug).join("brief.yaml")
+    }
+    /// Brand assets collected from the crawl: logo, colours, fonts, imagery.
+    pub fn brand_file(&self, slug: &str) -> PathBuf {
+        self.profile_dir(slug).join("brand.yaml")
+    }
     pub fn profile_md(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("PROFILE.md")
     }

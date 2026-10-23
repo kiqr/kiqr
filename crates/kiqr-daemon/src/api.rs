@@ -11,9 +11,10 @@ use axum::{
 };
 use futures::stream::Stream;
 use kiqr_core::{
+    brand::{self, Brand},
     crawl::Crawler,
     events::EventKind,
-    profile::{self, Section},
+    profile::{self, Brief, BriefSource, Section},
     project::Project,
     provider,
 };
@@ -33,6 +34,8 @@ pub fn router(app: App) -> Router {
         .route("/api/projects/{slug}/profile", get(get_profile))
         .route("/api/projects/{slug}/profile/{section}", put(put_section))
         .route("/api/projects/{slug}/profile.md", get(get_profile_md))
+        .route("/api/projects/{slug}/brief", get(get_brief).put(put_brief).post(start_brief))
+        .route("/api/projects/{slug}/brand", get(get_brand).post(rebuild_brand))
         .route("/api/projects/{slug}/history", get(history))
         .route("/api/events", get(events))
         .with_state(app)
@@ -208,18 +211,28 @@ fn spawn_crawl(app: App, project: Project) {
                 extractor.clone(),
             )?;
             crawler.run(&project, max_pages).await?;
-            if let Some(ex) = extractor {
-                if provider::available(&cfg.models.synthesize).await {
-                    ex.synthesize(&project, true).await?;
-                    app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: "The profile is ready. Have a look and lock anything I got wrong.".into() });
-                }
-            }
             anyhow::Ok(())
         }
         .await;
-        if let Err(e) = result {
-            tracing::error!(slug = %project.slug, error = %e, "crawl failed");
-            app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: format!("The crawl stopped: {e}") });
+        match result {
+            Err(e) => {
+                tracing::error!(slug = %project.slug, error = %e, "crawl failed");
+                app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: format!("The crawl stopped: {e}") });
+            }
+            Ok(()) => {
+                if let Some(ex) = extractor {
+                    if provider::available(&cfg.models.synthesize).await {
+                        // synthesize() tells the user itself when it fails.
+                        match ex.synthesize(&project, true).await {
+                            Ok(()) => app.bus.emit(
+                                Some(&project.slug),
+                                EventKind::SeemoSays { text: "The profile and the business brief are ready. Have a look and lock anything I got wrong.".into() },
+                            ),
+                            Err(e) => tracing::error!(slug = %project.slug, error = %e, "synthesis failed"),
+                        }
+                    }
+                }
+            }
         }
         app.jobs.write().await.remove(&key);
     });
@@ -231,14 +244,91 @@ async fn start_synthesize(State(app): State<App>, Path(slug): Path<String>) -> A
     if !provider::available(&cfg.models.synthesize).await {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("model `{}` is not available", cfg.models.synthesize)));
     }
+    spawn_job(app, project, "synthesize", |ex, project| async move { ex.synthesize(&project, false).await }).await
+}
+
+/// Run a model job in the background, at most one per kind and project. The
+/// job emits its own events, including Seemo's message on failure.
+async fn spawn_job<F, Fut>(app: App, project: Project, kind: &'static str, job: F) -> ApiResult<serde_json::Value>
+where
+    F: FnOnce(std::sync::Arc<kiqr_core::extract::Extractor>, Project) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
+{
+    let key = format!("{kind}:{}", project.slug);
+    if !app.jobs.write().await.insert(key.clone()) {
+        return Err(ApiError(StatusCode::CONFLICT, format!("{kind} is already running for this project")));
+    }
+    let cfg = app.config.read().await.clone();
     let ex = app.extractor(&cfg);
-    let bus = app.bus.clone();
     tokio::spawn(async move {
-        if let Err(e) = ex.synthesize(&project, false).await {
-            bus.emit(Some(&project.slug), EventKind::SeemoSays { text: format!("I couldn't build the profile: {e}") });
+        let slug = project.slug.clone();
+        if let Err(e) = job(ex, project).await {
+            tracing::error!(%slug, error = %e, "{kind} failed");
         }
+        app.jobs.write().await.remove(&key);
     });
     Ok(Json(serde_json::json!({ "started": true })))
+}
+
+async fn get_brief(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Option<Brief>> {
+    let _ = Project::load(&app.store, &slug)?;
+    Ok(Json(Brief::load(&app.store, &slug)?))
+}
+
+async fn put_brief(State(app): State<App>, Path(slug): Path<String>, Json(mut brief): Json<Brief>) -> ApiResult<Brief> {
+    let project = Project::load(&app.store, &slug)?;
+    let previous = Brief::load(&app.store, &slug)?;
+    brief.normalize();
+    brief.version = previous.map(|b| b.version).unwrap_or(0) + 1;
+    brief.source = BriefSource::Edited;
+    brief.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    brief.save(&app.store, &slug)?;
+    profile::write_markdown(&app.store, &slug, &project.name, &project.url)?;
+    app.store.commit(&format!("profile({slug}): edit business brief v{}", brief.version)).await?;
+    app.bus.emit(
+        Some(&slug),
+        EventKind::ProfileUpdated {
+            section: "brief".into(),
+            by: "you".into(),
+            title: "Business brief".into(),
+            items: kiqr_core::extract::brief_items(&brief),
+        },
+    );
+    Ok(Json(brief))
+}
+
+async fn start_brief(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<serde_json::Value> {
+    let project = Project::load(&app.store, &slug)?;
+    let cfg = app.config.read().await.clone();
+    if !provider::available(&cfg.models.synthesize).await {
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("model `{}` is not available", cfg.models.synthesize)));
+    }
+    spawn_job(app, project, "brief", |ex, project| async move { ex.brief(&project, false).await }).await
+}
+
+/// The saved brand, or one built on the fly from the crawl cache (without
+/// writing) for projects crawled before brand collection existed.
+async fn get_brand(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Brand> {
+    let _ = Project::load(&app.store, &slug)?;
+    if let Some(b) = Brand::load(&app.store, &slug)? {
+        return Ok(Json(b));
+    }
+    match brand::from_cache(&app.store, &slug).await? {
+        Some(b) => Ok(Json(b)),
+        None => Err(no_brand()),
+    }
+}
+
+async fn rebuild_brand(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Brand> {
+    let project = Project::load(&app.store, &slug)?;
+    match brand::refresh(&app.store, &app.bus, &project, false).await? {
+        Some(b) => Ok(Json(b)),
+        None => Err(no_brand()),
+    }
+}
+
+fn no_brand() -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, "no brand yet: crawl the site first".into())
 }
 
 async fn get_profile(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Vec<Section>> {
@@ -249,7 +339,9 @@ async fn get_profile(State(app): State<App>, Path(slug): Path<String>) -> ApiRes
 async fn get_profile_md(State(app): State<App>, Path(slug): Path<String>) -> Result<String, ApiError> {
     let project = Project::load(&app.store, &slug)?;
     let sections = profile::load_all(&app.store, &slug)?;
-    Ok(profile::render_markdown(&project.name, &project.url, &sections))
+    let brief = Brief::load(&app.store, &slug)?;
+    let brand = Brand::load(&app.store, &slug)?;
+    Ok(profile::render_markdown(&project.name, &project.url, brief.as_ref(), brand.as_ref(), &sections))
 }
 
 async fn put_section(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(mut section): Json<Section>) -> ApiResult<Section> {
@@ -265,7 +357,10 @@ async fn put_section(State(app): State<App>, Path((slug, id)): Path<(String, Str
     section.save(&app.store, &slug)?;
     profile::write_markdown(&app.store, &slug, &project.name, &project.url)?;
     app.store.commit(&format!("profile({slug}): edit {id}")).await?;
-    app.bus.emit(Some(&slug), EventKind::ProfileUpdated { section: id, by: "user".into() });
+    app.bus.emit(
+        Some(&slug),
+        EventKind::ProfileUpdated { section: id, by: "you".into(), title: section.title.clone(), items: profile::section_items(&section) },
+    );
     Ok(Json(section))
 }
 

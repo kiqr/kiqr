@@ -179,7 +179,10 @@ fn merge_gitignore(path: &Path) -> Result<()> {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String> {
+    // The home repo is local bookkeeping: never sign (a signing agent could
+    // block the daemon waiting for a prompt).
     let out = Command::new("git")
+        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
         .args(args)
         .current_dir(root)
         .env("GIT_TERMINAL_PROMPT", "0")

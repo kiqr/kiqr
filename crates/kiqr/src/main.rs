@@ -54,6 +54,26 @@ enum Command {
     },
     /// Rebuild the profile from the facts already extracted
     Synthesize { slug: String },
+    /// Show a project's business brief: summary, offerings, audiences, voice, topic clusters and content gaps
+    Brief {
+        slug: String,
+        /// Print the brief as JSON
+        #[arg(long)]
+        json: bool,
+        /// Write the brief again from the current profile, in the background
+        #[arg(long)]
+        regenerate: bool,
+    },
+    /// Show a project's brand assets: logo, icon, colours, fonts, imagery and social links
+    Brand {
+        slug: String,
+        /// Print the brand as JSON
+        #[arg(long)]
+        json: bool,
+        /// Collect the brand again from the crawl cache and save it
+        #[arg(long)]
+        rebuild: bool,
+    },
     /// Show what changed, newest first
     History { slug: String },
     /// Follow live events (all projects, or one with --project)
@@ -196,6 +216,30 @@ impl Client {
                 let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/synthesize"), &serde_json::json!({})).await?;
                 println!("Building the profile for {slug}. Watch: kiqr events --project {slug}");
             }
+            Command::Brief { slug, json, regenerate } => {
+                if regenerate {
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/brief"), &serde_json::json!({})).await?;
+                    println!("Writing the business brief for {slug}. Watch: kiqr events --project {slug}");
+                    return Ok(());
+                }
+                let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/brief")).await?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                } else if v.is_null() {
+                    println!("No business brief yet. Crawl the site (kiqr crawl {slug}) or write one: kiqr brief {slug} --regenerate");
+                } else {
+                    print_brief(&v);
+                }
+            }
+            Command::Brand { slug, json, rebuild } => {
+                let path = format!("/api/projects/{slug}/brand");
+                let v: serde_json::Value = if rebuild { self.post(&path, &serde_json::json!({})).await? } else { self.get(&path).await? };
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                } else {
+                    print_brand(&v);
+                }
+            }
             Command::History { slug } => {
                 let v: Vec<serde_json::Value> = self.get(&format!("/api/projects/{slug}/history")).await?;
                 for c in v {
@@ -313,14 +357,159 @@ fn print_event(ev: &Event) {
         EventKind::PageDiscovered { url, .. } => format!("found    {url}"),
         EventKind::PageQueued { url, waiting } => format!("queued   {url}  {waiting} waiting for the model"),
         EventKind::PageFetching { url, via } => format!("reading  {url}{}", if via == "unblockingapi" { "  via UnblockingAPI" } else { "" }),
-        EventKind::PageFetched { url, status, ms, via, .. } => format!("read     {url}  {status} {ms} ms{}", if via == "unblockingapi" { " via UnblockingAPI" } else { "" }),
+        EventKind::PageFetched { url, status, ms, via, title, words, .. } => format!(
+            "read     {url}  {status} {ms} ms, {words} words{}{}",
+            if via == "unblockingapi" { " via UnblockingAPI" } else { "" },
+            if title.is_empty() { String::new() } else { format!("  \"{title}\"") }
+        ),
         EventKind::PageBlocked { url, reason } => format!("blocked  {url}  {reason}"),
         EventKind::PageParsed { url, facts, .. } => format!("parsed   {url}  {facts} facts"),
         EventKind::PageFailed { url, error } => format!("failed   {url}  {error}"),
         EventKind::CrawlFinished { pages, blocked, failed } => format!("done: {pages} pages read, {blocked} blocked, {failed} failed"),
-        EventKind::ProfileUpdated { section, by } => format!("profile  {section} updated by {by}"),
+        EventKind::SynthesisStarted { total } => format!("building the profile: {total} parts"),
+        EventKind::ProfileUpdated { section, by, title, items } => {
+            let name = if title.is_empty() { section } else { title };
+            let mut s = format!("profile  {name} updated by {by}");
+            for i in items {
+                s.push_str(&format!("\n            {i}"));
+            }
+            s
+        }
+        EventKind::SynthesisFinished { sections } => format!("profile  done, {sections} parts saved"),
+        EventKind::BrandUpdated { logo, colors, images } => format!(
+            "brand    {}{} colours, {images} images{}",
+            if logo.is_some() { "logo, " } else { "" },
+            colors.len(),
+            if colors.is_empty() { String::new() } else { format!("  {}", colors.join(" ")) }
+        ),
         EventKind::SeemoSays { text } => format!("Seemo: {text}"),
         EventKind::Committed { message } => format!("saved    {message}"),
     };
     println!("{t}  {line}");
+}
+
+fn print_brand(v: &serde_json::Value) {
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or("").trim().to_string();
+    let strs = |v: &serde_json::Value| v.as_array().cloned().unwrap_or_default().iter().map(s).filter(|x| !x.is_empty()).collect::<Vec<_>>();
+    let or_none = |v: &serde_json::Value| if s(v).is_empty() { "none found".to_string() } else { s(v) };
+    println!("{}", s(&v["site_name"]));
+    if !s(&v["tagline"]).is_empty() {
+        println!("{}", s(&v["tagline"]));
+    }
+    println!();
+    println!("Logo     {}", or_none(&v["logo"]));
+    println!("Icon     {}", or_none(&v["icon"]));
+    println!("Cover    {}", or_none(&v["cover"]));
+    let colors = strs(&v["colors"]);
+    println!("Colours  {}", if colors.is_empty() { "none found".into() } else { colors.join("  ") });
+    let fonts = strs(&v["fonts"]);
+    println!("Fonts    {}", if fonts.is_empty() { "none found".into() } else { fonts.join(", ") });
+    let images = v["images"].as_array().cloned().unwrap_or_default();
+    println!("Images   {}", images.len());
+    for i in images.iter().take(12) {
+        println!("  - {}", s(&i["url"]));
+    }
+    let social = v["social"].as_array().cloned().unwrap_or_default();
+    if !social.is_empty() {
+        println!("Social");
+        for x in social {
+            println!("  - {:<10} {}", s(&x["network"]), s(&x["url"]));
+        }
+    }
+    println!("\nCollected {}", s(&v["updated_at"]));
+}
+
+fn print_brief(v: &serde_json::Value) {
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or("").trim().to_string();
+    let arr = |v: &serde_json::Value| v.as_array().cloned().unwrap_or_default();
+    let strs = |v: &serde_json::Value| arr(v).iter().map(s).filter(|x| !x.is_empty()).collect::<Vec<_>>();
+    println!(
+        "{}  (brief v{}, {}, {})",
+        s(&v["business_name"]),
+        v["version"].as_u64().unwrap_or(0),
+        if s(&v["source"]) == "edited" { "edited by you" } else { "from the crawl" },
+        s(&v["updated_at"])
+    );
+    let mut meta = Vec::new();
+    if !s(&v["language"]).is_empty() {
+        meta.push(format!("Language: {}", s(&v["language"])));
+    }
+    let geo = strs(&v["geographies"]);
+    if !geo.is_empty() {
+        meta.push(format!("Serves: {}", geo.join(", ")));
+    }
+    if !meta.is_empty() {
+        println!("{}", meta.join("   "));
+    }
+    if !s(&v["summary"]).is_empty() {
+        println!("\n{}", s(&v["summary"]));
+    }
+    let section = |title: &str, lines: Vec<String>| {
+        if !lines.is_empty() {
+            println!("\n{title}");
+            for l in lines {
+                println!("  - {l}");
+            }
+        }
+    };
+    section(
+        "Offerings",
+        arr(&v["offerings"])
+            .iter()
+            .map(|o| {
+                let url = s(&o["url"]);
+                format!("{} ({}): {}{}", s(&o["name"]), s(&o["kind"]), s(&o["description"]), if url.is_empty() { String::new() } else { format!("  {url}") })
+            })
+            .collect(),
+    );
+    section(
+        "Audiences",
+        arr(&v["audiences"])
+            .iter()
+            .map(|a| {
+                let needs = strs(&a["needs"]);
+                if needs.is_empty() { s(&a["name"]) } else { format!("{}: {}", s(&a["name"]), needs.join("; ")) }
+            })
+            .collect(),
+    );
+    let t = &v["tone_of_voice"];
+    let mut tone = Vec::new();
+    if !s(&t["description"]).is_empty() {
+        tone.push(s(&t["description"]));
+    }
+    if !strs(&t["traits"]).is_empty() {
+        tone.push(format!("Traits: {}", strs(&t["traits"]).join(", ")));
+    }
+    for e in strs(&t["examples"]) {
+        tone.push(format!("Example: \"{e}\""));
+    }
+    if !strs(&t["avoid"]).is_empty() {
+        tone.push(format!("Avoid: {}", strs(&t["avoid"]).join("; ")));
+    }
+    section("Tone of voice", tone);
+    section("Differentiators", strs(&v["differentiators"]));
+    if !s(&v["pricing_summary"]).is_empty() {
+        section("Pricing", vec![s(&v["pricing_summary"])]);
+    }
+    section(
+        "Competitors",
+        arr(&v["competitors"]).iter().map(|c| if s(&c["note"]).is_empty() { s(&c["name"]) } else { format!("{}: {}", s(&c["name"]), s(&c["note"])) }).collect(),
+    );
+    if !strs(&v["brand_terms"]).is_empty() {
+        section("Brand terms", vec![strs(&v["brand_terms"]).join(", ")]);
+    }
+    section(
+        "Topic clusters",
+        arr(&v["topic_clusters"])
+            .iter()
+            .map(|c| {
+                let n = c["page_count"].as_u64().unwrap_or(0);
+                format!("{} ({n} page{}): {}", s(&c["label"]), if n == 1 { "" } else { "s" }, s(&c["description"]))
+            })
+            .collect(),
+    );
+    section(
+        "Content gaps",
+        arr(&v["content_gaps"]).iter().map(|g| format!("{} [{}]: {}", s(&g["topic"]), s(&g["intent"]), s(&g["rationale"]))).collect(),
+    );
 }

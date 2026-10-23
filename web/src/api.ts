@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { DEMO, demoProject, runDemo } from "./demo";
+import { DEMO, demoProject, demoState, runDemo } from "./demo";
+import { demoBrand, demoBrief } from "./demo-brief";
 
 export type Project = {
   slug: string;
@@ -27,6 +28,44 @@ export type Section = {
   updated_at: string | null;
 };
 
+export type Offering = { name: string; kind: "product" | "service"; description: string; url?: string; sources?: string[] };
+export type Audience = { name: string; needs: string[] };
+export type ContentGap = { topic: string; rationale: string; intent: "informational" | "commercial" | "transactional" | "navigational" };
+export type TopicCluster = { label: string; description: string; page_count: number; urls?: string[] };
+/** The structured business profile: what the business sells, to whom, how it sounds, and what it has and hasn't written about. */
+export type Brief = {
+  version: number;
+  source: "crawl" | "edited";
+  updated_at: string;
+  business_name: string;
+  summary: string;
+  language: string;
+  geographies: string[];
+  offerings: Offering[];
+  audiences: Audience[];
+  tone_of_voice: { description: string; traits: string[]; examples: string[]; avoid: string[] };
+  brand_terms: string[];
+  differentiators: string[];
+  competitors: { name: string; note: string }[];
+  pricing_summary: string;
+  topic_clusters: TopicCluster[];
+  content_gaps: ContentGap[];
+};
+
+/** The business's own look, collected from the crawled pages: logo, colours, fonts, imagery. */
+export type Brand = {
+  site_name: string;
+  tagline: string;
+  logo: string | null;
+  icon: string | null;
+  cover: string | null;
+  colors: string[];
+  fonts: string[];
+  images: { url: string; alt: string; page: string }[];
+  social: { network: string; url: string }[];
+  updated_at: string;
+};
+
 export type KiqrEvent = { at: string; project: string | null; type: string } & Record<string, unknown>;
 
 export type Health = {
@@ -38,7 +77,7 @@ export type Health = {
 };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  if (DEMO) return demoRequest<T>(path);
+  if (DEMO) return demoRequest<T>(path, init);
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...init });
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => ({}));
@@ -59,12 +98,23 @@ export const api = {
   profile: (slug: string) => req<Section[]>(`/api/projects/${slug}/profile`),
   saveSection: (slug: string, section: Section) =>
     req<Section>(`/api/projects/${slug}/profile/${section.id}`, { method: "PUT", body: JSON.stringify(section) }),
+  brief: (slug: string) => req<Brief | null>(`/api/projects/${slug}/brief`),
+  saveBrief: (slug: string, brief: Brief) => req<Brief>(`/api/projects/${slug}/brief`, { method: "PUT", body: JSON.stringify(brief) }),
+  rebuildBrief: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/brief`, { method: "POST", body: "{}" }),
+  brand: (slug: string) => req<Brand>(`/api/projects/${slug}/brand`).catch(() => null),
+  rebuildBrand: (slug: string) => req<Brand>(`/api/projects/${slug}/brand`, { method: "POST", body: "{}" }),
   history: (slug: string) => req<{ hash: string; at: string; message: string }[]>(`/api/projects/${slug}/history`),
 };
 
-function demoRequest<T>(path: string): Promise<T> {
-  if (path === "/api/projects") return Promise.resolve([demoProject] as T);
+function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  if (path === "/api/projects" && init?.method === "POST") {
+    demoState.created = true;
+    return Promise.resolve(demoProject as T);
+  }
+  if (path === "/api/projects") return Promise.resolve((demoState.created ? [demoProject] : []) as T);
   if (path.startsWith("/api/projects/") && path.split("/").length === 4) return Promise.resolve(demoProject as T);
+  if (path.endsWith("/brief")) return Promise.resolve((init?.method === "PUT" ? JSON.parse(String(init.body)) : demoState.created ? demoBrief : null) as T);
+  if (path.endsWith("/brand")) return demoState.created ? Promise.resolve(demoBrand as T) : Promise.reject(new Error("404"));
   if (path.endsWith("/profile")) return Promise.resolve([] as T);
   if (path === "/api/health")
     return Promise.resolve({ ok: true, version: "demo", home: "~/.kiqr", providers: [{ task: "extract", model: "claude-cli/haiku", available: true }], unblockingapi: false } as T);

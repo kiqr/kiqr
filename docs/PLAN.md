@@ -31,6 +31,8 @@ projects/<slug>/
   project.yaml             url, crawl settings, last crawl summary
   PROFILE.md               rendered profile; what agents read
   profile/<section>.yaml   editable source; fields with evidence, confidence, locks
+  profile/brief.yaml       business brief: summary, offerings, audiences, voice, topic clusters, content gaps
+  profile/brand.yaml       brand assets: name, tagline, logo, icon, cover, colours, fonts, images, social links
   facts/<page>.yaml        per-page extracted facts
   chats/                   Seemo conversations (later)
   cache/pages/<hash>.*     raw html, markdown, metadata — ignored
@@ -41,7 +43,11 @@ projects/<slug>/
 1. **Crawl** (`kiqr-core::crawl`): sitemap + robots, same-origin BFS, priority for pricing/about/product pages, 200-page cap, tracking params stripped, raw cache written.
 2. **Extract** (`skills/extract-facts`): each page's Markdown → JSON facts with a verbatim quote and confidence, routed to one of twelve sections. Runs during the crawl so facts stream into the UI.
 3. **Synthesize** (`skills/build-profile`): per section, merge facts into fields, resolve conflicts, keep evidence, never touch locked fields. Writes `profile/*.yaml` and `PROFILE.md`, commits.
-4. **Edit**: the UI and API write sections; a user edit locks the field.
+4. **Brief** (`skills/business-brief`): one call on top of the sections, the same business profile ContentWriter builds and more. Input: the site URL, every merged section (field name + value) and a numbered page list (path, title, up to three facts). Output: business name, summary, language, geographies, offerings (with source URLs), audiences, tone of voice, brand terms, differentiators, competitors, pricing summary, 3–8 topic clusters and 8–15 content gaps. Clusters come back as page numbers; Rust maps them to URLs (each page in one cluster) and sets `page_count`. Written to `profile/brief.yaml` with a `version` that increments on every write and `source: crawl | edited`, rendered at the top of `PROFILE.md`, committed as `[auto] profile(<slug>): business brief v<N>`. Runs at the end of every synthesis; `POST …/brief` reruns just this step.
+5. **Brand** (`kiqr-core::brand`, no model): when fetching ends, before waiting on the model queue, the raw HTML in the cache plus up to three same-origin stylesheets of the home page (5 s, 2 MB each) give the brand: site name and tagline (og/JSON-LD/title), logo (JSON-LD Organization logo, else a logo image in the header), icon (apple-touch-icon, else the largest icon link, else `/favicon.ico`), cover (home og:image), up to 6 colours (theme-color first, then the most used saturated CSS colours, near-duplicates merged), up to 3 fonts ordered by weighted `font-family` use (body/sans stacks count most, monospace and cursive accents least; Google Fonts link order breaks ties), up to 12 images (each page's og:image, then large content images) and one social profile per network. Saved to `profile/brand.yaml`, rendered as a short Brand block in `PROFILE.md`, committed as `[auto] brand(<slug>): …`, emits `brand_updated {logo, colors, images}`. `GET …/brand` builds it from the cache on the fly (without writing) when the file is missing, so projects crawled earlier get one without a rescan; `POST …/brand` rebuilds and saves.
+6. **Edit**: the UI and API write sections and the brief; a user edit locks a field, and an edited brief is `source: edited` until the next crawl rewrites it.
+
+Synthesis emits `synthesis_started {total}` (sections to build + 1 for the brief), one `profile_updated {section, by, title, items}` per section and one for `brief`, then `synthesis_finished {sections}` whether it succeeded or not; on failure Seemo says what failed. `page_fetched` carries the page `title` and `words` so the crawl screen can show them.
 
 ## API
 
@@ -55,6 +61,11 @@ POST /api/projects/:slug/synthesize
 GET  /api/projects/:slug/profile         sections as JSON
 PUT  /api/projects/:slug/profile/:id     save one section
 GET  /api/projects/:slug/profile.md
+GET  /api/projects/:slug/brief           business brief, or null
+PUT  /api/projects/:slug/brief           save an edited brief (source: edited, version + 1)
+POST /api/projects/:slug/brief           rewrite the brief in the background
+GET  /api/projects/:slug/brand           brand assets (built from the cache if not saved yet); 404 before a crawl
+POST /api/projects/:slug/brand           rebuild brand assets from the crawl cache and save
 GET  /api/projects/:slug/history         git log for the project
 GET  /api/events?project=                SSE
 ```
@@ -63,6 +74,8 @@ GET  /api/events?project=                SSE
 
 1. ~~Workspace, store + git, events, crawler, extraction, synthesis, CLI, web UI~~
 1b. ~~Parallel fetch with a separate model queue; project selector and project-scoped navigation; the animated crawl map; design v2 (warm paper, Bricolage + Inter)~~
+1c. ~~Business brief: ContentWriter's site profile (summary, offerings, audiences, voice, clusters, gaps) on top of the evidence-backed sections; `kiqr brief`~~
+1d. Content: KIQR does everything ContentWriter does, and more. An overview, a calendar, articles, social posts and other formats, a content map and content gaps. The brief's topic clusters (with the URLs of their pages) are the content map; its content gaps seed the article plan; articles and posts are generated from the business profile and the brief's tone of voice.
 2. Seemo chat: `POST /api/projects/:slug/chat`, transcript in `chats/`, tools to read/edit the profile and start re-crawls, approval gate for side effects
 3. Re-crawl diffs in the UI from git history; scheduled re-crawls
 4. Competitor sub-profiles

@@ -1,27 +1,39 @@
-/* KIQR design tokens. Light only — the audience is business owners, and the product is one calm, bright workspace. Source: DESIGN.md */
+/* KIQR design tokens. Dark, after ContentWriter: deep navy ground, panels one step up, teal for actions and live state, indigo as the second accent. Source: DESIGN.md */
 :root {
-  --bg: #f7f6f2;          /* warm paper: the app ground */
-  --bg-2: #ffffff;        /* cards, panels, inputs */
-  --bg-3: #ecebe6;        /* subtle fills: chips, progress tracks, hover */
-  --line: #e2e0d9;
-  --line-2: #cfccc3;      /* input and outlined-button borders */
-  --ink: #121212;
-  --ink-2: #55534d;
-  --ink-3: #8a877f;
-  --accent: #2b4cff;      /* the one blue: actions, links, live state */
-  --accent-2: #1f38d1;
-  --accent-soft: #e6eaff;
-  --signal: #d7ff43;      /* lime: Seemo's mark and highlights only */
-  --signal-ink: #1a2000;
-  --ok: #16803c;  --ok-soft: #e3f5e8;
-  --warn: #b45309; --warn-soft: #fdf0dc;
-  --bad: #c2320e;  --bad-soft: #fde4dc;
+  color-scheme: dark;
 
-  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --bg: #070a12;          /* page ground */
+  --panel: #0c1220;       /* cards, sidebar, inputs */
+  --panel-2: #111a2c;     /* items inside cards, hover, chips */
+  --line: #1c2740;        /* hairlines */
+  --line-2: #2a3754;      /* input and outlined-button borders */
+  --fg: #e6ecf7;          /* text */
+  --muted: #8392ad;       /* secondary text, labels */
+  --dim: #56627c;         /* meta, placeholders */
+
+  --accent: #5eead4;      /* teal: primary actions, links, live state, selected */
+  --accent-2: #818cf8;    /* indigo: second accent, AI/learning */
+  --accent-ink: #04201b;  /* text on teal */
+  --accent-soft: rgba(94, 234, 212, .1);
+  --signal: #d7ff43;      /* lime: Seemo's mark only */
+  --signal-ink: #1a2000;
+  --ok: #34d399;  --ok-soft: rgba(52, 211, 153, .12);
+  --warn: #fbbf24; --warn-soft: rgba(251, 191, 36, .12);
+  --bad: #f87171;  --bad-soft: rgba(248, 113, 113, .12);
+  --skip: #64748b;
+
+  /* older names, kept so every screen follows the theme */
+  --bg-2: var(--panel);
+  --bg-3: var(--panel-2);
+  --ink: var(--fg);
+  --ink-2: var(--muted);
+  --ink-3: var(--dim);
+
+  --display: "Inter", system-ui, sans-serif;
   --sans: "Inter", system-ui, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
 
-  --r-sm: 8px; --r: 12px; --r-lg: 20px;
-  --sh: 0 1px 2px rgba(18,18,18,.06), 0 8px 24px rgba(18,18,18,.06);
-  --sh-lg: 0 2px 4px rgba(18,18,18,.08), 0 24px 48px rgba(18,18,18,.14);
+  --r-sm: 8px; --r: 12px; --r-lg: 16px;
+  --sh: 0 1px 2px rgba(0, 0, 0, .3);
+  --sh-lg: 0 24px 48px rgba(0, 0, 0, .5);
 }

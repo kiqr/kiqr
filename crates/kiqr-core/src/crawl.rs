@@ -204,6 +204,12 @@ impl Crawler {
             }
         }
         while in_flight.join_next().await.is_some() {}
+        // Brand assets come from the raw HTML already on disk, so they are
+        // ready while the model is still reading.
+        match crate::brand::refresh(&self.store, &self.bus, project, true).await {
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%slug, error = %e, "brand collection failed"),
+        }
         // Close the reading queue and wait for the model to finish what is left.
         drop(this_run);
         let _ = ai_pool.await;
@@ -312,6 +318,8 @@ impl Crawler {
                 bytes: fetched.body.len(),
                 ms: fetched.elapsed.as_millis() as u64,
                 via: fetched.via.to_string(),
+                title: page.title.clone(),
+                words: page.markdown.split_whitespace().count(),
             },
         );
 

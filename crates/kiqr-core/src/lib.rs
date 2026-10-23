@@ -4,6 +4,7 @@
 //! Markdown files under a local git repository the daemon commits to after
 //! every change. There is no database.
 
+pub mod brand;
 pub mod config;
 pub mod crawl;
 pub mod events;

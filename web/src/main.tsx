@@ -1,17 +1,20 @@
 import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, MemoryRouter, Navigate, Route, Routes } from "react-router-dom";
-import { DEMO } from "./demo";
+import { DEMO, DEMO_FRESH } from "./demo";
 import "./index.css";
 import { Shell } from "./Shell";
 import { Onboarding } from "./pages/Onboarding";
 import { ProjectPage } from "./pages/Project";
 import { CrawlPage } from "./pages/Crawl";
 import { Connections, Placeholder, ProjectSettings, Settings } from "./pages/Settings";
+import { ComingNext, ContentGaps, ContentMap } from "./pages/Content";
+import { CalendarDays, Gauge, MessageSquareText, Newspaper } from "lucide-react";
 
 // Demo mode (previews, the kiqr.dev site) keeps routing in memory so the single
 // file works anywhere, including sandboxed preview frames with no real URL.
-const start = (typeof window !== "undefined" && window.__KIQR_DEMO_START__) || "/p/unblockingapi-com/crawl";
+const startParam = typeof location !== "undefined" ? new URLSearchParams(location.search).get("start") : null;
+const start = (typeof window !== "undefined" && window.__KIQR_DEMO_START__) || startParam || (DEMO_FRESH ? "/projects" : "/p/unblockingapi-com/crawl");
 const Router = DEMO ? ({ children }: { children: ReactNode }) => <MemoryRouter initialEntries={[start]}>{children}</MemoryRouter> : BrowserRouter;
 
 createRoot(document.getElementById("root")!).render(
@@ -24,6 +27,12 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/new" element={<Onboarding forceNew />} />
           <Route path="/p/:slug" element={<ProjectPage />} />
           <Route path="/p/:slug/crawl" element={<CrawlPage />} />
+          <Route path="/p/:slug/map" element={<ContentMap />} />
+          <Route path="/p/:slug/gaps" element={<ContentGaps />} />
+          <Route path="/p/:slug/overview" element={<ComingNext icon={Gauge} title="Overview" text="What's planned, written and published for this website, and what needs your review." />} />
+          <Route path="/p/:slug/calendar" element={<ComingNext icon={CalendarDays} title="Calendar" text="Seemo plans articles and posts from the content gaps and puts them on a calendar you can rearrange." />} />
+          <Route path="/p/:slug/articles" element={<ComingNext icon={Newspaper} title="Articles" text="Seemo writes articles from the business profile and the content gaps, in the brand's tone of voice, for you to review and publish." />} />
+          <Route path="/p/:slug/posts" element={<ComingNext icon={MessageSquareText} title="Posts" text="Social posts, newsletters and short-form copy, written from the same profile and scheduled with the articles." />} />
           <Route path="/p/:slug/competitors" element={<Placeholder title="Competitors" text="Competitor profiles arrive in a later release: Seemo will crawl the sites you name and position you against them." />} />
           <Route path="/p/:slug/tasks" element={<Placeholder title="Tasks" text="Marketing tasks arrive once the profile is solid: content, social posts, email, ads." />} />
           <Route path="/p/:slug/chats" element={<Placeholder title="Chats with Seemo" text="Conversations are saved per project and will be listed here." />} />

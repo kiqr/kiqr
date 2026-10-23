@@ -18,7 +18,7 @@ Read `docs/PLAN.md` for the architecture and the decisions behind it, and `DESIG
 - The CLI never touches files; it calls the daemon's API. Any new capability gets an API route first, then CLI and UI.
 - Every state change emits an `EventKind`; the UI and `--watch` depend on it.
 - UnblockingAPI is promoted only where pages could not be read: the crawl summary, Settings, and one Seemo message per crawl. Nowhere else.
-- UI: follow `DESIGN.md`. Light theme only. Tokens in `web/src/tokens.css`; Bricolage Grotesque headlines, Inter text; blue for actions and live state, lime only for Seemo. Preview any UI change with the demo build (`npx vite build -c vite.demo.config.ts` in `web/`, open `dist-demo/index.html?demo`).
+- UI: follow `DESIGN.md`. Dark theme only, modelled on ContentWriter (`~/Projects/contentwriter`); when in doubt, do what ContentWriter does. Tokens in `web/src/tokens.css`; Inter throughout, JetBrains Mono for paths and numbers; teal for actions and live state, indigo for AI/learning, lime only for Seemo's mark. Icons from lucide-react; motion from `motion/react`. Preview any UI change with the demo build (`npx vite build -c vite.demo.config.ts` in `web/`, open `dist-demo/index.html?demo`).
 - Crawling: KIQR fetches pages itself; the model only reads fetched Markdown from the queue. Never make fetching wait on the model.
 - Seemo writes in first person, plainly, no emoji or exclamation marks; it never claims to have done something it has not.
 - Keep `docs/PLAN.md` current when a decision changes.

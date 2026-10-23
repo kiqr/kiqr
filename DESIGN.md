@@ -1,59 +1,63 @@
 # KIQR design
 
-The look of the KIQR web UI, the CLI's wording, kiqr.dev and kiqr.cloud. The tokens live in `web/src/tokens.css`; this file says why they are what they are and how to use them. Light theme only: the audience is business owners hiring their first AI marketer, and the product should feel like one bright, calm workspace, not a terminal.
+The look of the KIQR web UI, the CLI's wording, kiqr.dev and kiqr.cloud. The tokens live in `web/src/tokens.css`; this file says why they are what they are and how to use them.
+
+KIQR is modelled on ContentWriter (`~/Projects/contentwriter`, `apps/web`): same dark palette, same sidebar, same card language, same live crawl screen. KIQR does everything ContentWriter does and more (evidence for every fact, Seemo, posts as well as articles), so when a screen exists in both, copy ContentWriter's layout and add KIQR's extras below or beside it rather than redesigning it.
 
 ## The idea
 
-Warm paper, black ink, one electric blue, one lime signal. Confident headlines in a grotesk with character, quiet text in Inter, code in mono. Things that are objects (cards, inputs, the Seemo panel, the project selector) are white with a hairline border and a soft shadow; the page ground is warm, so white surfaces read as raised without heavy shadows. The one place the product shows off is the crawl screen: a live map of the site being read, because the user is watching their first AI employee work and that moment should feel like something.
+A deep navy workspace. Panels sit one step lighter with hairline borders; items inside panels one step lighter again. Teal is the one action and live-state colour, indigo the second accent for anything the AI is doing, lime only for Seemo's mark. The crawl screen is where the product shows off: a live radial map of the site, a progress ring, an activity feed and the business profile assembling itself.
 
 ## Color
 
 | Token | Value | Use |
 | --- | --- | --- |
-| `--bg` | #f7f6f2 | page ground |
-| `--bg-2` | #ffffff | cards, panels, inputs, sidebar items |
-| `--bg-3` | #ecebe6 | chips, progress tracks, hover, Seemo's bubbles |
-| `--line` / `--line-2` | #e2e0d9 / #cfccc3 | hairlines / input and outlined-button borders |
-| `--ink` / `--ink-2` / `--ink-3` | #121212 / #55534d / #8a877f | text / secondary / meta and placeholders |
-| `--accent` / `--accent-2` / `--accent-soft` | #2b4cff / #1f38d1 / #e6eaff | the blue: primary actions, links, live state, selected |
-| `--signal` | #d7ff43 | lime: Seemo's mark, "with Seemo" state, new-fact highlight. Nothing else. |
-| `--ok` `--warn` `--bad` (+ `-soft`) | greens, ambers, reds | status chips and dots only |
+| `--bg` | #070a12 | page ground |
+| `--panel` | #0c1220 | cards (at 80%), sidebar (at 60%), inputs, menus |
+| `--panel-2` | #111a2c | items inside cards, chips, hover |
+| `--line` / `--line-2` | #1c2740 / #2a3754 | hairlines / input and outlined-button borders |
+| `--fg` / `--muted` / `--dim` | #e6ecf7 / #8392ad / #56627c | text / secondary text and card labels / meta and placeholders |
+| `--accent` | #5eead4 | teal: primary buttons (dark text on it), links, active nav, live state |
+| `--accent-2` | #818cf8 | indigo: AI and learning (the learning panel, empty-state icons, gradients with teal) |
+| `--signal` | #d7ff43 | lime: Seemo's mark and launcher. Nothing else. |
+| `--ok` `--warn` `--bad` `--skip` | greens, ambers, reds, slate | status pills, graph nodes and dots |
 
-Rules: blue is for actions and live state, never decoration. Lime belongs to Seemo. Status colours never fill large areas. No gradients except the crawl map's sweep and the new-fact highlight, both transient.
+**The business's own colours.** On the business profile the site's first two brand colours (collected from its pages and stylesheets) become `--brand` and `--brand-2`, and only identity decorations use them: the hero glow, card icon tiles, brand-term tokens, avatars, the voice quote and card hover edges. Actions stay teal everywhere. Without brand colours the profile falls back to indigo and teal.
+
+Gradients only teal→indigo, and only for emphasis: the onboarding headline, the progress ring, confidence bars. Topic clusters use ContentWriter's cluster palette (teal, indigo, pink, amber, green, blue, orange, violet).
 
 ## Type
 
-- Headlines: Bricolage Grotesque 600, tight tracking. `.d1` 36–56px, `.d2` 26–34px, `.d3` 20px.
-- Text: Inter 400, 15px, line-height 1.55; 500 for labels and buttons; 600 for field names.
-- Code, URLs, commands: JetBrains Mono 500, 13px.
-- Sentence case everywhere. No uppercase labels. Numbers in stats use tabular figures.
+- Inter throughout: page titles 600 20–24px, item names 500 14px, body 14px/1.55, descriptions 12px muted.
+- Card labels: 11px, uppercase, 0.08em tracking, muted (`.cap`). Nav group labels the same at 10px, dim.
+- JetBrains Mono for paths, URLs, counts and timings.
 
 ## Shape and depth
 
-Radii: 8px inputs and menu items, 12px cards, 20px large panels (map, Seemo), pills for buttons and chips. Shadows: `--sh` for raised objects, `--sh-lg` for floating ones (Seemo, menus). Hairline borders on every card so edges hold on the warm ground.
+Radii: 8px buttons, inputs, nav items; 12px items and the project switcher; 16px cards. Almost no shadows; edges come from hairlines. Floating things (menus, Seemo panel) get `--sh-lg`.
 
 ## Layout
 
-Sidebar 240px: wordmark, the project selector (a white card with initial, name, host and a caret; opens a menu listing projects and "Add a project"), then navigation scoped to that project — Profile, Crawl, Competitors, Tasks, Chats with Seemo, Project settings — and at the bottom the global Connections and Settings. Content area max 1180px, 28/32px padding. Below 900px the sidebar stacks on top.
+Sidebar 256px, as ContentWriter: wordmark; the website switcher (globe tile, "Website" label, name, chevrons; menu lists websites and "Add website"); grouped navigation with lucide icons and a teal highlight that slides between items — Content (Overview, Calendar, Articles, Posts, Content map, Content gaps), Your business (Business profile, Website crawls, Competitors), Seemo (Chats, Tasks), Settings (Project settings); footer with Connections, Settings and where data lives. Content area up to 1360px, 28/40px padding. Below 900px the sidebar stacks on top. On first run (no projects) there is no sidebar: onboarding stands alone, centred on a faint grid.
 
-Seemo lives in a black 52px launcher bottom right (lime square inside; it pulses while Seemo is reading) that opens a 380×560 panel; full screen on phones.
+Business profile, as ContentWriter, opened by a brand hero so the user sees their own business first: the site's share image as a slowly drifting cover, its icon (or initial) on a glowing tile, the business name in the site's own primary font, its tagline, language, regions and social links, with Export and Rescan website in glass buttons; then animated counts (products & services, audiences, pages read, facts with a source, topic clusters, content gaps; zero counts are hidden); then the version line with an Edit button that turns every card editable (save makes a new version); cards, each with a lucide icon tile: What the business does | Brand kit (logo, colour swatches that copy on click, font specimens), Products & services (product/service icons) | Audiences (initial avatars in the brand colours), Tone of voice (the site's own example sentences rotating in a large quote, then traits, examples, avoid), From your website (a gallery of the site's share and hero images), Brand terms | Regions served, then KIQR's additions (What sets it apart | Competitors, Pricing), Existing topic clusters, Content gaps we found, and at the bottom every fact with its source page and quote, by section, with edit and lock.
 
 ## Motion
 
 Motion shows state and is otherwise still.
 
-- Crawl map: the radar sweep runs while the crawl is live; nodes pop in; edges draw from parent to child; a fetching node pulses blue, a node with Seemo pulses lime, a parsed node flashes lime then settles to black; blocked nodes are amber. Stats count up. New facts slide in with a lime wash that fades.
-- Everywhere else: list rows and cards rise in over 200–260ms; menus and the Seemo panel scale in over 140–180ms; the launcher pulses only while Seemo is busy.
+- Crawl screen: ported from ContentWriter. The radial site map grows as pages are found, with a sweeping beam and packets along edges; nodes colour by status; the progress ring and stats tween; the activity feed slides rows in with a teal wash; discoveries pop in; the phase timeline fills Discover → Crawl → Learn → Profile; the learning panel streams page reads, then profile sections.
+- Onboarding: headline, text and field rise in one after another; submitting lifts the form away and the crawl screen rises in while the sidebar slides in.
+- Route changes: content rises in over 360ms. Cards on the profile rise in, staggered. The active nav highlight springs between items.
 - `prefers-reduced-motion` turns all of it off.
 
 ## Components
 
-- **Buttons** (`.btn`): pill, 14px/500. `.p` black primary, `.a` blue for the one main action on a screen, `.g` outlined, `.t` text. Labels name the action: "Start crawl", "Save and lock", "Crawl again".
-- **Chips** (`.chip`): status and counts; `.ok` `.warn` `.bad` `.acc`, `.live` pulses its dot.
-- **Field** (`.field`): the onboarding URL input, a pill with the `https://` prefix and the action inside.
-- **Profile field** (`.pf`): white card; name with chips (locked by you, needs review), value, evidence line with source path in mono and the quote, confidence bar; Edit / Lock / Remove reveal on hover (always visible on touch). Editing locks the field.
-- **Project selector** (`.sel` + `.menu`), **key-value settings** (`.kv`), **Seemo panel** (`.seemo`), **crawl map** (`.map`, `.node`, `.stat`, `.stream`).
+- **Buttons** (`.btn`): 8px radius. `.p` teal primary (one per screen), `.g` outlined secondary, `.t` text. Labels name the action: "Rescan website", "Save new version", "Build the profile".
+- **Chips** (`.chip`): status and counts; `.ok` `.warn` `.bad` `.acc`.
+- **Cards** (`.pcard`), **items** (`.it`: name, uppercase kind tag, description), **tokens** (`.tk`: brand terms, traits; italic block tokens for quoted sentences).
+- **Field** (`.field`): the onboarding URL input with the `https://` prefix and the action inside.
 
 ## Writing
 
-The interface speaks to the user in the second person, plainly, sentence case. Seemo speaks in the first person as a colleague: specific, calm, no exclamation marks, no emoji. UnblockingAPI is mentioned only where pages could not be read.
+The interface speaks to the user in the second person, plainly, sentence case (the uppercase card labels are styling, written in sentence case in code). Seemo speaks in the first person as a colleague: specific, calm, no exclamation marks, no emoji. Screens that are not built yet say so plainly ("Coming in the next release") rather than showing fake content. UnblockingAPI is mentioned only where pages could not be read.

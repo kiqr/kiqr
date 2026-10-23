@@ -20,14 +20,34 @@ pub enum EventKind {
     CrawlStarted { max_pages: usize, concurrency: usize, ai_concurrency: usize },
     PageDiscovered { url: String, from: Option<String> },
     PageFetching { url: String, via: String },
-    PageFetched { url: String, status: u16, bytes: usize, ms: u64, via: String },
+    /// `title` is the page's `<title>` or first `<h1>` (may be empty); `words`
+    /// is the word count of the extracted Markdown.
+    PageFetched { url: String, status: u16, bytes: usize, ms: u64, via: String, title: String, words: usize },
     PageBlocked { url: String, reason: String },
     /// A page is waiting for, or being read by, the model. `waiting` is the queue depth.
     PageQueued { url: String, waiting: usize },
     PageParsed { url: String, facts: usize, waiting: usize, preview: Vec<FactPreview> },
     PageFailed { url: String, error: String },
     CrawlFinished { pages: usize, blocked: usize, failed: usize },
-    ProfileUpdated { section: String, by: String },
+    /// Profile synthesis began. `total` is the number of sections that will be
+    /// synthesized plus one for the business brief.
+    SynthesisStarted { total: usize },
+    /// One section (or `"brief"`) was saved. `by` is `seemo` or a person
+    /// (`you`/`user`). `items` are up to six short display strings.
+    ProfileUpdated {
+        section: String,
+        by: String,
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        items: Vec<String>,
+    },
+    /// Synthesis ended, successfully or not. `sections` counts what was saved,
+    /// the brief included.
+    SynthesisFinished { sections: usize },
+    /// Brand assets were collected from the crawl cache and saved.
+    /// `images` is how many images the brand holds.
+    BrandUpdated { logo: Option<String>, colors: Vec<String>, images: usize },
     SeemoSays { text: String },
     Committed { message: String },
 }

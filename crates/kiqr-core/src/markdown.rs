@@ -25,6 +25,15 @@ pub fn parse(base: &Url, html: &str) -> Page {
         .next()
         .map(|t| t.text().collect::<String>().trim().to_string())
         .unwrap_or_default();
+    // No <title>: fall back to the first heading.
+    let title = if title.is_empty() {
+        doc.select(&sel("h1"))
+            .next()
+            .map(|h| h.text().collect::<Vec<_>>().join(" ").split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default()
+    } else {
+        title
+    };
 
     let canonical = doc
         .select(&sel("link[rel=canonical]"))
