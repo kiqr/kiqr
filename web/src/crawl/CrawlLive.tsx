@@ -1,5 +1,5 @@
 // The live crawl screen. A port of ContentWriter's crawl-live.tsx onto KIQR's project event stream.
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowRight, Radio, RotateCcw } from "lucide-react";
@@ -11,6 +11,7 @@ import { PhaseTimeline } from "./phases";
 import { NowFetching, UrlFeed } from "./feed";
 import { Discoveries } from "./discoveries";
 import { LearningPanel } from "./learning";
+import { LimitDialog } from "./limit";
 import "../crawl.css";
 
 /** If synthesis never announces itself after the crawl, stop waiting for it. */
@@ -22,11 +23,29 @@ export function CrawlLive({ slug, fresh }: { slug: string; fresh: boolean }) {
   // One store per mount; the page is keyed by slug.
   const [store] = useState(() => new CrawlStore("", 200));
   useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion);
-  useEvents(slug, (e: KiqrEvent) => store.apply(e));
+  // The daemon replays the latest crawl job first, so leaving and coming back
+  // (or opening the page mid-crawl) shows the whole crawl, not just what follows.
+  const replayed = useRef<KiqrEvent[]>([]);
+  const [ready, setReady] = useState(false);
+  const [stream, setStream] = useState(0);
+  useEvents(
+    slug,
+    (e: KiqrEvent) => {
+      if (e.replay) return void replayed.current.push(e);
+      if (e.type === "replay_done") {
+        store.replay(replayed.current, e.running === true);
+        replayed.current = [];
+        return setReady(true);
+      }
+      store.apply(e);
+    },
+    { replay: true, key: stream },
+  );
   const reducedMotion = useReducedMotion() ?? false;
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [limitOpen, setLimitOpen] = useState(false);
 
   const p = project.data;
   useEffect(() => {
@@ -58,6 +77,11 @@ export function CrawlLive({ slug, fresh }: { slug: string; fresh: boolean }) {
     store.touch();
     api.crawl(slug).catch((err: Error) => {
       setStarting(false);
+      // One crawl per project: if one is already running, show it from its start.
+      if (/already running/.test(err.message)) {
+        replayed.current = [];
+        return setStream((n) => n + 1);
+      }
       setStartError(err.message);
     });
   };
@@ -65,6 +89,8 @@ export function CrawlLive({ slug, fresh }: { slug: string; fresh: boolean }) {
   const host = safeHost(s.siteUrl || p?.url || "") || p?.name || slug;
   const showLive = s.live || fresh || starting;
   const elapsed = s.startedAt ? (s.completed?.durationMs ?? Math.max(0, Date.now() - s.startedAt)) / 1000 : 0;
+
+  if (!ready && !fresh) return <div className="cr" />;
 
   if (!showLive) {
     return (
@@ -165,7 +191,9 @@ export function CrawlLive({ slug, fresh }: { slug: string; fresh: boolean }) {
                 </div>
                 <p>
                   Found <b>{fmt.format(s.stats.found)}</b> URLs — this project reads up to {fmt.format(s.maxPages)}.{" "}
-                  <Link to={`/p/${slug}/settings`}>Raise the limit</Link>
+                  <button className="linkish" onClick={() => setLimitOpen(true)}>
+                    Raise the limit
+                  </button>
                 </p>
               </motion.div>
             )}
@@ -212,6 +240,17 @@ export function CrawlLive({ slug, fresh }: { slug: string; fresh: boolean }) {
           </motion.div>
         )}
       </AnimatePresence>
+      <LimitDialog
+        open={limitOpen}
+        slug={slug}
+        host={host}
+        found={s.stats.found}
+        current={s.maxPages}
+        running={running}
+        onClose={() => setLimitOpen(false)}
+        onApplied={(max_pages, live) => live && store.apply({ type: "crawl_limit_changed", project: slug, at: new Date().toISOString(), max_pages })}
+        onRecrawl={start}
+      />
     </div>
   );
 }

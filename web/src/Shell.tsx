@@ -153,8 +153,8 @@ function ProjectSwitcher({ projects, current }: { projects: Project[]; current: 
           <Globe size={15} />
         </span>
         <span className="t">
-          <small>Website</small>
-          <b>{current ? current.name : projects.length ? "Select a website" : "Add a website"}</b>
+          <small>Project</small>
+          <b>{current ? current.name : projects.length ? "Select a project" : "Add a project"}</b>
         </span>
         <ChevronsUpDown size={14} className="car" />
       </button>
@@ -171,7 +171,7 @@ function ProjectSwitcher({ projects, current }: { projects: Project[]; current: 
             ))}
           </ul>
           <a href="/new" className="add" onClick={go("/new")}>
-            <Plus size={14} /> Add website
+            <Plus size={14} /> Add project
           </a>
         </div>
       )}

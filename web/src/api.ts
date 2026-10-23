@@ -9,6 +9,8 @@ export type Project = {
   created_at: string;
   crawl: { max_pages: number | null; concurrency: number | null; ai_concurrency: number | null; include: string[]; exclude: string[] };
   last_crawl: { finished_at: string; pages: number; blocked: number; failed: number } | null;
+  /** Jobs running on the project now: "crawl", "synthesize", "brief". */
+  jobs?: string[];
 };
 
 export type Evidence = { url: string; quote: string };
@@ -92,6 +94,9 @@ export const api = {
   createProject: (url: string) => req<Project>("/api/projects", { method: "POST", body: JSON.stringify({ url }) }),
   deleteProject: (slug: string) => req<void>(`/api/projects/${slug}`, { method: "DELETE" }),
   crawl: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/crawl`, { method: "POST", body: "{}" }),
+  /** Set the page limit; `live` when the running crawl picked it up. */
+  setCrawlLimit: (slug: string, max_pages: number) =>
+    req<{ max_pages: number; live: boolean }>(`/api/projects/${slug}/crawl/limit`, { method: "PUT", body: JSON.stringify({ max_pages }) }),
   crawlSettings: (slug: string, s: { max_pages?: number; concurrency?: number; ai_concurrency?: number }) =>
     req<Project>(`/api/projects/${slug}/settings`, { method: "PUT", body: JSON.stringify(s) }),
   synthesize: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/synthesize`, { method: "POST", body: "{}" }),
@@ -114,6 +119,7 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === "/api/projects") return Promise.resolve((demoState.created ? [demoProject] : []) as T);
   if (path.startsWith("/api/projects/") && path.split("/").length === 4) return Promise.resolve(demoProject as T);
   if (path.endsWith("/brief")) return Promise.resolve((init?.method === "PUT" ? JSON.parse(String(init.body)) : demoState.created ? demoBrief : null) as T);
+  if (path.endsWith("/crawl/limit")) return Promise.resolve({ max_pages: JSON.parse(String(init?.body)).max_pages, live: true } as T);
   if (path.endsWith("/brand")) return demoState.created ? Promise.resolve(demoBrand as T) : Promise.reject(new Error("404"));
   if (path.endsWith("/profile")) return Promise.resolve([] as T);
   if (path === "/api/health")
@@ -121,13 +127,22 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return Promise.resolve({} as T);
 }
 
-/** Subscribe to the daemon's event stream, optionally for one project. */
-export function useEvents(project: string | null, onEvent: (e: KiqrEvent) => void) {
+/**
+ * Subscribe to the daemon's event stream, optionally for one project. With `replay`,
+ * the daemon first sends the project's latest crawl job (events marked `replay: true`),
+ * then `replay_done` with `running`, then live events; it does so again on reconnect.
+ * Changing `key` reconnects.
+ */
+export function useEvents(project: string | null, onEvent: (e: KiqrEvent) => void, opts: { replay?: boolean; key?: number } = {}) {
   const handler = useRef(onEvent);
   handler.current = onEvent;
+  const { replay = false, key = 0 } = opts;
   useEffect(() => {
-    if (DEMO) return runDemo(project ?? demoProject.slug, (e) => handler.current(e));
-    const url = project ? `/api/events?project=${encodeURIComponent(project)}` : "/api/events";
+    if (DEMO) {
+      if (replay) handler.current({ type: "replay_done", project, at: new Date().toISOString(), running: false });
+      return runDemo(project ?? demoProject.slug, (e) => handler.current(e));
+    }
+    const url = project ? `/api/events?project=${encodeURIComponent(project)}${replay ? "&replay=1" : ""}` : "/api/events";
     const es = new EventSource(url);
     es.onmessage = (m) => {
       try {
@@ -137,7 +152,7 @@ export function useEvents(project: string | null, onEvent: (e: KiqrEvent) => voi
       }
     };
     return () => es.close();
-  }, [project]);
+  }, [project, replay, key]);
 }
 
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {

@@ -15,6 +15,8 @@ pub struct App {
     pub bus: EventBus,
     pub config: Arc<RwLock<Config>>,
     pub jobs: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Page-limit handles of the crawls running now, by project.
+    pub crawls: Arc<RwLock<std::collections::HashMap<String, Arc<kiqr_core::crawl::CrawlControl>>>>,
 }
 
 impl App {
@@ -37,6 +39,7 @@ pub async fn run(home: Home) -> Result<()> {
         bus: EventBus::new(),
         config: Arc::new(RwLock::new(config.clone())),
         jobs: Default::default(),
+        crawls: Default::default(),
     };
 
     let router = api::router(app.clone()).fallback(web::serve);

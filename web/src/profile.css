@@ -135,6 +135,10 @@
 .hero-url:hover { color: var(--accent); text-decoration: none; }
 .btn.glass { background: color-mix(in oklab, var(--bg) 45%, transparent); border: 1px solid color-mix(in oklab, var(--fg) 14%, transparent); color: var(--fg); backdrop-filter: blur(10px); }
 .btn.glass:hover { border-color: color-mix(in oklab, var(--fg) 30%, transparent); background: color-mix(in oklab, var(--bg) 25%, transparent); }
+.btn.glass.live { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, transparent); }
+.btn.glass.live:hover { text-decoration: none; }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 var(--accent); animation: pulse 1.6s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 60%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
 .chip.glass { background: color-mix(in oklab, var(--bg) 45%, transparent); border-color: color-mix(in oklab, var(--fg) 12%, transparent); color: color-mix(in oklab, var(--fg) 85%, transparent); backdrop-filter: blur(10px); }
 a.chip.glass:hover { color: var(--accent); text-decoration: none; }
 .hero-main { display: flex; align-items: flex-end; gap: 22px; }

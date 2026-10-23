@@ -200,6 +200,20 @@ export class CrawlStore {
     this.notify();
   }
 
+  /**
+   * Rebuild the state from the daemon's log of the latest crawl job (sent when the
+   * page connects), without replaying every packet animation. `running` says
+   * whether that job is still going; a finished one always ends on "done".
+   */
+  replay(events: KiqrEvent[], running: boolean) {
+    this.reset();
+    for (const e of events) this.applyOne(e);
+    this.effects = [];
+    const s = this.state;
+    if (!running && s.live && s.phase !== "done") s.phase = "done";
+    this.notify();
+  }
+
   /** Synthesis never started (older daemon, or nothing to synthesise): settle on done. */
   settle() {
     const s = this.state;
@@ -307,6 +321,10 @@ export class CrawlStore {
         s.maxPages = num(e.max_pages) ?? s.maxPages;
         s.concurrency = num(e.concurrency) ?? null;
         s.aiConcurrency = num(e.ai_concurrency) ?? null;
+        break;
+
+      case "crawl_limit_changed":
+        s.maxPages = num(e.max_pages) ?? s.maxPages;
         break;
 
       case "page_discovered": {

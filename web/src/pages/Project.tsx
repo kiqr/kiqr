@@ -50,6 +50,8 @@ export function ProjectPage() {
   const [building, setBuilding] = useState(false);
   useEvents(slug, (e) => {
     if (e.type === "brand_updated") brand.reload();
+    if (e.type === "crawl_started" || e.type === "job_finished") project.reload();
+    if (e.type === "job_finished") setBuilding(false);
     if (e.type === "profile_updated" || e.type === "crawl_finished" || e.type === "synthesis_finished") {
       if (e.type !== "profile_updated" || e.section === "brief") setBuilding(false);
       brief.reload();
@@ -65,13 +67,26 @@ export function ProjectPage() {
   const br = brand.data ?? null;
   const facts = sections.reduce((n, s) => n + s.fields.length, 0);
 
+  const crawling = p?.jobs?.includes("crawl") ?? false;
   const recrawl = async () => {
-    await api.crawl(slug);
+    try {
+      await api.crawl(slug);
+    } catch (e) {
+      // A crawl is already running: show it rather than start a second one.
+      if (!/already running/.test((e as Error).message)) return window.alert((e as Error).message);
+    }
     navigate(`/p/${slug}/crawl`);
   };
   const rebuild = async () => {
     setBuilding(true);
-    await api.rebuildBrief(slug);
+    try {
+      await api.rebuildBrief(slug);
+    } catch (e) {
+      // Already being written (or a crawl will write it): keep showing progress.
+      if (/already running|being rebuilt/.test((e as Error).message)) return;
+      setBuilding(false);
+      window.alert((e as Error).message);
+    }
   };
 
   return (
@@ -83,6 +98,7 @@ export function ProjectPage() {
         name={b?.business_name || br?.site_name || p?.name || slug}
         meta={b ? [b.language && langName(b.language), b.geographies.length ? b.geographies.join(", ") : "Serves customers worldwide"] : []}
         onRescan={recrawl}
+        crawling={crawling}
       />
 
       {b && (
@@ -128,7 +144,7 @@ export function ProjectPage() {
 /* ------------------------------------------------------------------- hero */
 
 /** The business as it presents itself: its cover, its mark, its name and its own words. */
-function Hero({ slug, project, brand, name, meta, onRescan }: { slug: string; project: Project | null; brand: Brand | null; name: string; meta: (string | false)[]; onRescan: () => void }) {
+function Hero({ slug, project, brand, name, meta, onRescan, crawling }: { slug: string; project: Project | null; brand: Brand | null; name: string; meta: (string | false)[]; onRescan: () => void; crawling: boolean }) {
   const font = useBrandFont(brand?.fonts ?? []);
   const [coverOk, setCoverOk] = useState(true);
   const cover = coverOk ? brand?.cover : null;
@@ -151,11 +167,16 @@ function Hero({ slug, project, brand, name, meta, onRescan }: { slug: string; pr
               <Download size={15} /> Export
             </a>
           )}
-          {project && (
-            <button className="btn glass" onClick={onRescan}>
-              <RefreshCw size={15} /> Rescan website
-            </button>
-          )}
+          {project &&
+            (crawling ? (
+              <Link className="btn glass live" to={`/p/${slug}/crawl`}>
+                <span className="pulse" /> Crawl running
+              </Link>
+            ) : (
+              <button className="btn glass" onClick={onRescan}>
+                <RefreshCw size={15} /> Rescan website
+              </button>
+            ))}
         </div>
       </div>
       <div className="hero-main">

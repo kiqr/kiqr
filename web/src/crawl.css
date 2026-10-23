@@ -161,7 +161,25 @@
 .cr-quota p { margin: 8px 0 0; font-size: 12px; color: var(--muted, #8392ad); }
 .cr-quota b { font-weight: 400; color: var(--fg, #e6ecf7); }
 .cr-quota a { color: var(--accent, #5eead4); text-decoration: none; }
-.cr-quota a:hover { text-decoration: underline; }
+.cr-quota a:hover, .cr-quota .linkish:hover { text-decoration: underline; }
+.cr-quota .linkish { border: 0; background: none; padding: 0; font: inherit; color: var(--accent, #5eead4); cursor: pointer; }
+
+/* raise-the-limit dialog */
+.lim-back { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px; background: color-mix(in oklab, var(--bg) 70%, transparent); backdrop-filter: blur(6px); }
+.lim { position: relative; width: min(460px, 100%); padding: 24px; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--sh-lg), 0 0 0 1px color-mix(in oklab, var(--accent) 8%, transparent); }
+.lim-x { position: absolute; top: 14px; right: 14px; border: 0; background: none; color: var(--dim); cursor: pointer; padding: 4px; border-radius: 6px; display: grid; }
+.lim-x:hover { color: var(--fg); background: var(--panel-2); }
+.lim-ic { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent); margin-bottom: 14px; }
+.lim h2 { font-size: 18px; font-weight: 600; }
+.lim-lead { margin-top: 6px; font-size: 14px; line-height: 1.55; color: var(--muted); }
+.lim-lead b { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+.lim-field { display: flex; flex-direction: column; gap: 6px; margin-top: 18px; font-size: 12px; color: var(--muted); }
+.lim-field .input { font: 600 22px/1.2 var(--mono); padding: 10px 12px; }
+.lim-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.lim-choices .chip { cursor: pointer; font-variant-numeric: tabular-nums; }
+.lim-note { margin-top: 14px; font-size: 12px; line-height: 1.55; color: var(--dim); }
+.lim-err { margin-top: 10px; font-size: 12px; color: var(--bad); }
+.lim-acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
 /* discoveries */
 .cr-disc { display: flex; flex-wrap: wrap; gap: 8px; }

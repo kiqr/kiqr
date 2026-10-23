@@ -14,6 +14,9 @@ KIQR is a self-hosted marketing agent. You give it a website; it crawls it, buil
 - **Crawling is two independent stages.** KIQR fetches pages itself (reqwest, or UnblockingAPI on escalation), `concurrency` at a time (default 5, max 10). Every fetched page is queued for the model, which reads `ai_concurrency` pages at a time (default 3). A slow model never slows the fetcher. Both are per-project settings and can be set per run.
 - **Demo mode.** `?demo` (or `window.__KIQR_DEMO__`) replays a scripted crawl into the real screens without a daemon; `web/vite.demo.config.ts` builds one self-contained HTML file for previews and the site.
 - **SSE, not WebSockets.** All state changes flow daemon → client as events; actions are POSTs. `kiqr crawl --watch` prints the same stream.
+- **Crawls replay.** The daemon logs every event of a project's latest crawl job (crawl plus synthesis) in memory, and on finish keeps it in `cache/crawl-log.jsonl`. `/api/events?project=…&replay=1` sends that log first (frames marked `"replay": true`), then `replay_done` with `running`, then live events, with no gap between them. The crawl screen and `kiqr crawl --watch` use it, so leaving the page or joining mid-crawl shows the whole crawl.
+- **Live page limit.** A running crawl's page limit can be changed while it fetches (`PUT /api/projects/{slug}/crawl/limit`, the crawl screen's "Raise the limit" dialog, `kiqr crawl <slug> --max-pages N`). The crawler checks the limit before each fetch, and pages over the old limit stay queued, so a raise continues straight away. Once fetching has ended the limit applies from the next crawl; the response says which (`live`). The limit is saved to the project either way, and the change is the `crawl_limit_changed` event.
+- **One job per project.** Starting a crawl, synthesis or brief claims the project's slot in one step; a second request gets 409. A crawl ends by rebuilding the profile, so it doesn't overlap a profile job either. `GET /api/projects/{slug}` lists running `jobs`, and `job_finished` says when one ends. The UI shows a running crawl instead of starting another; `kiqr crawl --watch` follows it.
 - **Skills.** Prompts are `SKILL.md` files. Built-in ones ship in `skills/`; copies in `~/.kiqr/skills/` override them so users can tune extraction and synthesis.
 - **Seemo** is the persona, defined in `seemo/PERSONA.md` (installed to `~/.kiqr/seemo/PERSONA.md`). Chat is scoped to the active project and always starts from that project's `PROFILE.md`.
 - **License: AGPL-3.0.** Keeps the client open while making competing hosted offerings unattractive.
@@ -67,7 +70,8 @@ POST /api/projects/:slug/brief           rewrite the brief in the background
 GET  /api/projects/:slug/brand           brand assets (built from the cache if not saved yet); 404 before a crawl
 POST /api/projects/:slug/brand           rebuild brand assets from the crawl cache and save
 GET  /api/projects/:slug/history         git log for the project
-GET  /api/events?project=                SSE
+PUT  /api/projects/{slug}/crawl/limit    {max_pages} → {max_pages, live}
+GET  /api/events?project=[&replay=1]     SSE (replay: latest crawl job first)
 ```
 
 ## Roadmap

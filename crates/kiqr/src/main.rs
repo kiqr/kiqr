@@ -32,7 +32,7 @@ enum Command {
     /// Crawl a project's website and build its profile
     Crawl {
         slug: String,
-        /// Override the page limit for this crawl
+        /// Page limit for this crawl (and later ones); raises a running crawl's limit
         #[arg(long)]
         max_pages: Option<usize>,
         /// Pages fetched in parallel (1–10)
@@ -196,7 +196,25 @@ impl Client {
                 if let Some(n) = concurrency { qs.push(format!("concurrency={n}")); }
                 if let Some(n) = ai_concurrency { qs.push(format!("ai_concurrency={n}")); }
                 let q = if qs.is_empty() { String::new() } else { format!("?{}", qs.join("&")) };
-                let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/crawl{q}"), &serde_json::json!({})).await?;
+                let started: Result<serde_json::Value> = self.post(&format!("/api/projects/{slug}/crawl{q}"), &serde_json::json!({})).await;
+                match started {
+                    // One crawl per project: a new limit goes to the running one.
+                    Err(e) if max_pages.is_some() && e.to_string().contains("already running") => {
+                        let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/crawl/limit"), &serde_json::json!({ "max_pages": max_pages })).await?;
+                        if v["live"].as_bool() == Some(true) {
+                            println!("A crawl is already running for {slug}. It now reads up to {} pages.", v["max_pages"]);
+                        } else {
+                            println!("A crawl is already running for {slug} and has finished fetching. The next crawl reads up to {} pages.", v["max_pages"]);
+                        }
+                        if !watch {
+                            return Ok(());
+                        }
+                    }
+                    // Otherwise follow the one that is running instead.
+                    Err(e) if watch && e.to_string().contains("already running") => println!("A crawl is already running for {slug}. Following it."),
+                    Err(e) => return Err(e),
+                    Ok(_) => {}
+                }
                 if watch {
                     self.watch(&slug).await?;
                 } else {
@@ -247,18 +265,20 @@ impl Client {
                 }
             }
             Command::Events { project } => {
-                self.stream_events(project.as_deref(), |_| false).await?;
+                self.stream_events(project.as_deref(), false, |_| false).await?;
             }
         }
         Ok(())
     }
 
     async fn watch(&self, slug: &str) -> Result<()> {
-        self.stream_events(Some(slug), |ev| matches!(ev.kind, EventKind::CrawlFinished { .. })).await
+        self.stream_events(Some(slug), true, |ev| matches!(ev.kind, EventKind::CrawlFinished { .. })).await
     }
 
-    async fn stream_events(&self, project: Option<&str>, stop_when: impl Fn(&Event) -> bool) -> Result<()> {
+    /// With `replay`, the daemon first sends the project's current crawl from its start.
+    async fn stream_events(&self, project: Option<&str>, replay: bool, stop_when: impl Fn(&Event) -> bool) -> Result<()> {
         let url = match project {
+            Some(p) if replay => format!("{}/api/events?project={p}&replay=1", self.base),
             Some(p) => format!("{}/api/events?project={p}", self.base),
             None => format!("{}/api/events", self.base),
         };
@@ -291,6 +311,10 @@ impl Client {
     }
     async fn post<T: serde::de::DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T> {
         let resp = self.http.post(format!("{}{path}", self.base)).json(body).send().await.map_err(connect_hint)?;
+        Self::json(resp).await
+    }
+    async fn put<T: serde::de::DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T> {
+        let resp = self.http.put(format!("{}{path}", self.base)).json(body).send().await.map_err(connect_hint)?;
         Self::json(resp).await
     }
     async fn delete(&self, path: &str) -> Result<()> {
@@ -382,6 +406,8 @@ fn print_event(ev: &Event) {
             colors.len(),
             if colors.is_empty() { String::new() } else { format!("  {}", colors.join(" ")) }
         ),
+        EventKind::JobFinished { job } => format!("{job} job finished"),
+        EventKind::CrawlLimitChanged { max_pages } => format!("page limit now {max_pages}"),
         EventKind::SeemoSays { text } => format!("Seemo: {text}"),
         EventKind::Committed { message } => format!("saved    {message}"),
     };

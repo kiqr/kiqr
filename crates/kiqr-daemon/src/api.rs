@@ -12,7 +12,7 @@ use axum::{
 use futures::stream::Stream;
 use kiqr_core::{
     brand::{self, Brand},
-    crawl::Crawler,
+    crawl::{CrawlControl, Crawler},
     events::EventKind,
     profile::{self, Brief, BriefSource, Section},
     project::Project,
@@ -29,6 +29,7 @@ pub fn router(app: App) -> Router {
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/{slug}", get(get_project).delete(delete_project))
         .route("/api/projects/{slug}/crawl", post(start_crawl))
+        .route("/api/projects/{slug}/crawl/limit", put(put_crawl_limit))
         .route("/api/projects/{slug}/settings", put(put_settings))
         .route("/api/projects/{slug}/synthesize", post(start_synthesize))
         .route("/api/projects/{slug}/profile", get(get_profile))
@@ -124,18 +125,26 @@ fn default_true() -> bool {
 async fn create_project(State(app): State<App>, Json(body): Json<CreateProject>) -> Result<(StatusCode, Json<Project>), ApiError> {
     let project = Project::create(&app.store, &app.bus, &body.url).await?;
     if body.crawl {
-        spawn_crawl(app.clone(), project.clone());
+        let key = claim(&app, "crawl", &project.slug).await?;
+        spawn_crawl(app.clone(), project.clone(), key).await;
     }
     Ok((StatusCode::CREATED, Json(project)))
 }
 
-async fn get_project(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Project> {
-    Ok(Json(Project::load(&app.store, &slug)?))
+/// The project, plus `jobs`: what is running on it now (`crawl`, `synthesize`, `brief`).
+async fn get_project(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<serde_json::Value> {
+    let project = Project::load(&app.store, &slug)?;
+    let suffix = format!(":{slug}");
+    let jobs: Vec<String> = app.jobs.read().await.iter().filter_map(|k| k.strip_suffix(&suffix).map(str::to_string)).collect();
+    let mut v = serde_json::to_value(project).map_err(anyhow::Error::from)?;
+    v["jobs"] = serde_json::json!(jobs);
+    Ok(Json(v))
 }
 
 async fn delete_project(State(app): State<App>, Path(slug): Path<String>) -> Result<StatusCode, ApiError> {
     let _ = Project::load(&app.store, &slug)?;
     std::fs::remove_dir_all(app.store.home().project_dir(&slug)).map_err(anyhow::Error::from)?;
+    app.bus.forget_log(&slug);
     app.store.commit(&format!("project({slug}): remove")).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -172,21 +181,75 @@ async fn start_crawl(State(app): State<App>, Path(slug): Path<String>, Query(q):
         project.save(&app.store)?;
         app.store.commit(&format!("project({slug}): crawl settings")).await?;
     }
-    if app.jobs.read().await.contains(&format!("crawl:{slug}")) {
-        return Err(ApiError(StatusCode::CONFLICT, "a crawl is already running for this project".into()));
-    }
-    spawn_crawl(app.clone(), project);
+    let key = claim(&app, "crawl", &slug).await?;
+    spawn_crawl(app.clone(), project, key).await;
     Ok(Json(serde_json::json!({ "started": true })))
 }
 
-fn spawn_crawl(app: App, project: Project) {
+#[derive(Deserialize)]
+struct CrawlLimit {
+    max_pages: usize,
+}
+
+/// Set the project's page limit. If a crawl is still fetching, it takes effect
+/// in that crawl right away (`live: true`); otherwise from the next crawl.
+async fn put_crawl_limit(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<CrawlLimit>) -> ApiResult<serde_json::Value> {
+    let n = b.max_pages.clamp(1, MAX_PAGES_LIMIT);
+    let mut project = Project::load(&app.store, &slug)?;
+    project.crawl.max_pages = Some(n);
+    project.save(&app.store)?;
+    app.store.commit(&format!("project({slug}): page limit {n}")).await?;
+    let live = match app.crawls.read().await.get(&slug) {
+        Some(c) => c.set_limit(n),
+        None => false,
+    };
+    if live {
+        app.bus.emit(Some(&slug), EventKind::CrawlLimitChanged { max_pages: n });
+    }
+    Ok(Json(serde_json::json!({ "max_pages": n, "live": live })))
+}
+
+/// The highest page limit a project can have.
+const MAX_PAGES_LIMIT: usize = 5000;
+
+/// Claim a project's job slot in one step, so two requests can't both start.
+/// A crawl ends by rebuilding the profile, so it can't overlap a profile job
+/// (`synthesize`, `brief`) on the same project, nor they it.
+async fn claim(app: &App, kind: &str, slug: &str) -> Result<String, ApiError> {
+    let mut jobs = app.jobs.write().await;
+    let busy = |k: &str| jobs.contains(&format!("{k}:{slug}"));
+    let crawling = busy("crawl");
+    let rebuilding = busy("synthesize") || busy("brief");
+    let same = busy(kind);
+    if crawling {
+        return Err(ApiError(StatusCode::CONFLICT, "a crawl is already running for this project".into()));
+    }
+    if kind == "crawl" && rebuilding {
+        return Err(ApiError(StatusCode::CONFLICT, "the profile is being rebuilt for this project; start the crawl when it is done".into()));
+    }
+    if same {
+        return Err(ApiError(StatusCode::CONFLICT, format!("{kind} is already running for this project")));
+    }
+    let key = format!("{kind}:{slug}");
+    jobs.insert(key.clone());
+    Ok(key)
+}
+
+/// Where a project's last crawl log is kept, so the crawl screen can show it
+/// after a daemon restart. The cache folder is not committed.
+fn crawl_log_file(app: &App, slug: &str) -> std::path::PathBuf {
+    app.store.home().cache_dir(slug).join("crawl-log.jsonl")
+}
+
+/// Run a crawl job (crawl, then profile synthesis) holding the claimed `key`.
+/// Every event it emits is logged for replay; see `events`.
+async fn spawn_crawl(app: App, project: Project, key: String) {
+    app.bus.open_log(&project.slug);
+    let cfg = app.config.read().await.clone();
+    let max_pages = project.crawl.max_pages.unwrap_or(cfg.crawl.max_pages);
+    let control = CrawlControl::new(max_pages);
+    app.crawls.write().await.insert(project.slug.clone(), control.clone());
     tokio::spawn(async move {
-        let key = format!("crawl:{}", project.slug);
-        if !app.jobs.write().await.insert(key.clone()) {
-            return;
-        }
-        let cfg = app.config.read().await.clone();
-        let max_pages = project.crawl.max_pages.unwrap_or(cfg.crawl.max_pages);
         let extractor = if provider::available(&cfg.models.extract).await {
             Some(app.extractor(&cfg))
         } else {
@@ -209,7 +272,8 @@ fn spawn_crawl(app: App, project: Project) {
                 project.crawl.ai_concurrency.unwrap_or(cfg.crawl.ai_concurrency),
                 cfg.crawl.escalate_to_unblockingapi,
                 extractor.clone(),
-            )?;
+            )?
+            .with_control(control);
             crawler.run(&project, max_pages).await?;
             anyhow::Ok(())
         }
@@ -234,7 +298,15 @@ fn spawn_crawl(app: App, project: Project) {
                 }
             }
         }
+        if let Some(events) = app.bus.close_log(&project.slug) {
+            let lines: String = events.iter().filter_map(|e| serde_json::to_string(e).ok()).map(|l| l + "\n").collect();
+            if let Err(e) = app.store.write_text(&crawl_log_file(&app, &project.slug), &lines) {
+                tracing::warn!(slug = %project.slug, error = %e, "could not keep the crawl log");
+            }
+        }
+        app.crawls.write().await.remove(&project.slug);
         app.jobs.write().await.remove(&key);
+        app.bus.emit(Some(&project.slug), EventKind::JobFinished { job: "crawl".into() });
     });
 }
 
@@ -254,10 +326,7 @@ where
     F: FnOnce(std::sync::Arc<kiqr_core::extract::Extractor>, Project) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
 {
-    let key = format!("{kind}:{}", project.slug);
-    if !app.jobs.write().await.insert(key.clone()) {
-        return Err(ApiError(StatusCode::CONFLICT, format!("{kind} is already running for this project")));
-    }
+    let key = claim(&app, kind, &project.slug).await?;
     let cfg = app.config.read().await.clone();
     let ex = app.extractor(&cfg);
     tokio::spawn(async move {
@@ -266,6 +335,7 @@ where
             tracing::error!(%slug, error = %e, "{kind} failed");
         }
         app.jobs.write().await.remove(&key);
+        app.bus.emit(Some(&slug), EventKind::JobFinished { job: kind.into() });
     });
     Ok(Json(serde_json::json!({ "started": true })))
 }
@@ -381,12 +451,36 @@ async fn history(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<
 #[derive(Deserialize)]
 struct EventFilter {
     project: Option<String>,
+    /// With `project`: first replay the project's latest crawl job (each frame
+    /// marked `"replay": true`), then send `replay_done` with `running`, then
+    /// live events. Lets a page opened mid-crawl, or after it, show the crawl.
+    replay: Option<String>,
 }
 
 async fn events(State(app): State<App>, Query(q): Query<EventFilter>) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let rx = app.bus.subscribe();
+    let mut replayed = Vec::new();
+    let rx = match (&q.project, q.replay.is_some()) {
+        (Some(p), true) => {
+            if !app.bus.has_log(p) {
+                if let Ok(text) = std::fs::read_to_string(crawl_log_file(&app, p)) {
+                    app.bus.restore_log(p, text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect());
+                }
+            }
+            let (log, rx) = app.bus.subscribe_with_log(p);
+            for ev in &log.events {
+                if let Ok(mut v) = serde_json::to_value(ev) {
+                    v["replay"] = serde_json::Value::Bool(true);
+                    replayed.push(v);
+                }
+            }
+            replayed.push(serde_json::json!({ "type": "replay_done", "project": p, "at": chrono::Utc::now(), "running": log.open }));
+            rx
+        }
+        _ => app.bus.subscribe(),
+    };
     let filter = q.project;
-    let stream = BroadcastStream::new(rx).filter_map(move |ev| {
+    let replay = tokio_stream::iter(replayed).map(|v| Ok(SseEvent::default().data(v.to_string())));
+    let live = BroadcastStream::new(rx).filter_map(move |ev| {
         let ev = ev.ok()?;
         if let Some(p) = &filter {
             if ev.project.as_deref() != Some(p.as_str()) {
@@ -395,5 +489,5 @@ async fn events(State(app): State<App>, Query(q): Query<EventFilter>) -> Sse<imp
         }
         Some(Ok(SseEvent::default().json_data(&ev).unwrap_or_else(|_| SseEvent::default().data("{}"))))
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(replay.chain(live)).keep_alive(KeepAlive::default())
 }

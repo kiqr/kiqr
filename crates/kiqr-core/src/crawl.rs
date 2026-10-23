@@ -65,6 +65,47 @@ pub struct Crawler {
     concurrency: usize,
     ai_concurrency: usize,
     ai_tx: Option<tokio::sync::mpsc::UnboundedSender<ExtractJob>>,
+    control: Option<Arc<CrawlControl>>,
+}
+
+/// The page limit of a running crawl. It can be changed while pages are being
+/// fetched; once fetching has ended it is closed, and a new limit only applies
+/// to the next crawl.
+#[derive(Debug)]
+pub struct CrawlControl {
+    /// (limit, fetching ended)
+    inner: std::sync::Mutex<(usize, bool)>,
+}
+
+impl CrawlControl {
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self { inner: std::sync::Mutex::new((limit.max(1), false)) })
+    }
+
+    pub fn limit(&self) -> usize {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).0
+    }
+
+    /// Change the limit of the running crawl. False if fetching has already ended.
+    pub fn set_limit(&self, limit: usize) -> bool {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if g.1 {
+            return false;
+        }
+        g.0 = limit.max(1);
+        true
+    }
+
+    /// End fetching unless `more(limit)` says there is still room and work,
+    /// atomically with `set_limit`, so a raise is never lost. True if ended.
+    fn close_unless(&self, more: impl Fn(usize) -> bool) -> bool {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if more(g.0) {
+            return false;
+        }
+        g.1 = true;
+        true
+    }
 }
 
 struct ExtractJob {
@@ -103,6 +144,7 @@ impl Crawler {
             concurrency: concurrency.clamp(1, 10),
             ai_concurrency: ai_concurrency.clamp(1, 10),
             ai_tx: None,
+            control: None,
         })
     }
 
@@ -160,13 +202,14 @@ impl Crawler {
             }
         }
 
+        let control = self.control.clone().unwrap_or_else(|| CrawlControl::new(max_pages));
         let sem = Arc::new(Semaphore::new(self.concurrency));
         let mut in_flight = tokio::task::JoinSet::new();
 
         loop {
             let next = {
                 let mut st = state.lock().await;
-                if st.fetched + in_flight.len() >= max_pages {
+                if st.fetched + in_flight.len() >= control.limit() {
                     None
                 } else {
                     st.queue.iter().next().cloned().map(|k| {
@@ -196,7 +239,13 @@ impl Crawler {
                 }
                 None => {
                     if in_flight.is_empty() {
-                        break;
+                        // The limit may have been raised since we looked.
+                        let st = state.lock().await;
+                        let more = |limit: usize| !st.queue.is_empty() && st.fetched < limit;
+                        if control.close_unless(more) {
+                            break;
+                        }
+                        continue;
                     }
                     // Wait for one task to finish, then loop: it may have enqueued more.
                     let _ = in_flight.join_next().await;
@@ -239,7 +288,14 @@ impl Crawler {
             concurrency: self.concurrency,
             ai_concurrency: self.ai_concurrency,
             ai_tx: self.ai_tx.clone(),
+            control: self.control.clone(),
         }
+    }
+
+    /// Let the caller change the page limit while this crawler runs.
+    pub fn with_control(mut self, control: Arc<CrawlControl>) -> Self {
+        self.control = Some(control);
+        self
     }
 
     async fn handle(&self, slug: &str, host: &str, url: Url, cache: &std::path::Path, state: Arc<Mutex<State>>) {
