@@ -19,6 +19,13 @@ pub struct Fetched {
     pub body: String,
     pub via: &'static str,
     pub elapsed: Duration,
+    /// Where a redirect the fetcher would not follow pointed: another website.
+    pub redirect_to: Option<Url>,
+}
+
+/// `www.acme.com` and `acme.com` are the same site.
+pub fn site_host(u: &Url) -> String {
+    u.host_str().unwrap_or("").trim_start_matches("www.").to_ascii_lowercase()
 }
 
 /// Why the built-in fetcher could not read a page.
@@ -53,7 +60,19 @@ impl LocalFetcher {
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            // Follow redirects within the site (http→https, www, moved pages), never
+            // to another website: those are outbound or affiliate links, and the
+            // caller sees the 3xx with `redirect_to` instead of the other site's page.
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                let same = attempt.previous().first().is_some_and(|first| site_host(first) == site_host(attempt.url()));
+                if attempt.previous().len() >= 5 {
+                    attempt.error("too many redirects")
+                } else if same {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
             .build()?;
         Ok(Self { client })
     }
@@ -72,8 +91,13 @@ impl Fetcher for LocalFetcher {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
+        let redirect_to = if resp.status().is_redirection() {
+            resp.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok()).and_then(|l| final_url.join(l).ok())
+        } else {
+            None
+        };
         let body = resp.text().await.unwrap_or_default();
-        Ok(Fetched { url: url.clone(), final_url, status, content_type, body, via: "local", elapsed: started.elapsed() })
+        Ok(Fetched { url: url.clone(), final_url, status, content_type, body, via: "local", elapsed: started.elapsed(), redirect_to })
     }
 }
 
@@ -141,6 +165,7 @@ impl Fetcher for UnblockingFetcher {
             body,
             via: "unblockingapi",
             elapsed: started.elapsed(),
+            redirect_to: None,
         })
     }
 }

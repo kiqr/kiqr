@@ -379,14 +379,27 @@ async fn start_brief(State(app): State<App>, Path(slug): Path<String>) -> ApiRes
 /// The saved brand, or one built on the fly from the crawl cache (without
 /// writing) for projects crawled before brand collection existed.
 async fn get_brand(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Brand> {
-    let _ = Project::load(&app.store, &slug)?;
-    if let Some(b) = Brand::load(&app.store, &slug)? {
+    let project = Project::load(&app.store, &slug)?;
+    if let Some(b) = Brand::load(&app.store, &slug)?.filter(|b| !b.outdated()) {
         return Ok(Json(b));
     }
-    match brand::from_cache(&app.store, &slug).await? {
+    match backfill_brand(&app, &project).await? {
         Some(b) => Ok(Json(b)),
         None => Err(no_brand()),
     }
+}
+
+/// Build and save the brand of a project that has none, or one built by older
+/// collection rules, once: reading every cached page takes seconds, so it
+/// must not happen on each page view. One at a time, so two views don't both
+/// build it. Without a usable cache an outdated brand is kept as it is.
+pub(crate) async fn backfill_brand(app: &App, project: &Project) -> anyhow::Result<Option<Brand>> {
+    let _one = app.brand_backfill.lock().await;
+    let saved = Brand::load(&app.store, &project.slug)?;
+    if let Some(b) = saved.as_ref().filter(|b| !b.outdated()) {
+        return Ok(Some(b.clone()));
+    }
+    Ok(brand::refresh(&app.store, &app.bus, project, true).await?.or(saved))
 }
 
 async fn rebuild_brand(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Brand> {

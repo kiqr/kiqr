@@ -37,7 +37,14 @@ pub struct Brand {
     pub social: Vec<SocialLink>,
     /// RFC 3339.
     pub updated_at: String,
+    /// The version of the collection rules that built it; see [`RULES`].
+    pub rules: u32,
 }
+
+/// Bump when the collection rules change, so saved brands are rebuilt from
+/// the crawl cache. 2: only the site's own pages, social profiles and images;
+/// 3: one image per picture, whatever its size.
+pub const RULES: u32 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -61,6 +68,11 @@ impl Brand {
 
     pub fn save(&self, store: &Store, slug: &str) -> Result<()> {
         store.write_yaml(&store.home().brand_file(slug), self)
+    }
+
+    /// Built by older collection rules, so worth rebuilding from the cache.
+    pub fn outdated(&self) -> bool {
+        self.rules < RULES
     }
 
     /// `logo, 3 colours, Inter, Caveat, 9 images` — for commit messages and the CLI.
@@ -107,7 +119,11 @@ pub struct PageBrandHints {
     /// Inline `<style>` blocks and `style=""` attributes, as CSS.
     pub inline_css: String,
     pub images: Vec<BrandImage>,
-    pub social: Vec<SocialLink>,
+    /// Social profile links on the page, and whether each sits in the site's
+    /// header, navigation or footer.
+    pub social: Vec<(SocialLink, bool)>,
+    /// `sameAs` profiles of the site's own Organization in JSON-LD.
+    pub ld_same_as: Vec<String>,
 }
 
 fn sel(s: &str) -> Selector {
@@ -257,7 +273,7 @@ pub fn hints(base: &Url, html: &str) -> PageBrandHints {
     // Social links.
     for a in doc.select(&sel("a[href]")) {
         if let Some(link) = a.value().attr("href").and_then(|href| social_link(base, href)) {
-            h.social.push(link);
+            h.social.push((link, in_chrome(&a)));
         }
     }
     h
@@ -272,7 +288,17 @@ fn walk_ld(v: &serde_json::Value, base: &Url, h: &mut PageBrandHints) {
                 Some(serde_json::Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
                 _ => vec![],
             };
-            let is_org = types.iter().any(|t| {
+            // A product's brand, seller or manufacturer is someone else's organisation.
+            if types.iter().any(|t| matches!(t.as_str(), "Product" | "ProductGroup" | "Offer" | "AggregateOffer" | "Review" | "IndividualProduct" | "ProductModel")) {
+                return;
+            }
+            // An organisation that names another website as its own isn't this business.
+            let elsewhere = map
+                .get("url")
+                .and_then(|u| u.as_str())
+                .and_then(|u| base.join(u).ok())
+                .is_some_and(|u| host_key(&u) != host_key(base));
+            let is_org = !elsewhere && types.iter().any(|t| {
                 matches!(t.as_str(), "Organization" | "Brand" | "Corporation" | "LocalBusiness" | "NGO" | "Store" | "OnlineStore" | "OnlineBusiness")
                     || t.ends_with("Organization")
                     || t.ends_with("Business")
@@ -289,6 +315,11 @@ fn walk_ld(v: &serde_json::Value, base: &Url, h: &mut PageBrandHints) {
                         _ => None,
                     };
                     h.ld_logo = logo.and_then(|l| resolve(base, &l));
+                }
+                match map.get("sameAs") {
+                    Some(serde_json::Value::String(u)) => h.ld_same_as.push(u.clone()),
+                    Some(serde_json::Value::Array(a)) => h.ld_same_as.extend(a.iter().filter_map(|x| x.as_str().map(str::to_string))),
+                    _ => {}
                 }
             }
             for (k, child) in map {
@@ -816,7 +847,7 @@ fn path_rank(u: &Url) -> (usize, usize) {
 /// Same as [`build`], from hints already extracted.
 pub fn build_from_hints(mut pages: Vec<(Url, PageBrandHints)>, css: &[String]) -> Brand {
     pages.sort_by_key(|(u, _)| path_rank(u));
-    let mut b = Brand { updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true), ..Default::default() };
+    let mut b = Brand { updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true), rules: RULES, ..Default::default() };
     let Some((home_url, home)) = pages.first() else { return b };
 
     b.site_name = home
@@ -892,11 +923,28 @@ pub fn build_from_hints(mut pages: Vec<(Url, PageBrandHints)>, css: &[String]) -
     }
     b.fonts = fonts;
 
-    // Imagery: each page's og:image (home first), then large content images.
-    let mut seen: Vec<String> = b.logo.iter().cloned().collect();
+    // Imagery: each page's og:image (home first), then large content images,
+    // only from the business's own hosts: its domain and subdomains, and the
+    // hosts its own logo, icon and share image live on (a shop platform's CDN).
+    // Images a page embeds from other sites (partners' product photos) are theirs.
+    let site = host_key(home_url);
+    let mut own_hosts: Vec<String> = vec![site.clone()];
+    for u in [&b.logo, &b.icon, &home.og_image].into_iter().flatten() {
+        if let Ok(u) = Url::parse(u) {
+            own_hosts.push(host_key(&u));
+        }
+    }
+    let own = |url: &str| {
+        Url::parse(url).is_ok_and(|u| {
+            let h = host_key(&u);
+            own_hosts.contains(&h) || h.ends_with(&format!(".{site}"))
+        })
+    };
+    let mut seen: Vec<String> = b.logo.iter().map(|l| image_key(l)).collect();
     let mut add = |img: BrandImage, images: &mut Vec<BrandImage>| {
-        if images.len() < MAX_IMAGES && !seen.contains(&img.url) && image_ok(&img.url) {
-            seen.push(img.url.clone());
+        let key = image_key(&img.url);
+        if images.len() < MAX_IMAGES && !seen.contains(&key) && image_ok(&img.url) && own(&img.url) {
+            seen.push(key);
             images.push(img);
         }
     };
@@ -912,32 +960,106 @@ pub fn build_from_hints(mut pages: Vec<(Url, PageBrandHints)>, css: &[String]) -
         }
     }
 
-    // Social: the most linked profile per network.
-    let mut social: HashMap<String, Vec<(String, usize, usize)>> = HashMap::new();
+    // Social: only profiles that belong to this business, not to the brands
+    // it sells or the companies it links to. A profile counts as its own when
+    // the site's Organization lists it (JSON-LD sameAs), when its handle is
+    // the business's name or domain, or when it sits in the header or footer
+    // of most pages. Then the best such profile per network.
+    let norm = |u: &str| u.trim_end_matches('/').to_ascii_lowercase().replace("://www.", "://");
+    let same_as: Vec<String> = pages.iter().flat_map(|(_, h)| h.ld_same_as.iter().map(|u| norm(u))).collect();
+    let names = brand_keys(&b.site_name, home_url);
+    let mut social: HashMap<String, Vec<SocialCandidate>> = HashMap::new();
     let mut order = 0;
     for (_, h) in &pages {
-        let mut page_seen: Vec<&str> = Vec::new();
-        for s in &h.social {
-            if page_seen.contains(&s.url.as_str()) {
+        let mut page_seen: Vec<String> = Vec::new();
+        for (s, chrome) in &h.social {
+            let key = norm(&s.url);
+            if page_seen.contains(&key) {
                 continue;
             }
-            page_seen.push(&s.url);
+            page_seen.push(key.clone());
             order += 1;
             let list = social.entry(s.network.clone()).or_default();
-            let key = s.url.trim_end_matches('/').to_ascii_lowercase();
-            match list.iter_mut().find(|(u, _, _)| u.trim_end_matches('/').to_ascii_lowercase() == key) {
-                Some(e) => e.1 += 1,
-                None => list.push((s.url.clone(), 1, order)),
-            }
+            let i = match list.iter().position(|c| c.key == key) {
+                Some(i) => i,
+                None => {
+                    list.push(SocialCandidate { url: s.url.clone(), key, pages: 0, chrome: 0, order });
+                    list.len() - 1
+                }
+            };
+            list[i].pages += 1;
+            list[i].chrome += usize::from(*chrome);
         }
     }
+    let n_pages = pages.len();
     let mut social: Vec<(String, String, usize)> = social
         .into_iter()
-        .filter_map(|(net, list)| list.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2))).map(|(u, _, o)| (net, u, o)))
+        .filter_map(|(net, list)| {
+            list.into_iter()
+                .filter_map(|c| {
+                    let listed = same_as.contains(&c.key);
+                    let named = handle_matches(&c.url, &names);
+                    let site_wide = c.chrome * 2 >= n_pages.max(1);
+                    let score = usize::from(listed) * 4 + usize::from(named) * 2 + usize::from(site_wide);
+                    (score > 0).then_some((score, c))
+                })
+                .max_by(|(sa, a), (sb, b)| sa.cmp(sb).then(a.pages.cmp(&b.pages)).then(b.order.cmp(&a.order)))
+                .map(|(_, c)| (net, c.url, c.order))
+        })
         .collect();
     social.sort_by_key(|(_, _, o)| *o);
     b.social = social.into_iter().map(|(network, url, _)| SocialLink { network, url }).collect();
     b
+}
+
+/// One image whatever its size: `photo-1024x712.webp`, `photo.webp?w=800` and
+/// `photo.webp` are the same picture (WordPress and CDN resizes).
+fn image_key(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+    let (stem, ext) = path.rsplit_once('.').unwrap_or((path.as_str(), ""));
+    let stem = match stem.rsplit_once('-') {
+        Some((head, size)) if size.split_once('x').is_some_and(|(w, h)| !w.is_empty() && !h.is_empty() && w.bytes().all(|c| c.is_ascii_digit()) && h.bytes().all(|c| c.is_ascii_digit())) => head,
+        _ => stem,
+    };
+    format!("{stem}.{ext}")
+}
+
+struct SocialCandidate {
+    url: String,
+    /// Normalised URL, for matching.
+    key: String,
+    /// Pages linking to it, and how many of those link from the header or footer.
+    pages: usize,
+    chrome: usize,
+    order: usize,
+}
+
+/// The business's names as handles would spell them: `Whitening.se` and
+/// `whitening.se` → `whiteningse`, `whitening`. Only letters and digits.
+fn brand_keys(site_name: &str, home: &Url) -> Vec<String> {
+    let alnum = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+    let host = host_key(home);
+    let label = host.split('.').next().unwrap_or("").to_string();
+    let mut keys = vec![alnum(site_name), alnum(&host), alnum(&label)];
+    keys.retain(|k| k.chars().count() >= 4);
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// Whether a profile's handle is the business's name, e.g. `instagram.com/whitening.se`
+/// or `linkedin.com/company/whitening`. Channel IDs never match.
+fn handle_matches(url: &str, names: &[String]) -> bool {
+    let Ok(u) = Url::parse(url) else { return false };
+    let segs: Vec<&str> = u.path_segments().map(|s| s.filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+    let handle = match segs.as_slice() {
+        ["company" | "school" | "showcase" | "c" | "user" | "pages", h, ..] => h,
+        ["channel", ..] => return false,
+        [h, ..] => h,
+        [] => return false,
+    };
+    let handle: String = handle.trim_start_matches('@').chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+    handle.chars().count() >= 4 && names.iter().any(|n| handle.contains(n.as_str()) || n.contains(handle.as_str()))
 }
 
 /// `Pricing | Acme` → `Pricing`; the part before the first separator.
@@ -967,7 +1089,7 @@ pub fn cached_pages(store: &Store, slug: &str) -> Result<Option<Vec<(Url, String
             continue;
         }
         let Ok(meta) = store.read_yaml::<CachedPage>(&path) else { continue };
-        if meta.obstacle.is_some() || meta.status >= 400 {
+        if meta.obstacle.is_some() || meta.status >= 400 || crate::crawl::left_site(&meta) {
             continue;
         }
         let Ok(html) = std::fs::read_to_string(path.with_extension("html")) else { continue };
@@ -1160,7 +1282,7 @@ mod tests {
             vec![("linkedin", "https://www.linkedin.com/company/acme/"), ("x", "https://twitter.com/acme"), ("github", "https://github.com/acme")]
         );
         let v = serde_json::to_value(&b).unwrap();
-        for k in ["site_name", "tagline", "logo", "icon", "cover", "colors", "fonts", "images", "social", "updated_at"] {
+        for k in ["site_name", "tagline", "logo", "icon", "cover", "colors", "fonts", "images", "social", "updated_at", "rules"] {
             assert!(v.get(k).is_some(), "{k}");
         }
     }
@@ -1186,5 +1308,66 @@ mod tests {
         assert_eq!(colors_in("oklch(62.8% 0.2577 29.23)"), vec![Rgb(255, 0, 0)]);
         assert_eq!(first_family("-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Inter\", sans-serif", &[]).as_deref(), Some("Inter"));
         assert_eq!(first_family("JetBrains Mono Var, monospace", &[]).as_deref(), Some("JetBrains Mono"));
+    }
+
+    #[test]
+    fn social_keeps_only_the_business_own_profiles() {
+        let home = Url::parse("https://whitening.se/").unwrap();
+        let page = |path: &str, body: &str| {
+            let u = home.join(path).unwrap();
+            let html = format!("<html><head><title>Whitening.se</title></head><body>{body}</body></html>");
+            (u.clone(), hints(&u, &html))
+        };
+        let footer = r#"<footer><a href="https://www.instagram.com/whitening.se/">IG</a></footer>"#;
+        let supplier = r#"<main><a href="https://www.facebook.com/DozApotek/">Doz</a><a href="https://www.youtube.com/channel/UCycShfD1GfneK-yEqJZw0MA">YT</a></main>"#;
+        let ld = r#"<script type="application/ld+json">{"@type":"Product","name":"Strips","brand":{"@type":"Brand","name":"Supplier","sameAs":["https://www.tiktok.com/@supplier"]}}</script>
+                    <script type="application/ld+json">{"@type":"Organization","name":"Whitening.se","url":"https://whitening.se","sameAs":["https://www.linkedin.com/company/12345/"]}</script>"#;
+        let pages = vec![
+            page("/", &format!("{footer}{ld}")),
+            page("/a", &format!("{footer}{supplier}")),
+            page("/b", &format!("{footer}{supplier}")),
+            page("/c", &format!("<a href=\"https://www.linkedin.com/company/12345/\">in</a>{supplier}")),
+        ];
+        let b = build_from_hints(pages, &[]);
+        let social: Vec<(&str, &str)> = b.social.iter().map(|s| (s.network.as_str(), s.url.as_str())).collect();
+        assert_eq!(social, vec![("instagram", "https://www.instagram.com/whitening.se/"), ("linkedin", "https://www.linkedin.com/company/12345/")]);
+        assert_eq!(b.site_name, "Whitening.se");
+    }
+
+    #[test]
+    fn handles_match_the_business_name() {
+        let names = brand_keys("Whitening.se", &Url::parse("https://www.whitening.se/").unwrap());
+        assert!(handle_matches("https://www.instagram.com/whitening.se/", &names));
+        assert!(handle_matches("https://www.tiktok.com/@whiteningse", &names));
+        assert!(handle_matches("https://www.linkedin.com/company/whitening/", &names));
+        assert!(!handle_matches("https://www.facebook.com/DozApotek/", &names));
+        assert!(!handle_matches("https://www.youtube.com/channel/UCwhitening", &names));
+    }
+
+    #[test]
+    fn imagery_only_from_the_business_own_hosts() {
+        let home = Url::parse("https://middagskassen.se/").unwrap();
+        let html = r#"<html><head><title>Middagskassen</title><meta property="og:image" content="https://middagskassen.se/og.png"></head><body><main>
+            <img src="https://middagskassen.se/wp-content/uploads/guide.png" width="800" height="500" alt="Guide">
+            <img src="https://media.hellofresh.com/box.jpg" width="800" height="500" alt="HelloFresh box">
+            <img src="https://img.middagskassen.se/hero.jpg" width="800" height="500" alt="Hero">
+        </main></body></html>"#;
+        let b = build_from_hints(vec![(home.clone(), hints(&home, html))], &[]);
+        let urls: Vec<&str> = b.images.iter().map(|i| i.url.as_str()).collect();
+        assert_eq!(urls, vec!["https://middagskassen.se/og.png", "https://middagskassen.se/wp-content/uploads/guide.png", "https://img.middagskassen.se/hero.jpg"]);
+
+        // A shop on a platform CDN: its own images live where its logo does.
+        let shop = Url::parse("https://acme.se/").unwrap();
+        let html = r#"<html><head><title>Acme</title></head><body><header><a href="/"><img class="logo" src="https://cdn.shopify.com/s/files/1/acme/logo.png" alt="Acme logo"></a></header><main>
+            <img src="https://cdn.shopify.com/s/files/1/acme/products/tee.jpg" width="900" height="900" alt="Tee">
+        </main></body></html>"#;
+        let b = build_from_hints(vec![(shop.clone(), hints(&shop, html))], &[]);
+        assert_eq!(b.images.len(), 1);
+    }
+
+    #[test]
+    fn image_sizes_are_one_image() {
+        assert_eq!(image_key("https://a.se/up/photo-1024x712.webp"), image_key("https://a.se/up/photo.webp?w=800"));
+        assert_ne!(image_key("https://a.se/up/photo-2.webp"), image_key("https://a.se/up/photo.webp"));
     }
 }

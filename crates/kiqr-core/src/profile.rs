@@ -87,6 +87,49 @@ pub fn load_all(store: &Store, slug: &str) -> Result<Vec<Section>> {
     SECTIONS.iter().map(|(id, _, _)| Section::load(store, slug, id)).collect()
 }
 
+/// URLs of crawled links that turned out to be another website's pages
+/// (outbound or affiliate redirects), from the crawl cache.
+pub fn offsite_urls(store: &Store, slug: &str) -> std::collections::HashSet<String> {
+    let dir = store.home().cache_dir(slug).join("pages");
+    let mut out = std::collections::HashSet::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    for path in entries.flatten().map(|e| e.path()) {
+        if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+            if let Ok(c) = store.read_yaml::<crate::crawl::CachedPage>(&path) {
+                if crate::crawl::left_site(&c) {
+                    out.insert(c.url);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Take evidence from other websites out of the profile, and drop unlocked
+/// fields that rested only on it. Returns how many fields were dropped.
+pub fn purge_offsite(store: &Store, slug: &str) -> Result<usize> {
+    let offsite = offsite_urls(store, slug);
+    if offsite.is_empty() {
+        return Ok(0);
+    }
+    let mut dropped = 0;
+    for mut section in load_all(store, slug)? {
+        let before = section.fields.len();
+        let mut changed = false;
+        section.fields.retain_mut(|f| {
+            let had = f.evidence.len();
+            f.evidence.retain(|e| !offsite.contains(&e.url));
+            changed |= f.evidence.len() != had;
+            f.locked || had == 0 || !f.evidence.is_empty()
+        });
+        dropped += before - section.fields.len();
+        if changed {
+            section.save(store, slug)?;
+        }
+    }
+    Ok(dropped)
+}
+
 pub fn load_facts(store: &Store, slug: &str) -> Result<Vec<Fact>> {
     let dir = store.home().facts_dir(slug);
     let mut out = Vec::new();
@@ -94,6 +137,11 @@ pub fn load_facts(store: &Store, slug: &str) -> Result<Vec<Fact>> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+                // Facts read from a page another site served (an outbound redirect) aren't about this business.
+                let key = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if crate::crawl::cached_left_site(store, slug, key) {
+                    continue;
+                }
                 let facts: Vec<Fact> = store.read_yaml(&path)?;
                 out.extend(facts);
             }

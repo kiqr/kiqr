@@ -109,6 +109,11 @@ impl Extractor {
 
     async fn synthesize_inner(&self, project: &Project, automated: bool, done: &mut usize, sections_saved: &mut bool) -> Result<()> {
         let slug = &project.slug;
+        // Fields that came from other websites' pages go before the model sees the profile.
+        let purged = profile::purge_offsite(&self.store, slug)?;
+        if purged > 0 {
+            tracing::info!(%slug, purged, "dropped profile fields that came from other websites");
+        }
         let facts = profile::load_facts(&self.store, slug)?;
         let (prov, model) = provider::resolve(&self.config.models.synthesize)?;
         let system = skill_text(&self.store, "build-profile", BUILTIN_BUILD);
@@ -191,6 +196,7 @@ impl Extractor {
 
     async fn brief_inner(&self, project: &Project, automated: bool) -> Result<Brief> {
         let slug = &project.slug;
+        profile::purge_offsite(&self.store, slug)?;
         let (prov, model) = provider::resolve(&self.config.models.synthesize)?;
         let system = skill_text(&self.store, "business-brief", BUILTIN_BRIEF);
 
@@ -310,7 +316,7 @@ impl Extractor {
                     continue;
                 }
                 let Ok(c) = self.store.read_yaml::<CachedPage>(&path) else { continue };
-                if c.obstacle.is_some() || !(200..300).contains(&c.status) {
+                if c.obstacle.is_some() || !(200..300).contains(&c.status) || crate::crawl::left_site(&c) {
                     continue;
                 }
                 pages.insert(c.url.clone(), PageInfo { url: c.url, title: c.title, facts: vec![] });
@@ -321,6 +327,10 @@ impl Extractor {
             for entry in std::fs::read_dir(&facts_dir)? {
                 let path = entry?.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                    continue;
+                }
+                let key = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if crate::crawl::cached_left_site(&self.store, slug, key) {
                     continue;
                 }
                 let Ok(facts) = self.store.read_yaml::<Vec<Fact>>(&path) else { continue };

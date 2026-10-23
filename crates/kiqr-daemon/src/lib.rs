@@ -17,6 +17,8 @@ pub struct App {
     pub jobs: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Page-limit handles of the crawls running now, by project.
     pub crawls: Arc<RwLock<std::collections::HashMap<String, Arc<kiqr_core::crawl::CrawlControl>>>>,
+    /// Serialises saving the brand of projects crawled before brand collection.
+    pub brand_backfill: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl App {
@@ -40,7 +42,25 @@ pub async fn run(home: Home) -> Result<()> {
         config: Arc::new(RwLock::new(config.clone())),
         jobs: Default::default(),
         crawls: Default::default(),
+        brand_backfill: Default::default(),
     };
+
+    // Projects crawled before brand collection existed, or whose brand was
+    // built by older rules, get it saved now, in the background, so the
+    // profile page doesn't wait for it.
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let Ok(projects) = kiqr_core::project::Project::list(&app.store) else { return };
+            for p in projects {
+                if matches!(kiqr_core::brand::Brand::load(&app.store, &p.slug), Ok(None)) || matches!(kiqr_core::brand::Brand::load(&app.store, &p.slug), Ok(Some(b)) if b.outdated()) {
+                    if let Err(e) = api::backfill_brand(&app, &p).await {
+                        tracing::warn!(slug = %p.slug, error = %e, "could not save the brand");
+                    }
+                }
+            }
+        });
+    }
 
     let router = api::router(app.clone()).fallback(web::serve);
     // KIQR_HOST / KIQR_PORT override config.yaml, so Docker can bind 0.0.0.0 without editing files.

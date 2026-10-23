@@ -31,7 +31,7 @@ export interface GraphNode {
 export interface FeedItem {
   key: string;
   url: string;
-  kind: "fetched" | "blocked" | "failed";
+  kind: "fetched" | "blocked" | "failed" | "skipped";
   status?: number;
   title?: string | null;
   words?: number;
@@ -385,6 +385,19 @@ export class CrawlStore {
         s.stats.blocked++;
         this.pushFeed({ url, kind: "blocked", reason, t });
         this.effects.push({ kind: "burst", url, color: "#fbbf24", at: now });
+        this.recount();
+        break;
+      }
+
+      case "page_skipped": {
+        // Outbound links (affiliate redirects to other sites) and non-pages: not read.
+        if (!url) break;
+        const n = this.addNode(url, null, now);
+        s.fetching.delete(url);
+        const reason = str(e.reason) ?? "skipped";
+        Object.assign(n, { status: "skipped", reason, changedAt: now });
+        // Only the redirects actually followed go in the feed, not every link skipped after them.
+        if (reason.startsWith("Redirects")) this.pushFeed({ url, kind: "skipped", reason, t });
         this.recount();
         break;
       }

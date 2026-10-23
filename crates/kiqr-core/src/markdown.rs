@@ -50,6 +50,11 @@ pub fn parse(base: &Url, html: &str) -> Page {
 
     let mut links = Vec::new();
     for a in doc.select(&sel("a[href]")) {
+        // Links that open elsewhere or that the site itself marks as not its own
+        // (outbound, sponsored, affiliate) are never followed, even when internal.
+        if !followable(a.value()) {
+            continue;
+        }
         if let Some(href) = a.value().attr("href") {
             if href.starts_with('#') || href.starts_with("mailto:") || href.starts_with("tel:") || href.starts_with("javascript:") {
                 continue;
@@ -70,6 +75,15 @@ pub fn parse(base: &Url, html: &str) -> Page {
     let text_len = markdown.chars().filter(|c| !c.is_whitespace()).count();
 
     Page { title, canonical, description, links, markdown, text_len, script_len }
+}
+
+/// False for `target="_blank"` and for `rel` containing nofollow, noopener or sponsored.
+pub fn followable(a: &scraper::node::Element) -> bool {
+    if a.attr("target").is_some_and(|t| t.trim().eq_ignore_ascii_case("_blank")) {
+        return false;
+    }
+    let rel = a.attr("rel").unwrap_or("").to_ascii_lowercase();
+    !rel.split_whitespace().any(|r| matches!(r, "nofollow" | "noopener" | "sponsored"))
 }
 
 /// Remove whole elements by tag using the parsed tree, re-serialised.
@@ -135,4 +149,24 @@ fn squeeze_blank_lines(s: &str) -> String {
         out.push('\n');
     }
     out.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skips_new_tab_and_nofollow_links() {
+        let base = Url::parse("https://whitening.se/").unwrap();
+        let html = r#"<html><body>
+            <a href="/a">a</a>
+            <a href="/till/x" target="_blank">x</a>
+            <a href="/till/y" rel="nofollow">y</a>
+            <a href="/till/z" rel="sponsored noopener">z</a>
+            <a href="/b" rel="noopener noreferrer">b</a>
+            <a href="/c" rel="prev">c</a>
+        </body></html>"#;
+        let links: Vec<String> = parse(&base, html).links.iter().map(|u| u.path().to_string()).collect();
+        assert_eq!(links, vec!["/a", "/c"]);
+    }
 }

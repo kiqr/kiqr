@@ -12,7 +12,7 @@ use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 use url::Url;
@@ -130,6 +130,38 @@ struct State {
     blocked: usize,
     failed: usize,
     escalate_whole_site: bool,
+    /// Links that redirected to another website, by first path segment
+    /// (`/till/…`, `/go/…`). After a few, the rest of that path is skipped unfetched.
+    offsite: HashMap<String, usize>,
+    skipped: usize,
+    /// The project's start URL, as queued.
+    start: String,
+    /// Where each page read ended up, so two links to one page are read once.
+    landed: HashSet<String>,
+}
+
+/// Off-site redirects under one path before the crawler stops fetching that path.
+const OFFSITE_PATTERN: usize = 3;
+
+/// The first path segment, the unit an outbound-link pattern is learned on.
+fn first_segment(u: &Url) -> String {
+    u.path_segments().and_then(|mut s| s.next()).unwrap_or("").to_string()
+}
+
+/// A crawled URL that ended up on another website: an affiliate or outbound
+/// link that redirected. Its content belongs to that site, not this business.
+pub fn left_site(c: &CachedPage) -> bool {
+    match (Url::parse(&c.url), Url::parse(&c.final_url)) {
+        (Ok(a), Ok(b)) => canonical_host(&a) != canonical_host(&b),
+        _ => false,
+    }
+}
+
+/// Whether the cached page stored under `key` (the hash also used for its
+/// facts file) left the site.
+pub fn cached_left_site(store: &Store, slug: &str, key: &str) -> bool {
+    let path = store.home().cache_dir(slug).join("pages").join(format!("{key}.yaml"));
+    store.read_yaml::<CachedPage>(&path).is_ok_and(|c| left_site(&c))
 }
 
 impl Crawler {
@@ -187,11 +219,17 @@ impl Crawler {
             blocked: 0,
             failed: 0,
             escalate_whole_site: false,
+            offsite: HashMap::new(),
+            skipped: 0,
+            start: start.to_string(),
+            landed: HashSet::new(),
         }));
 
         {
             let mut st = state.lock().await;
-            push(&mut st, &start, 1000);
+            if let Some(key) = push(&mut st, &start, 1000) {
+                st.start = key;
+            }
             self.bus.emit(Some(&slug), EventKind::PageDiscovered { url: start.to_string(), from: None });
             for u in self.load_sitemap(&start).await {
                 if canonical_host(&u) == host {
@@ -225,6 +263,20 @@ impl Crawler {
                         if !r.allowed(url.as_str()) {
                             continue;
                         }
+                    }
+                    let seg = first_segment(&url);
+                    let outbound = {
+                        let mut st = state.lock().await;
+                        let hit = !seg.is_empty() && st.offsite.get(&seg).copied().unwrap_or(0) >= OFFSITE_PATTERN;
+                        st.skipped += usize::from(hit);
+                        hit
+                    };
+                    if outbound {
+                        self.bus.emit(
+                            Some(&slug),
+                            EventKind::PageSkipped { url: url_s, reason: format!("Links under /{seg}/ lead to other websites") },
+                        );
+                        continue;
                     }
                     let permit = sem.clone().acquire_owned().await?;
                     let this = this_run.clone();
@@ -320,8 +372,44 @@ impl Crawler {
             }
         };
 
+        // An external redirect is not followed (see LocalFetcher), so the other
+        // site's page is never fetched; a fetcher that did follow one shows it
+        // in `final_url`. Either way the link leads off the site.
+        let offsite = match &fetched.redirect_to {
+            Some(to) if canonical_host(to) != host => Some(canonical_host(to)),
+            _ if canonical_host(&fetched.final_url) != host => Some(canonical_host(&fetched.final_url)),
+            _ => None,
+        };
+        if let Some(to) = offsite {
+            let mut st = state.lock().await;
+            *st.offsite.entry(first_segment(&url)).or_default() += 1;
+            st.skipped += 1;
+            let is_start = st.start == url.as_str();
+            drop(st);
+            if is_start {
+                self.bus.emit(
+                    Some(slug),
+                    EventKind::SeemoSays {
+                        text: format!("{url} sends visitors on to {to}, so there's nothing of this site's own for me to read. If {to} is the business's website, add it as the project instead."),
+                    },
+                );
+            }
+            self.bus.emit(Some(slug), EventKind::PageSkipped { url: url.to_string(), reason: format!("Redirects to {to}") });
+            return;
+        }
+
         if !fetched.content_type.contains("html") && !fetched.content_type.is_empty() {
-            return; // not a page
+            self.bus.emit(Some(slug), EventKind::PageSkipped { url: url.to_string(), reason: "Not a web page".into() });
+            return;
+        }
+
+        // Two links that redirect to the same page (an internal 301 and a direct link): read it once.
+        let mut landed = fetched.final_url.clone();
+        landed.set_fragment(None);
+        if !state.lock().await.landed.insert(landed.to_string()) {
+            let path = landed.path().to_string();
+            self.bus.emit(Some(slug), EventKind::PageSkipped { url: url.to_string(), reason: format!("Same page as {path}") });
+            return;
         }
 
         let mut page = markdown::parse(&fetched.final_url, &fetched.body);
@@ -560,5 +648,31 @@ pub fn seemo_crawl_summary(s: &CrawlSummary, escalation_enabled: bool) -> String
             "I read {} pages. {} wouldn't load for me — they were blocked or need JavaScript. If you connect UnblockingAPI I can read those too. Building the profile from what I have.",
             s.pages, s.blocked
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(url: &str, final_url: &str) -> CachedPage {
+        CachedPage {
+            url: url.into(),
+            final_url: final_url.into(),
+            status: 200,
+            via: "local".into(),
+            fetched_at: Utc::now(),
+            title: String::new(),
+            description: None,
+            text_len: 0,
+            obstacle: None,
+        }
+    }
+
+    #[test]
+    fn outbound_redirects_leave_the_site() {
+        assert!(left_site(&page("https://whitening.se/till/strips", "https://www.meds.se/strips")));
+        assert!(!left_site(&page("https://whitening.se/a", "https://www.whitening.se/a/")));
+        assert_eq!(first_segment(&Url::parse("https://whitening.se/till/strips").unwrap()), "till");
     }
 }

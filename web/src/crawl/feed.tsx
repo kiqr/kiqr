@@ -3,8 +3,8 @@ import { pathOf, type CrawlState, type FeedItem } from "./store";
 import { fmt } from "./tickers";
 
 function StatusPill({ it }: { it: FeedItem }) {
-  const label = it.kind === "fetched" ? String(it.status) : it.kind === "blocked" ? "BLOCK" : "ERR";
-  const tone = it.kind === "failed" || (it.status ?? 0) >= 400 ? "bad" : it.kind === "blocked" ? "warn" : "ok";
+  const label = it.kind === "fetched" ? String(it.status) : it.kind === "blocked" ? "BLOCK" : it.kind === "skipped" ? "OUT" : "ERR";
+  const tone = it.kind === "failed" || (it.status ?? 0) >= 400 ? "bad" : it.kind === "blocked" ? "warn" : it.kind === "skipped" ? "skip" : "ok";
   return <span className={`cr-pill ${tone}`}>{label}</span>;
 }
 

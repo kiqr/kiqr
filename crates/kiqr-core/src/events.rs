@@ -28,6 +28,9 @@ pub enum EventKind {
     /// is the word count of the extracted Markdown.
     PageFetched { url: String, status: u16, bytes: usize, ms: u64, via: String, title: String, words: usize },
     PageBlocked { url: String, reason: String },
+    /// Not read: it redirects to another website (an affiliate or outbound
+    /// link), sits under a path that does, or isn't a web page.
+    PageSkipped { url: String, reason: String },
     /// A page is waiting for, or being read by, the model. `waiting` is the queue depth.
     PageQueued { url: String, waiting: usize },
     PageParsed { url: String, facts: usize, waiting: usize, preview: Vec<FactPreview> },

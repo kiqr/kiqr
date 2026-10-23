@@ -387,6 +387,7 @@ fn print_event(ev: &Event) {
             if title.is_empty() { String::new() } else { format!("  \"{title}\"") }
         ),
         EventKind::PageBlocked { url, reason } => format!("blocked  {url}  {reason}"),
+        EventKind::PageSkipped { url, reason } => format!("skipped  {url}  {reason}"),
         EventKind::PageParsed { url, facts, .. } => format!("parsed   {url}  {facts} facts"),
         EventKind::PageFailed { url, error } => format!("failed   {url}  {error}"),
         EventKind::CrawlFinished { pages, blocked, failed } => format!("done: {pages} pages read, {blocked} blocked, {failed} failed"),
