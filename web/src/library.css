@@ -79,7 +79,7 @@
 /* empty library: getting started, and what Seemo can make */
 .lib-empty { display: flex; flex-direction: column; gap: 8px; }
 
-.lib-guide { padding: 24px; overflow: hidden; }
+.lib-guide { padding: 24px; overflow: clip; }
 .lib-guide::after { content: ""; position: absolute; right: -120px; top: -160px; width: 360px; height: 360px; border-radius: 50%; background: var(--accent); filter: blur(90px); opacity: .08; pointer-events: none; }
 .lib-guide-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
 .lib-guide-head h2, .lib-can-head h2 { font-size: 20px; font-weight: 600; letter-spacing: -.01em; margin-top: 4px; }
@@ -97,8 +97,15 @@
 .lib-steps .nm { font-size: 14px; font-weight: 500; }
 .lib-steps .st-done .nm { color: var(--muted); }
 .lib-steps .st-soon .nm, .lib-steps .st-next .nm { color: var(--muted); }
+.lib-steps .st-skipped .ds { color: var(--dim); }
 .lib-steps .ds { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.lib-steps .btn { margin-left: auto; flex: none; }
+.lib-steps .acts { margin-left: auto; display: flex; align-items: center; gap: 4px; flex: none; }
+.lib-steps .opt { margin-left: 8px; font: 500 10px/1.6 var(--sans); letter-spacing: .02em; color: var(--dim); padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-2); vertical-align: 1px; }
+.lib-steps .st-skipped .mk { color: var(--dim); background: transparent; border-style: dashed; }
+.lib-steps .st-skipped .nm { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--line-2); }
+.lib-guide + .lib-types { margin-top: 20px; }
+.spin { animation: spin 900ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .lib-can-head { margin: 32px 0 6px; }
 .lib-can-head .muted { font-size: 13px; margin-top: 4px; max-width: 620px; }
@@ -114,4 +121,4 @@
 .lib-can-it .nm { position: relative; font-size: 13px; font-weight: 500; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .lib-can-it .soon { margin-left: auto; }
 .lib-can-it .ds { position: relative; font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
-@media (max-width: 640px) { .lib-steps li { flex-wrap: wrap; } .lib-steps .btn { margin-left: 44px; } }
+@media (max-width: 640px) { .lib-steps li { flex-wrap: wrap; } .lib-steps .acts { margin-left: 44px; } }

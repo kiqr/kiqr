@@ -103,6 +103,14 @@ enum AssetsCmd {
     Show { slug: String, asset: String },
     /// Remove one asset and its files
     Rm { slug: String, asset: String },
+    /// Have Seemo write assets from the business profile (posts for now)
+    Generate {
+        slug: String,
+        #[arg(long = "type", default_value = "post")]
+        kind: String,
+        #[arg(long, default_value_t = 3)]
+        count: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -295,6 +303,11 @@ impl Client {
                 AssetsCmd::Show { slug, asset } => {
                     let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/assets/{}", asset_path(&asset)?)).await?;
                     println!("{}", serde_json::to_string_pretty(&v)?);
+                }
+                AssetsCmd::Generate { slug, kind, count } => {
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/assets/generate"), &serde_json::json!({ "type": kind, "count": count })).await?;
+                    println!("Seemo is writing {count} {kind}s…");
+                    self.stream_events(Some(&slug), false, |ev| matches!(&ev.kind, EventKind::JobFinished { job } if job == "posts")).await?;
                 }
                 AssetsCmd::Rm { slug, asset } => {
                     self.delete(&format!("/api/projects/{slug}/assets/{}", asset_path(&asset)?)).await?;

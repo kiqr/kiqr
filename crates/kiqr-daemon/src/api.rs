@@ -42,6 +42,7 @@ pub fn router(app: App) -> Router {
         .route("/api/asset-types", get(list_asset_types).post(save_asset_type))
         .route("/api/projects/{slug}/assets", get(list_assets).post(create_asset))
         .route("/api/projects/{slug}/assets/summary", get(asset_summary))
+        .route("/api/projects/{slug}/assets/generate", post(generate_assets))
         .route("/api/projects/{slug}/assets/{kind}/{id}", get(get_asset).put(put_asset).delete(delete_asset))
         .route("/api/projects/{slug}/assets/{kind}/{id}/files/{name}", get(get_asset_file).put(put_asset_file).layer(axum::extract::DefaultBodyLimit::max(MAX_ASSET_FILE)))
         .route("/api/events", get(events))
@@ -553,6 +554,36 @@ async fn create_asset(State(app): State<App>, Path(slug): Path<String>, Json(new
     let a = assets::create(&app.store, &slug, new)?;
     emit_saved(&app, &slug, &a, true);
     Ok((StatusCode::CREATED, Json(a)))
+}
+
+#[derive(Deserialize)]
+struct Generate {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default = "three")]
+    count: usize,
+}
+fn three() -> usize {
+    3
+}
+
+/// Have Seemo write assets from the business profile, in the background. The
+/// new assets arrive as `asset_saved` events; `job_finished` (`posts`) ends it.
+/// Only posts for now.
+async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(g): Json<Generate>) -> ApiResult<serde_json::Value> {
+    let project = Project::load(&app.store, &slug)?;
+    if g.kind != "post" {
+        return Err(ApiError(StatusCode::BAD_REQUEST, format!("Seemo can't write {} assets yet; only posts", g.kind)));
+    }
+    if Brief::load(&app.store, &slug)?.is_none() {
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "there is no business profile yet; crawl the site first".into()));
+    }
+    let cfg = app.config.read().await.clone();
+    if !provider::available(&cfg.models.chat).await {
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("model `{}` is not available", cfg.models.chat)));
+    }
+    let count = g.count.clamp(1, 10);
+    spawn_job(app, project, "posts", move |ex, project| async move { ex.social_posts(&project, count).await.map(|_| ()) }).await
 }
 
 async fn get_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>) -> ApiResult<Asset> {

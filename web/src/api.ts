@@ -156,6 +156,9 @@ export const api = {
   assetTypes: () => req<AssetType[]>("/api/asset-types"),
   assets: (slug: string, type?: string) => req<Asset[]>(`/api/projects/${slug}/assets${type ? `?type=${encodeURIComponent(type)}` : ""}`),
   assetSummary: (slug: string) => req<TypeCount[]>(`/api/projects/${slug}/assets/summary`),
+  /** Have Seemo write assets from the business profile, in the background (posts for now). */
+  generateAssets: (slug: string, type: string, count: number) =>
+    req<{ started: boolean }>(`/api/projects/${slug}/assets/generate`, { method: "POST", body: JSON.stringify({ type, count }) }),
   asset: (slug: string, type: string, id: string) => req<Asset>(`/api/projects/${slug}/assets/${type}/${id}`),
   createAsset: (slug: string, a: NewAsset) => req<Asset>(`/api/projects/${slug}/assets`, { method: "POST", body: JSON.stringify(a) }),
   saveAsset: (slug: string, a: Asset) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}`, { method: "PUT", body: JSON.stringify(a) }),

@@ -1,13 +1,15 @@
 // The empty library: a getting-started guide, and a showcase of what Seemo will make for this
 // business, written from its own profile so it already feels like theirs.
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "motion/react";
 import {
   ArrowRight, AudioLines, BarChart3, Brain, Cable, CalendarClock, Check, Clapperboard, FileText, Film, Gift, Image, Laugh, LayoutTemplate, Mail,
-  Megaphone, MessageSquareText, MessagesSquare, Mic, Music, Newspaper, PenLine, Radar, Reply, SearchX, ShoppingBag, Sparkles, Target,
+  Loader2, Megaphone, MessageSquareText, MessagesSquare, Mic, Music, Newspaper, PenLine, Radar, Reply, ShoppingBag, SkipForward, Sparkles, Target, Undo2,
   type LucideIcon,
 } from "lucide-react";
-import { api, useAsync, type Project } from "../api";
+import { api, useAsync, useEvents, type Asset } from "../api";
+import { DEMO } from "../demo";
 
 type Idea = { icon: LucideIcon; name: string; example: string };
 type Group = { label: string; tone: string; ideas: Idea[] };
@@ -87,7 +89,7 @@ export function EmptyLibrary({ slug }: { slug: string }) {
 
   return (
     <div className="lib-empty">
-      <Guide slug={slug} project={project.data} hasBrief={!!b} gaps={b?.content_gaps.length ?? 0} />
+      <Guide slug={slug} />
       <div className="lib-can-head">
         <div>
           <p className="cap">What Seemo can make</p>
@@ -129,20 +131,129 @@ export function EmptyLibrary({ slug }: { slug: string }) {
   );
 }
 
-type Step = { icon: LucideIcon; title: string; text: string; state: "done" | "now" | "next" | "soon"; to?: string; action?: string };
+type StepState = "done" | "now" | "next" | "soon" | "skipped";
+type Step = {
+  id: string;
+  icon: LucideIcon;
+  title: string;
+  text: string;
+  state: StepState;
+  /** Optional steps can be skipped; the rest are needed for everything else. */
+  optional?: boolean;
+  to?: string;
+  action?: string;
+  run?: () => void;
+  busy?: boolean;
+};
 
-/** Five steps from a crawled website to marketing that runs itself. */
-function Guide({ slug, project, hasBrief, gaps }: { slug: string; project?: Project; hasBrief: boolean; gaps: number }) {
+/** Skipped steps are a per-viewer convenience, kept in the browser. */
+function useSkipped(slug: string) {
+  const key = `kiqr.guide.skipped.${slug}`;
+  const read = () => {
+    try {
+      return JSON.parse(localStorage.getItem(key) ?? "[]") as string[];
+    } catch {
+      return [];
+    }
+  };
+  const [skipped, set] = useState<string[]>(read);
+  useEffect(() => set(read()), [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggle = (id: string) =>
+    set((cur) => {
+      const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+      } catch {
+        /* private window: skipping lasts until reload */
+      }
+      return next;
+    });
+  return { skipped, toggle };
+}
+
+/**
+ * Five steps from a crawled website to marketing that runs itself. Shown on the empty
+ * library, and above a filled one until every step is done or skipped (`hideWhenComplete`).
+ */
+export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComplete?: boolean }) {
+  const project = useAsync(() => api.project(slug), [slug]);
+  const brief = useAsync(() => api.brief(slug).catch(() => null), [slug]);
+  const posts = useAsync(() => api.assets(slug, "post").catch(() => [] as Asset[]), [slug]);
+  const { skipped, toggle } = useSkipped(slug);
+  const [writing, setWriting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEvents(
+    slug,
+    (e) => {
+      if (e.type === "asset_saved" && e.asset_type === "post") posts.reload();
+      if (e.type === "job_finished" && e.job === "posts") setWriting(false);
+      if (e.type === "seemo_says" && typeof e.text === "string" && e.text.startsWith("I couldn't write the posts")) setError(e.text.replace(/^I couldn't write the posts: /, ""));
+    },
+    { demo: false },
+  );
+
+  const generate = async () => {
+    setError(null);
+    setWriting(true);
+    try {
+      await api.generateAssets(slug, "post", 3);
+      if (DEMO) {
+        posts.reload();
+        setWriting(false);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+      setWriting(false);
+    }
+  };
+
+  const p = project.data;
+  const hasBrief = !!brief.data;
   // A profile means a crawl happened, even when the project record predates crawl summaries.
-  const crawled = !!project?.last_crawl || hasBrief;
+  const crawled = !!p?.last_crawl || hasBrief;
+  const postCount = posts.data?.length ?? 0;
+  const optional = (id: string, state: StepState): StepState => (state !== "done" && skipped.includes(id) ? "skipped" : state);
   const steps: Step[] = [
-    { icon: Radar, title: "Crawl your website", text: project?.last_crawl ? `${project.last_crawl.pages} pages read.` : crawled ? "Done. Rescan any time from Website crawls." : "Seemo reads your site to learn what you sell and how you sound.", state: crawled ? "done" : "now", to: `/p/${slug}/crawl`, action: "Open crawls" },
-    { icon: Brain, title: "Check your business profile", text: "Fix anything Seemo got wrong. Everything it makes starts here.", state: hasBrief ? "done" : crawled ? "now" : "next", to: `/p/${slug}`, action: "Open profile" },
-    { icon: SearchX, title: "Plan your first article", text: gaps ? `Pick one of ${gaps} content gaps and it lands here as a draft.` : "Pick a content gap and it lands here as a draft.", state: hasBrief ? "now" : "next", to: `/p/${slug}/gaps`, action: "Content gaps" },
-    { icon: Cable, title: "Connect where you publish", text: "Your blog, X, Reddit, LinkedIn, Google Ads, and image and video tools.", state: "soon" },
-    { icon: MessagesSquare, title: "Ask Seemo, or put it on the calendar", text: "“Every weekday at 10:00, reply to relevant Reddit posts.” Confirm once; it runs on its own.", state: "soon" },
+    {
+      id: "crawl",
+      icon: Radar,
+      title: "Crawl your website",
+      text: p?.last_crawl ? `${p.last_crawl.pages} pages read.` : crawled ? "Done. Rescan any time from Website crawls." : "Seemo reads your site to learn what you sell and how you sound.",
+      state: crawled ? "done" : "now",
+      to: `/p/${slug}/crawl`,
+      action: "Open crawls",
+    },
+    { id: "profile", icon: Brain, title: "Check your business profile", text: "Fix anything Seemo got wrong. Everything it makes starts here.", state: hasBrief ? "done" : crawled ? "now" : "next", to: `/p/${slug}`, action: "Open profile" },
+    {
+      id: "posts",
+      icon: MessageSquareText,
+      title: "Generate 3 social media posts",
+      text: postCount
+        ? `${postCount} post${postCount === 1 ? "" : "s"} in the library.`
+        : writing
+          ? "Seemo is writing them from your profile, in your tone of voice…"
+          : error
+            ? `That didn't work: ${error}`
+            : "Seemo writes three posts from your profile, in your tone of voice. You review them before anything goes out.",
+      state: optional("posts", postCount ? "done" : hasBrief ? "now" : "next"),
+      optional: true,
+      to: postCount ? `/p/${slug}/library/post` : undefined,
+      action: postCount ? "See posts" : undefined,
+      run: !postCount && hasBrief ? generate : undefined,
+      busy: writing,
+    },
+    { id: "connect", icon: Cable, title: "Connect where you publish", text: "Your blog, X, Reddit, LinkedIn, Google Ads, and image and video tools.", state: optional("connect", "soon"), optional: true },
+    {
+      id: "schedule",
+      icon: MessagesSquare,
+      title: "Ask Seemo, or put it on the calendar",
+      text: "“Every weekday at 10:00, reply to relevant Reddit posts.” Confirm once; it runs on its own.",
+      state: optional("schedule", "soon"),
+      optional: true,
+    },
   ];
-  const done = steps.filter((s) => s.state === "done").length;
+  const settled = steps.filter((s) => s.state === "done" || s.state === "skipped").length;
+  if (hideWhenComplete && (project.loading || settled === steps.length)) return null;
 
   return (
     <div className="pcard lib-guide">
@@ -151,35 +262,57 @@ function Guide({ slug, project, hasBrief, gaps }: { slug: string; project?: Proj
           <p className="cap">Getting started</p>
           <h2>From your website to marketing that runs itself</h2>
         </div>
-        <div className="lib-guide-prog" aria-label={`${done} of ${steps.length} steps done`}>
+        <div className="lib-guide-prog" aria-label={`${settled} of ${steps.length} steps done or skipped`}>
           <span>
-            {done}/{steps.length}
+            {settled}/{steps.length}
           </span>
           <i>
-            <motion.b initial={{ width: 0 }} animate={{ width: `${(done / steps.length) * 100}%` }} transition={{ duration: 0.9, ease: [0.2, 0.8, 0.2, 1], delay: 0.2 }} />
+            <motion.b initial={{ width: 0 }} animate={{ width: `${(settled / steps.length) * 100}%` }} transition={{ duration: 0.9, ease: [0.2, 0.8, 0.2, 1], delay: 0.2 }} />
           </i>
         </div>
       </div>
       <ol className="lib-steps">
         {steps.map((s, i) => (
-          <motion.li key={s.title} className={`st-${s.state}`} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 + i * 0.07, duration: 0.3 }}>
-            <span className="mk">{s.state === "done" ? <Check size={14} /> : <s.icon size={14} />}</span>
+          <motion.li key={s.id} className={`st-${s.state}`} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 + i * 0.07, duration: 0.3 }}>
+            <span className="mk">{s.state === "done" ? <Check size={14} /> : s.state === "skipped" ? <SkipForward size={13} /> : s.busy ? <Loader2 size={14} className="spin" /> : <s.icon size={14} />}</span>
             <div className="min0">
               <p className="nm">
                 {s.title}
+                {s.optional && s.state !== "done" && s.state !== "skipped" && <span className="opt">Optional</span>}
                 {s.state === "soon" && <span className="soon">Coming soon</span>}
               </p>
-              <p className="ds">{s.text}</p>
+              <p className="ds">{s.state === "skipped" ? "Skipped. Come back to it any time." : s.text}</p>
             </div>
-            {s.to && s.state !== "soon" && (
-              <Link className={`btn ${s.state === "now" ? "p" : "t"}`} to={s.to}>
-                {s.action} {s.state === "now" && <ArrowRight size={14} />}
-              </Link>
-            )}
+            <div className="acts">
+              {s.state === "skipped" ? (
+                <button className="btn t" onClick={() => toggle(s.id)}>
+                  <Undo2 size={14} /> Undo
+                </button>
+              ) : (
+                <>
+                  {s.optional && s.state !== "done" && !s.busy && (
+                    <button className="btn t" onClick={() => toggle(s.id)}>
+                      Skip
+                    </button>
+                  )}
+                  {s.run && s.state === "now" ? (
+                    <button className="btn p" disabled={s.busy} onClick={s.run}>
+                      {s.busy ? "Writing…" : error ? "Try again" : "Generate posts"} {!s.busy && <Sparkles size={14} />}
+                    </button>
+                  ) : (
+                    s.to &&
+                    s.state !== "soon" && (
+                      <Link className={`btn ${s.state === "now" ? "p" : "t"}`} to={s.to}>
+                        {s.action} {s.state === "now" && <ArrowRight size={14} />}
+                      </Link>
+                    )
+                  )}
+                </>
+              )}
+            </div>
           </motion.li>
         ))}
       </ol>
     </div>
   );
 }
-

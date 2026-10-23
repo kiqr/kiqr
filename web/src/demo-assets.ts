@@ -171,6 +171,19 @@ export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T
     assets.forEach((a) => counts.set(a.type, (counts.get(a.type) ?? 0) + 1));
     return ok([...counts].map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count));
   }
+  if (route === "/generate") {
+    const made: Asset[] = [
+      ["Templates instead of selectors", "linkedin", "Most scraping breaks the day a site changes its markup.\n\nOur templates turn a page into JSON without selectors you maintain: a Reddit post, an Idealista search, a Hetzner auction. When the site changes, we update the template.\n\nunblockingapi.com/templates"],
+      ["Failures cost nothing", "x", "A fetch that fails costs nothing. One that succeeds costs one credit, rendered in a real browser or not."],
+      ["When we render, and why", "linkedin", "We start with a plain fetch and switch to a real browser only when a page is blocked, shows a challenge or is an empty JavaScript shell.\n\nThe response tells you which, and we remember it per site."],
+    ].map(([title, network, text]) => {
+      const id = title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      texts[`post/${id}/post.md`] = text;
+      return { id, type: "post", title, status: "draft", tags: [network], summary: `For ${network === "x" ? "X" : "LinkedIn"}`, created: { at: ago(0), by: "seemo" }, updated_at: ago(0), files: [file("body", "post.md", text.length)], publications: [] };
+    });
+    assets = [...made, ...assets];
+    return ok({ started: true });
+  }
   if (route === "" && init?.method === "POST") {
     const n: NewAsset = JSON.parse(String(init.body));
     const a: Asset = { id: n.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), type: n.type, title: n.title, status: n.status ?? "draft", tags: n.tags ?? [], summary: n.summary, created: { at: ago(0), by: "user" }, updated_at: ago(0), files: [], source: n.source, publications: [] };

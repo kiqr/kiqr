@@ -7,7 +7,7 @@ import { ArrowLeft, Bot, Download, ExternalLink, FileText, Library as LibraryIco
 import { api, useAsync, useEvents, type Asset, type AssetStatus, type AssetType } from "../api";
 import { assetIcon } from "../assetIcons";
 import { ago } from "./Project";
-import { EmptyLibrary } from "./LibraryEmpty";
+import { EmptyLibrary, Guide } from "./LibraryEmpty";
 import "../profile.css";
 import "../library.css";
 
@@ -51,6 +51,7 @@ export function LibraryPage() {
         </div>
       </div>
 
+      {!t && all.length > 0 && <Guide slug={slug} hideWhenComplete />}
       {!t && all.length > 0 && <TypeStrip slug={slug} types={types} assets={all} />}
 
       {all.length > 0 && (
@@ -137,8 +138,8 @@ function AssetCard({ slug, a, t, i, showType }: { slug: string; a: Asset; t?: As
 
 /** Who made it: you, Seemo in a chat, or a scheduled task. */
 function Maker({ by, long }: { by: string; long?: boolean }) {
-  const seemo = by.startsWith("task:") || by.startsWith("chat:");
-  const label = by.startsWith("task:") ? `Task ${by.slice(5)}` : by.startsWith("chat:") ? "Seemo, in a chat" : "You";
+  const seemo = by === "seemo" || by.startsWith("task:") || by.startsWith("chat:");
+  const label = by.startsWith("task:") ? `Task ${by.slice(5)}` : by.startsWith("chat:") ? "Seemo, in a chat" : by === "seemo" ? "Seemo" : "You";
   return (
     <span className={`maker ${seemo ? "ai" : ""}`} title={label}>
       {seemo ? <Bot size={12} /> : <User size={12} />}

@@ -16,6 +16,7 @@ use url::Url;
 const BUILTIN_EXTRACT: &str = include_str!("../../../skills/extract-facts/SKILL.md");
 const BUILTIN_BUILD: &str = include_str!("../../../skills/build-profile/SKILL.md");
 const BUILTIN_BRIEF: &str = include_str!("../../../skills/business-brief/SKILL.md");
+const BUILTIN_POSTS: &str = include_str!("../../../skills/social-posts/SKILL.md");
 
 /// Install the built-in skills into the home directory if they are missing,
 /// so users see and can edit them.
@@ -26,6 +27,7 @@ pub fn install_builtin_skills(store: &Store) -> Result<bool> {
         ("build-profile", BUILTIN_BUILD),
         ("business-brief", BUILTIN_BRIEF),
         ("crawl-site", include_str!("../../../skills/crawl-site/SKILL.md")),
+        ("social-posts", BUILTIN_POSTS),
     ] {
         let path = store.home().skills_dir().join(name).join("SKILL.md");
         if !path.exists() {
@@ -34,6 +36,20 @@ pub fn install_builtin_skills(store: &Store) -> Result<bool> {
         }
     }
     Ok(wrote)
+}
+
+/// `x` → `X`, `linkedin` → `LinkedIn`.
+fn network_name(n: &str) -> String {
+    match n {
+        "x" | "twitter" => "X".into(),
+        "linkedin" => "LinkedIn".into(),
+        "youtube" => "YouTube".into(),
+        "tiktok" => "TikTok".into(),
+        other => {
+            let mut c = other.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        }
+    }
 }
 
 fn skill_text(store: &Store, name: &str, builtin: &str) -> String {
@@ -192,6 +208,78 @@ impl Extractor {
         }
         self.bus.emit(Some(slug), EventKind::SynthesisFinished { sections: usize::from(result.is_ok()) });
         result.map(|_| ())
+    }
+
+    /// Write `count` social media posts from the business brief and add them to
+    /// the library as drafts. Uses the chat model: this is Seemo writing.
+    pub async fn social_posts(&self, project: &Project, count: usize) -> Result<Vec<crate::assets::Asset>> {
+        let slug = &project.slug;
+        let result = self.social_posts_inner(project, count).await;
+        match &result {
+            Ok(made) => {
+                let n = made.len();
+                self.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("I wrote {n} post{} for you to review in the library.", if n == 1 { "" } else { "s" }) })
+            }
+            Err(e) => self.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("I couldn't write the posts: {e}") }),
+        }
+        result
+    }
+
+    async fn social_posts_inner(&self, project: &Project, count: usize) -> Result<Vec<crate::assets::Asset>> {
+        let slug = &project.slug;
+        let brief = Brief::load(&self.store, slug)?.ok_or_else(|| anyhow::anyhow!("there is no business profile yet; crawl the site first"))?;
+        let networks: Vec<String> = crate::brand::Brand::load(&self.store, slug)?.map(|b| b.social.into_iter().map(|s| s.network.to_lowercase()).collect()).unwrap_or_default();
+        let (prov, model) = provider::resolve(&self.config.models.chat)?;
+        let system = skill_text(&self.store, "social-posts", BUILTIN_POSTS);
+        let mut b = serde_json::to_value(&brief)?;
+        // The brief's page lists are for the content map, not for writing posts.
+        if let Some(clusters) = b.get_mut("topic_clusters").and_then(|v| v.as_array_mut()) {
+            for c in clusters {
+                if let Some(o) = c.as_object_mut() {
+                    o.remove("urls");
+                }
+            }
+        }
+        let prompt = serde_json::json!({ "brief": b, "networks": networks, "count": count }).to_string();
+        let text = prov.complete(&Request { system, prompt, model, json: true, max_tokens: 6_000 }).await?;
+        let value = provider::extract_json(&text)?;
+
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct PostOut {
+            network: String,
+            title: String,
+            text: String,
+        }
+        let posts: Vec<PostOut> = value.get("posts").cloned().map(serde_json::from_value).transpose()?.unwrap_or_default();
+        let posts: Vec<PostOut> = posts.into_iter().filter(|p| !p.text.trim().is_empty()).take(count).collect();
+        if posts.is_empty() {
+            anyhow::bail!("the model returned no posts");
+        }
+        let mut made = Vec::new();
+        for p in posts {
+            let network = p.network.trim().to_lowercase();
+            let title = if p.title.trim().is_empty() { p.text.chars().take(48).collect::<String>() } else { p.title.trim().to_string() };
+            let mut source = serde_json::Map::new();
+            source.insert("brief_version".into(), brief.version.into());
+            let a = crate::assets::create(
+                &self.store,
+                slug,
+                crate::assets::NewAsset {
+                    kind: "post".into(),
+                    title,
+                    summary: if network.is_empty() { String::new() } else { format!("For {}", network_name(&network)) },
+                    tags: if network.is_empty() { vec![] } else { vec![network] },
+                    by: Some("seemo".into()),
+                    source,
+                    files: vec![crate::assets::NewTextFile { role: "body".into(), name: "post.md".into(), text: p.text.trim().to_string() + "\n" }],
+                    ..Default::default()
+                },
+            )?;
+            self.bus.emit(Some(slug), EventKind::AssetSaved { asset_type: a.kind.clone(), id: a.id.clone(), title: a.title.clone(), status: "draft".into(), created: true });
+            made.push(a);
+        }
+        Ok(made)
     }
 
     async fn brief_inner(&self, project: &Project, automated: bool) -> Result<Brief> {
