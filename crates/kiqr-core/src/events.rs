@@ -58,6 +58,11 @@ pub enum EventKind {
     /// A background job on the project ended and its slot is free again.
     /// `job` is `crawl` (crawl plus synthesis), `synthesize` or `brief`.
     JobFinished { job: String },
+    /// An asset was made (`created`) or changed. `asset_type` is its type id.
+    AssetSaved { asset_type: String, id: String, title: String, status: String, created: bool },
+    AssetDeleted { asset_type: String, id: String },
+    /// An asset type was added or changed.
+    AssetTypeSaved { id: String, name: String },
     SeemoSays { text: String },
     Committed { message: String },
 }

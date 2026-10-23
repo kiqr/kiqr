@@ -1,0 +1,10 @@
+# A long-form piece for the website's blog or knowledge base.
+id: article
+name: Article
+plural: Articles
+icon: newspaper
+description: Long-form pieces for your blog, written from the business profile and the content gaps.
+preview: article
+files:
+  - { role: body, accept: [md] }
+  - { role: cover, accept: [png, jpg, jpeg, webp] }

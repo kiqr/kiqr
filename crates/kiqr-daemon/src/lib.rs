@@ -34,6 +34,9 @@ pub async fn run(home: Home) -> Result<()> {
     if kiqr_core::extract::install_builtin_skills(&store)? {
         store.commit("skills: install built-in skills").await?;
     }
+    if kiqr_core::assets::install_builtin_types(&store)? {
+        store.commit("asset types: install built-in types").await?;
+    }
     seed_persona(&store).await?;
 
     let app = App {

@@ -19,6 +19,10 @@ KIQR is a self-hosted marketing agent. You give it a website; it crawls it, buil
 - **Brands are saved, not rebuilt per view.** Building a brand reads every cached page (seconds), so it happens once: at the end of a crawl, on a project's first brand request, and at daemon start for projects without one. Each saved brand records the collection `rules` version that built it; when the rules change (`brand::RULES`), outdated brands are rebuilt from the cache the same way.
 - **Live page limit.** A running crawl's page limit can be changed while it fetches (`PUT /api/projects/{slug}/crawl/limit`, the crawl screen's "Raise the limit" dialog, `kiqr crawl <slug> --max-pages N`). The crawler checks the limit before each fetch, and pages over the old limit stay queued, so a raise continues straight away. Once fetching has ended the limit applies from the next crawl; the response says which (`live`). The limit is saved to the project either way, and the change is the `crawl_limit_changed` event.
 - **One job per project.** Starting a crawl, synthesis or brief claims the project's slot in one step; a second request gets 409. A crawl ends by rebuilding the profile, so it doesn't overlap a profile job either. `GET /api/projects/{slug}` lists running `jobs`, and `job_finished` says when one ends. The UI shows a running crawl instead of starting another; `kiqr crawl --watch` follows it.
+- **Assets, in a Library.** What users make with Seemo (articles, posts, Reddit replies, images, memes, videos, songs, ad campaigns, and kinds nobody has defined yet) are assets. A type is data, not code: `asset-types/<type>/TYPE.yaml` names it, picks a lucide icon, lists the files it holds and how to preview it (article, post, image, video, audio, campaign or files). Built-in types ship in `asset-types/` and are installed like skills; users and Seemo add more (`POST /api/asset-types`), and the sidebar grows an item for each type that has assets. An asset is a folder, `projects/<slug>/assets/<type>/<id>/`: `asset.yaml` (type, title, status draft/ready/scheduled/published/archived, tags, who made it: `user`, `task:<id>` or `chat:<id>`, what it was made from, its files with size and sha256, and where it was published) plus its files.
+- **Generated assets stay out of git.** `projects/*/assets/` is ignored (videos and audio would bloat the history), so asset changes emit `asset_saved`/`asset_deleted` but are not committed. The library is read from the folders. Backups to S3 come later. Asset types are configuration and are committed.
+- **Seemo is the automation** (planned, roadmap 2b). The calendar schedules tasks: a plain-language instruction, a schedule (once, or an RRULE with a timezone: "weekdays at 10:00", "every day in December until the 24th") and the connector actions it may take. The user confirms those actions once, when the task is created or its actions widen; runs are then automatic, and an action outside them is skipped and noted. Each run is a Seemo session with access to every asset (create, edit, publish), logged in `runs/<task>/<ts>.yaml`. Tasks claim `task:<id>`, not the crawl slot. Missed runs execute once on start-up if under an hour late, otherwise they are recorded as missed.
+- **Connectors** (planned, roadmap 5). Two kinds behind one interface: community packs installed via the kiqr.cloud OAuth relay, and custom MCP servers. Each has `connector.yaml` (auth as env variable names, actions with read/write/publish level, asset types it publishes or produces) and a `SKILL.md` Seemo reads before using it. Credentials live in `projects/<slug>/.env` (ignored) or the global `.env`; values never reach the model.
 - **Skills.** Prompts are `SKILL.md` files. Built-in ones ship in `skills/`; copies in `~/.kiqr/skills/` override them so users can tune extraction and synthesis.
 - **Seemo** is the persona, defined in `seemo/PERSONA.md` (installed to `~/.kiqr/seemo/PERSONA.md`). Chat is scoped to the active project and always starts from that project's `PROFILE.md`.
 - **License: AGPL-3.0.** Keeps the client open while making competing hosted offerings unattractive.
@@ -31,6 +35,7 @@ KIQR is a self-hosted marketing agent. You give it a website; it crawls it, buil
 .env                       secrets, 0600, ignored
 config.yaml                daemon host/port, crawl defaults, models per task
 skills/<name>/SKILL.md     user-editable prompts
+asset-types/<type>/TYPE.yaml  asset types: built-in and user-defined
 seemo/PERSONA.md
 projects/<slug>/
   project.yaml             url, crawl settings, last crawl summary
@@ -39,6 +44,8 @@ projects/<slug>/
   profile/brief.yaml       business brief: summary, offerings, audiences, voice, topic clusters, content gaps
   profile/brand.yaml       brand assets: name, tagline, logo, icon, cover, colours, fonts, images, social links
   facts/<page>.yaml        per-page extracted facts
+  assets/<type>/<id>/      asset.yaml + files — ignored, not committed
+  .env                     project secrets — ignored
   chats/                   Seemo conversations (later)
   cache/pages/<hash>.*     raw html, markdown, metadata — ignored
 ```
@@ -57,7 +64,7 @@ Synthesis emits `synthesis_started {total}` (sections to build + 1 for the brief
 ## API
 
 ```
-GET  /api/health                         version, home, provider availability
+GET  /api/health                         version, home, address, provider availability, which secrets are set (names only), model CLIs found
 GET  /api/config  PUT                    config.yaml
 GET  /api/projects  POST {url, crawl}    list / create (+ start crawl)
 GET  /api/projects/:slug  DELETE
@@ -73,6 +80,11 @@ GET  /api/projects/:slug/brand           brand assets (built from the cache if n
 POST /api/projects/:slug/brand           rebuild brand assets from the crawl cache and save
 GET  /api/projects/:slug/history         git log for the project
 PUT  /api/projects/{slug}/crawl/limit    {max_pages} → {max_pages, live}
+GET  /api/asset-types  POST             types (built-ins first); add or change a type
+GET  /api/projects/:slug/assets?type=&status=&tag=   POST {type, title, files: [{role, name, text}]}
+GET  /api/projects/:slug/assets/summary  asset counts per type
+GET  /api/projects/:slug/assets/:type/:id  PUT  DELETE
+GET  /api/projects/:slug/assets/:type/:id/files/:name  PUT ?role= (raw body, up to 1 GB)
 GET  /api/events?project=[&replay=1]     SSE (replay: latest crawl job first)
 ```
 
@@ -82,7 +94,9 @@ GET  /api/events?project=[&replay=1]     SSE (replay: latest crawl job first)
 1b. ~~Parallel fetch with a separate model queue; project selector and project-scoped navigation; the animated crawl map; design v2 (warm paper, Bricolage + Inter)~~
 1c. ~~Business brief: ContentWriter's site profile (summary, offerings, audiences, voice, clusters, gaps) on top of the evidence-backed sections; `kiqr brief`~~
 1d. Content: KIQR does everything ContentWriter does, and more. An overview, a calendar, articles, social posts and other formats, a content map and content gaps. The brief's topic clusters (with the URLs of their pages) are the content map; its content gaps seed the article plan; articles and posts are generated from the business profile and the brief's tone of voice.
+1e. ~~Library: asset types as data, assets per type, the sidebar by type, content gaps → draft articles; `kiqr assets`, `kiqr types`~~
 2. Seemo chat: `POST /api/projects/:slug/chat`, transcript in `chats/`, tools to read/edit the profile and start re-crawls, approval gate for side effects
+2b. Calendar and tasks: task files, the confirmation card, the scheduler, run records, month/week/day/agenda views (follow ContentWriter's calendar board)
 3. Re-crawl diffs in the UI from git history; scheduled re-crawls
 4. Competitor sub-profiles
 5. MCP broker: a local stdio MCP server exposed to the model that forwards to connectors with allowlists, scopes, an approval gate and an audit log; tokens encrypted at rest, never visible to the model
@@ -92,4 +106,4 @@ GET  /api/events?project=[&replay=1]     SSE (replay: latest crawl job first)
 
 ## Not in scope for the MVP
 
-GitHub integration, multi-user, a TUI, anything that posts or sends on the user's behalf.
+GitHub integration, multi-user, a TUI. Posting on the user's behalf arrives with connectors (roadmap 5), only through actions the user confirmed.

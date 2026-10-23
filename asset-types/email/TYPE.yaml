@@ -1,0 +1,8 @@
+id: email
+name: Email
+plural: Emails
+icon: mail
+description: Newsletters and email campaigns.
+preview: article
+files:
+  - { role: body, accept: [md, html] }

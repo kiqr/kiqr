@@ -41,6 +41,10 @@ impl Home {
     pub fn seemo_dir(&self) -> PathBuf {
         self.root.join("seemo")
     }
+    /// Asset type definitions: `asset-types/<type>/TYPE.yaml`.
+    pub fn asset_types_dir(&self) -> PathBuf {
+        self.root.join("asset-types")
+    }
     pub fn projects_dir(&self) -> PathBuf {
         self.root.join("projects")
     }
@@ -69,6 +73,14 @@ impl Home {
     }
     pub fn chats_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("chats")
+    }
+    /// Generated assets: `assets/<type>/<id>/`. Ignored by git.
+    pub fn assets_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("assets")
+    }
+    /// The project's own secrets, read before the global `.env`. Ignored by git.
+    pub fn project_env_file(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join(".env")
     }
     /// Raw fetches and converted markdown. Ignored by git.
     pub fn cache_dir(&self, slug: &str) -> PathBuf {

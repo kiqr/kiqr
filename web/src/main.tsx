@@ -7,9 +7,11 @@ import { Shell } from "./Shell";
 import { Onboarding } from "./pages/Onboarding";
 import { ProjectPage } from "./pages/Project";
 import { CrawlPage } from "./pages/Crawl";
-import { Connections, Placeholder, ProjectSettings, Settings } from "./pages/Settings";
-import { ComingNext, ContentGaps, ContentMap } from "./pages/Content";
-import { CalendarDays, Gauge, MessageSquareText, Newspaper } from "lucide-react";
+import { Placeholder, ProjectSettings } from "./pages/Settings";
+import { Settings } from "./pages/GlobalSettings";
+import { ComingNext, ContentGaps, ContentMap, Redirect } from "./pages/Content";
+import { AssetPage, LibraryPage } from "./pages/Library";
+import { Cable, CalendarDays, ListChecks, MessagesSquare } from "lucide-react";
 
 // Demo mode (previews, the kiqr.dev site) keeps routing in memory so the single
 // file works anywhere, including sandboxed preview frames with no real URL.
@@ -29,16 +31,41 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/p/:slug/crawl" element={<CrawlPage />} />
           <Route path="/p/:slug/map" element={<ContentMap />} />
           <Route path="/p/:slug/gaps" element={<ContentGaps />} />
-          <Route path="/p/:slug/overview" element={<ComingNext icon={Gauge} title="Overview" text="What's planned, written and published for this website, and what needs your review." />} />
-          <Route path="/p/:slug/calendar" element={<ComingNext icon={CalendarDays} title="Calendar" text="Seemo plans articles and posts from the content gaps and puts them on a calendar you can rearrange." />} />
-          <Route path="/p/:slug/articles" element={<ComingNext icon={Newspaper} title="Articles" text="Seemo writes articles from the business profile and the content gaps, in the brand's tone of voice, for you to review and publish." />} />
-          <Route path="/p/:slug/posts" element={<ComingNext icon={MessageSquareText} title="Posts" text="Social posts, newsletters and short-form copy, written from the same profile and scheduled with the articles." />} />
+          <Route path="/p/:slug/library" element={<LibraryPage />} />
+          <Route path="/p/:slug/library/:type" element={<LibraryPage />} />
+          <Route path="/p/:slug/library/:type/:id" element={<AssetPage />} />
+          {/* Older links: the overview and per-format pages became the library. */}
+          <Route path="/p/:slug/overview" element={<Redirect to="library" />} />
+          <Route path="/p/:slug/articles" element={<Redirect to="library/article" />} />
+          <Route path="/p/:slug/posts" element={<Redirect to="library/post" />} />
           <Route path="/p/:slug/competitors" element={<Placeholder title="Competitors" text="Competitor profiles arrive in a later release: Seemo will crawl the sites you name and position you against them." />} />
-          <Route path="/p/:slug/tasks" element={<Placeholder title="Tasks" text="Marketing tasks arrive once the profile is solid: content, social posts, email, ads." />} />
-          <Route path="/p/:slug/chats" element={<Placeholder title="Chats with Seemo" text="Conversations are saved per project and will be listed here." />} />
+          <Route
+            path="/p/:slug/chats"
+            element={<ComingNext cap="Seemo" icon={MessagesSquare} title="Chats" text="Ask Seemo for anything: an article, a week of posts, a meme, a video. What it makes lands in the library, and each conversation is saved here." />}
+          />
+          <Route
+            path="/p/:slug/calendar"
+            element={
+              <ComingNext
+                cap="Seemo"
+                icon={CalendarDays}
+                title="Calendar"
+                text="Seemo's schedule: tasks like 'every weekday at 10:00, reply to relevant Reddit posts' or 'every day in December until the 24th, post the Christmas calendar meme', in a month, week and day view. You confirm what a task may do once, when you create it; after that it runs on its own."
+              />
+            }
+          />
+          <Route
+            path="/p/:slug/tasks"
+            element={<ComingNext cap="Seemo" icon={ListChecks} title="Tasks" text="Every task Seemo runs for this project: the instruction, the schedule, what it may do, and each run with the assets it made, changed or published." />}
+          />
+          <Route
+            path="/p/:slug/connectors"
+            element={<ComingNext cap="Seemo" icon={Cable} title="Connectors" text="Where Seemo makes and publishes things: X, Reddit, your blog, Google Ads, image and video APIs. Install a community connector in one click, or add your own MCP server; credentials stay in a .env file on this machine." />}
+          />
           <Route path="/p/:slug/settings" element={<ProjectSettings />} />
-          <Route path="/connections" element={<Connections />} />
+          <Route path="/connections" element={<Navigate to="/settings/connections" replace />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/settings/:tab" element={<Settings />} />
         </Route>
       </Routes>
     </Router>

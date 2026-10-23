@@ -74,6 +74,13 @@ enum Command {
         #[arg(long)]
         rebuild: bool,
     },
+    /// List, show or remove a project's assets: articles, posts, images, videos…
+    Assets {
+        #[command(subcommand)]
+        cmd: AssetsCmd,
+    },
+    /// List the asset types (built-in and your own)
+    Types,
     /// Show what changed, newest first
     History { slug: String },
     /// Follow live events (all projects, or one with --project)
@@ -81,6 +88,21 @@ enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum AssetsCmd {
+    /// List assets, newest change first
+    Ls {
+        slug: String,
+        /// Only this type (article, post, meme…)
+        #[arg(long = "type")]
+        kind: Option<String>,
+    },
+    /// Show one asset: `kiqr assets show <slug> <type>/<id>`
+    Show { slug: String, asset: String },
+    /// Remove one asset and its files
+    Rm { slug: String, asset: String },
 }
 
 #[derive(Subcommand)]
@@ -258,6 +280,34 @@ impl Client {
                     print_brand(&v);
                 }
             }
+            Command::Assets { cmd } => match cmd {
+                AssetsCmd::Ls { slug, kind } => {
+                    let q = kind.map(|k| format!("?type={k}")).unwrap_or_default();
+                    let v: Vec<serde_json::Value> = self.get(&format!("/api/projects/{slug}/assets{q}")).await?;
+                    if v.is_empty() {
+                        println!("No assets yet.");
+                    }
+                    for a in v {
+                        let s = |k: &str| a[k].as_str().unwrap_or("").to_string();
+                        println!("{:<10} {:<40} {:<9} {}", s("type"), s("id"), s("status"), s("title"));
+                    }
+                }
+                AssetsCmd::Show { slug, asset } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/assets/{}", asset_path(&asset)?)).await?;
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                }
+                AssetsCmd::Rm { slug, asset } => {
+                    self.delete(&format!("/api/projects/{slug}/assets/{}", asset_path(&asset)?)).await?;
+                    println!("Removed {asset}.");
+                }
+            },
+            Command::Types => {
+                let v: Vec<serde_json::Value> = self.get("/api/asset-types").await?;
+                for t in v {
+                    let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
+                    println!("{:<14} {:<16} {}{}", s("id"), s("plural"), s("description"), if t["builtin"].as_bool() == Some(true) { "" } else { "  (yours)" });
+                }
+            }
             Command::History { slug } => {
                 let v: Vec<serde_json::Value> = self.get(&format!("/api/projects/{slug}/history")).await?;
                 for c in v {
@@ -337,6 +387,14 @@ impl Client {
     }
 }
 
+/// `article/whitening-guide` → the URL path segment, checked.
+fn asset_path(s: &str) -> Result<String> {
+    match s.split_once('/') {
+        Some((t, id)) if !t.is_empty() && !id.is_empty() && !id.contains('/') => Ok(format!("{t}/{id}")),
+        _ => Err(anyhow!("name the asset as <type>/<id>, like article/whitening-guide")),
+    }
+}
+
 fn connect_hint(e: reqwest::Error) -> anyhow::Error {
     if e.is_connect() {
         anyhow!("can't reach the daemon. Start it with: kiqr daemon")
@@ -409,6 +467,11 @@ fn print_event(ev: &Event) {
         ),
         EventKind::JobFinished { job } => format!("{job} job finished"),
         EventKind::CrawlLimitChanged { max_pages } => format!("page limit now {max_pages}"),
+        EventKind::AssetSaved { asset_type, id, title, status, created } => {
+            format!("asset    {} {asset_type}/{id}  {title}  ({status})", if *created { "new" } else { "saved" })
+        }
+        EventKind::AssetDeleted { asset_type, id } => format!("asset    removed {asset_type}/{id}"),
+        EventKind::AssetTypeSaved { id, name } => format!("type     {name} ({id}) saved"),
         EventKind::SeemoSays { text } => format!("Seemo: {text}"),
         EventKind::Committed { message } => format!("saved    {message}"),
     };

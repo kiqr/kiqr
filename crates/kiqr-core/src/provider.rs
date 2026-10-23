@@ -51,11 +51,11 @@ pub async fn available(spec: &str) -> bool {
     }
 }
 
-fn has_env(k: &str) -> bool {
+pub fn has_env(k: &str) -> bool {
     std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false)
 }
 
-async fn which(bin: &str) -> bool {
+pub async fn which(bin: &str) -> bool {
     tokio::process::Command::new(bin)
         .arg("--version")
         .stdout(Stdio::null())

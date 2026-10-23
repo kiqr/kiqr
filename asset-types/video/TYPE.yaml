@@ -1,0 +1,10 @@
+id: video
+name: Video
+plural: Videos
+icon: clapperboard
+description: Videos and reels, made with video APIs.
+preview: video
+files:
+  - { role: video, accept: [mp4, webm, mov] }
+  - { role: script, accept: [md] }
+  - { role: poster, accept: [png, jpg, jpeg, webp] }

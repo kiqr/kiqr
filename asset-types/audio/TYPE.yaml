@@ -1,0 +1,9 @@
+id: audio
+name: Audio
+plural: Audio
+icon: audio-lines
+description: Songs, jingles, voice-overs and podcast clips.
+preview: audio
+files:
+  - { role: audio, accept: [mp3, wav, ogg, m4a] }
+  - { role: lyrics, accept: [md, txt] }

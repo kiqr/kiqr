@@ -1,0 +1,9 @@
+# A reply in someone else's conversation: Reddit, forums, comments.
+id: reply
+name: Reply
+plural: Replies
+icon: reply
+description: Replies to conversations on Reddit, forums and comment threads.
+preview: post
+files:
+  - { role: body, accept: [md, txt] }

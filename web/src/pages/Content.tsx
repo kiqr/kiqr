@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { Network, SearchX, type LucideIcon } from "lucide-react";
-import { api, useAsync, useEvents, type ContentGap } from "../api";
+import { Link, Navigate, useParams } from "react-router-dom";
+import { Check, Network, Plus, SearchX, type LucideIcon } from "lucide-react";
+import { api, useAsync, useEvents, type Asset, type ContentGap } from "../api";
 import { pathOf } from "./Project";
 import "../profile.css";
+import "../library.css";
 
 const COLORS = ["#5eead4", "#818cf8", "#f472b6", "#fbbf24", "#34d399", "#60a5fa", "#fb923c", "#a78bfa", "#2dd4bf", "#f87171"];
 const INTENTS: ContentGap["intent"][] = ["informational", "commercial", "transactional", "navigational"];
@@ -75,7 +76,19 @@ export function ContentMap() {
 export function ContentGaps() {
   const { slug, brief } = useBrief();
   const [intent, setIntent] = useState<ContentGap["intent"] | null>(null);
+  const articles = useAsync(() => api.assets(slug, "article").catch(() => [] as Asset[]), [slug]);
+  const [busy, setBusy] = useState<string | null>(null);
   const b = brief.data;
+  const planned = (topic: string) => (articles.data ?? []).find((a) => a.source?.gap === topic);
+  const plan = async (g: ContentGap) => {
+    setBusy(g.topic);
+    try {
+      await api.createAsset(slug, { type: "article", title: g.topic, summary: g.rationale, tags: [g.intent], source: { gap: g.topic, intent: g.intent } });
+      articles.reload();
+    } finally {
+      setBusy(null);
+    }
+  };
   if (brief.loading) return null;
   if (!b) return <NoBrief slug={slug} icon={SearchX} what="content gaps" />;
   const gaps = b.content_gaps.filter((g) => !intent || g.intent === intent);
@@ -111,9 +124,15 @@ export function ContentGaps() {
                 <span className="intent">{g.intent}</span> · {g.rationale}
               </p>
             </div>
-            <span className="chip soon" title="Article writing arrives in the next release">
-              Write article · soon
-            </span>
+            {planned(g.topic) ? (
+              <Link className="chip acc plan done" to={`/p/${slug}/library/article/${planned(g.topic)!.id}`}>
+                <Check size={12} /> In the library
+              </Link>
+            ) : (
+              <button className="chip plan" disabled={busy === g.topic} onClick={() => plan(g)} title="Add a draft article for this gap to the library">
+                <Plus size={12} /> Plan article
+              </button>
+            )}
           </li>
         ))}
       </ul>
@@ -134,14 +153,20 @@ function NoBrief({ slug, icon: Icon, what }: { slug: string; icon: LucideIcon; w
   );
 }
 
-/** A content screen that arrives in a later release, said plainly. */
-export function ComingNext({ icon: Icon, title, text }: { icon: LucideIcon; title: string; text: string }) {
+/** A relative redirect inside the project, for links to screens that moved. */
+export function Redirect({ to }: { to: string }) {
+  const { slug = "" } = useParams();
+  return <Navigate to={`/p/${slug}/${to}`} replace />;
+}
+
+/** A screen that arrives in a later release, said plainly. */
+export function ComingNext({ icon: Icon, title, text, cap = "Content" }: { icon: LucideIcon; title: string; text: string; cap?: string }) {
   const { slug = "" } = useParams();
   return (
     <div className="prof">
       <div className="cm-head">
         <div>
-          <p className="cap">Content</p>
+          <p className="cap">{cap}</p>
           <h1 className="d2">{title}</h1>
         </div>
       </div>

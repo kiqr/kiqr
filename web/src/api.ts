@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DEMO, demoProject, demoState, runDemo } from "./demo";
+import { demoAssetFile, demoAssetRequest, demoAssetText } from "./demo-assets";
 import { demoBrand, demoBrief } from "./demo-brief";
 
 export type Project = {
@@ -68,6 +69,36 @@ export type Brand = {
   updated_at: string;
 };
 
+/** A kind of asset. Types are data: built-ins ship with KIQR, users and Seemo add more. */
+export type AssetType = {
+  id: string;
+  name: string;
+  plural: string;
+  /** A lucide icon name, kebab-case. */
+  icon: string;
+  description: string;
+  preview: "article" | "post" | "image" | "video" | "audio" | "campaign" | "files" | string;
+  files: { role: string; accept: string[] }[];
+  builtin: boolean;
+};
+export type AssetStatus = "draft" | "ready" | "scheduled" | "published" | "archived";
+/** Something made with Seemo: an article, a post, a meme, a video… */
+export type Asset = {
+  id: string;
+  type: string;
+  title: string;
+  status: AssetStatus;
+  tags: string[];
+  summary?: string;
+  created: { at: string; by: string };
+  updated_at: string;
+  files: { role: string; path: string; bytes: number; sha256: string }[];
+  source?: Record<string, unknown>;
+  publications: { connector: string; account?: string; url?: string; at: string; run?: string }[];
+};
+export type TypeCount = { type: string; count: number };
+export type NewAsset = { type: string; title: string; status?: AssetStatus; tags?: string[]; summary?: string; source?: Record<string, unknown>; files?: { role: string; name: string; text: string }[] };
+
 export type KiqrEvent = { at: string; project: string | null; type: string } & Record<string, unknown>;
 
 export type Health = {
@@ -76,6 +107,18 @@ export type Health = {
   home: string;
   providers: { task: string; model: string; available: boolean }[];
   unblockingapi: boolean;
+  /** Which secrets are set in `.env`. Names only; values never leave the daemon. */
+  secrets?: { name: string; set: boolean }[];
+  /** Model command-line tools found on this machine. */
+  tools?: { name: string; installed: boolean }[];
+  env_file?: string;
+  address?: string;
+};
+/** `config.yaml`. */
+export type Config = {
+  daemon: { host: string; port: number };
+  crawl: { max_pages: number; concurrency: number; ai_concurrency: number; escalate_to_unblockingapi: boolean };
+  models: { extract: string; synthesize: string; chat: string };
 };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -89,6 +132,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<Health>("/api/health"),
+  config: () => req<Config>("/api/config"),
+  saveConfig: (c: Config) => req<Config>("/api/config", { method: "PUT", body: JSON.stringify(c) }),
   projects: () => req<Project[]>("/api/projects"),
   project: (slug: string) => req<Project>(`/api/projects/${slug}`),
   createProject: (url: string) => req<Project>("/api/projects", { method: "POST", body: JSON.stringify({ url }) }),
@@ -108,7 +153,25 @@ export const api = {
   rebuildBrief: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/brief`, { method: "POST", body: "{}" }),
   brand: (slug: string) => req<Brand>(`/api/projects/${slug}/brand`).catch(() => null),
   rebuildBrand: (slug: string) => req<Brand>(`/api/projects/${slug}/brand`, { method: "POST", body: "{}" }),
+  assetTypes: () => req<AssetType[]>("/api/asset-types"),
+  assets: (slug: string, type?: string) => req<Asset[]>(`/api/projects/${slug}/assets${type ? `?type=${encodeURIComponent(type)}` : ""}`),
+  assetSummary: (slug: string) => req<TypeCount[]>(`/api/projects/${slug}/assets/summary`),
+  asset: (slug: string, type: string, id: string) => req<Asset>(`/api/projects/${slug}/assets/${type}/${id}`),
+  createAsset: (slug: string, a: NewAsset) => req<Asset>(`/api/projects/${slug}/assets`, { method: "POST", body: JSON.stringify(a) }),
+  saveAsset: (slug: string, a: Asset) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}`, { method: "PUT", body: JSON.stringify(a) }),
+  deleteAsset: (slug: string, type: string, id: string) => req<void>(`/api/projects/${slug}/assets/${type}/${id}`, { method: "DELETE" }),
+  /** Where the browser loads one of an asset's files. */
+  assetFile: (slug: string, a: Pick<Asset, "type" | "id">, name: string) => (DEMO ? demoAssetFile(a, name) : `/api/projects/${slug}/assets/${a.type}/${a.id}/files/${encodeURIComponent(name)}`),
+  /** The text of an asset's text file (article body, post copy). */
+  assetText: (slug: string, a: Pick<Asset, "type" | "id">, name: string) =>
+    DEMO ? Promise.resolve(demoAssetText(a, name)) : fetch(api.assetFile(slug, a, name)).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`)))),
   history: (slug: string) => req<{ hash: string; at: string; message: string }[]>(`/api/projects/${slug}/history`),
+};
+
+let demoConfig: Config = {
+  daemon: { host: "127.0.0.1", port: 7777 },
+  crawl: { max_pages: 200, concurrency: 5, ai_concurrency: 3, escalate_to_unblockingapi: true },
+  models: { extract: "claude-cli/haiku", synthesize: "claude-cli/sonnet", chat: "claude-cli/sonnet" },
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -118,12 +181,30 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path === "/api/projects") return Promise.resolve((demoState.created ? [demoProject] : []) as T);
   if (path.startsWith("/api/projects/") && path.split("/").length === 4) return Promise.resolve(demoProject as T);
+  if (path === "/api/asset-types" || path.includes("/assets")) return demoAssetRequest<T>(path, init);
   if (path.endsWith("/brief")) return Promise.resolve((init?.method === "PUT" ? JSON.parse(String(init.body)) : demoState.created ? demoBrief : null) as T);
   if (path.endsWith("/crawl/limit")) return Promise.resolve({ max_pages: JSON.parse(String(init?.body)).max_pages, live: true } as T);
   if (path.endsWith("/brand")) return demoState.created ? Promise.resolve(demoBrand as T) : Promise.reject(new Error("404"));
   if (path.endsWith("/profile")) return Promise.resolve([] as T);
+  if (path === "/api/config") {
+    if (init?.method === "PUT") demoConfig = JSON.parse(String(init.body));
+    return Promise.resolve(demoConfig as T);
+  }
   if (path === "/api/health")
-    return Promise.resolve({ ok: true, version: "demo", home: "~/.kiqr", providers: [{ task: "extract", model: "claude-cli/haiku", available: true }], unblockingapi: false } as T);
+    return Promise.resolve({
+      ok: true,
+      version: "demo",
+      home: "~/.kiqr",
+      env_file: "~/.kiqr/.env",
+      address: "127.0.0.1:7777",
+      providers: (["extract", "synthesize", "chat"] as const).map((task) => ({ task, model: demoConfig.models[task], available: !demoConfig.models[task].startsWith("openai/") })),
+      unblockingapi: true,
+      secrets: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "UNBLOCKINGAPI_KEY", "KIQR_CLOUD_TOKEN"].map((name) => ({ name, set: name === "UNBLOCKINGAPI_KEY" || name === "ANTHROPIC_API_KEY" })),
+      tools: [
+        { name: "claude", installed: true },
+        { name: "codex", installed: false },
+      ],
+    } as T);
   return Promise.resolve({} as T);
 }
 
@@ -133,12 +214,14 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
  * then `replay_done` with `running`, then live events; it does so again on reconnect.
  * Changing `key` reconnects.
  */
-export function useEvents(project: string | null, onEvent: (e: KiqrEvent) => void, opts: { replay?: boolean; key?: number } = {}) {
+export function useEvents(project: string | null, onEvent: (e: KiqrEvent) => void, opts: { replay?: boolean; key?: number; demo?: boolean } = {}) {
   const handler = useRef(onEvent);
   handler.current = onEvent;
-  const { replay = false, key = 0 } = opts;
+  const { replay = false, key = 0, demo = true } = opts;
   useEffect(() => {
     if (DEMO) {
+      // The demo's scripted crawl runs for the screens that show it, not for every listener.
+      if (!demo) return;
       if (replay) handler.current({ type: "replay_done", project, at: new Date().toISOString(), running: false });
       return runDemo(project ?? demoProject.slug, (e) => handler.current(e));
     }
@@ -152,7 +235,7 @@ export function useEvents(project: string | null, onEvent: (e: KiqrEvent) => voi
       }
     };
     return () => es.close();
-  }, [project, replay, key]);
+  }, [project, replay, key, demo]);
 }
 
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {

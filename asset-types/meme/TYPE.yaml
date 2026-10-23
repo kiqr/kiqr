@@ -1,0 +1,9 @@
+id: meme
+name: Meme
+plural: Memes
+icon: laugh
+description: Memes and other quick, shareable images.
+preview: image
+files:
+  - { role: image, accept: [png, jpg, jpeg, webp, gif] }
+  - { role: caption, accept: [md, txt] }

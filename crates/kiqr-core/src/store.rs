@@ -20,6 +20,9 @@ const GITIGNORE: &str = "\
 tmp/
 logs/
 projects/*/cache/
+# Generated assets and project secrets stay on this machine.
+projects/*/assets/
+projects/*/.env
 ";
 
 const ENV_TEMPLATE: &str = "\
@@ -55,7 +58,7 @@ impl Store {
     fn init_sync(&self) -> Result<()> {
         let root = self.home.root();
         std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
-        for dir in [self.home.projects_dir(), self.home.skills_dir(), self.home.seemo_dir()] {
+        for dir in [self.home.projects_dir(), self.home.skills_dir(), self.home.seemo_dir(), self.home.asset_types_dir()] {
             std::fs::create_dir_all(dir)?;
         }
         let ignore = root.join(".gitignore");

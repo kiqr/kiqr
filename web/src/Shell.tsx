@@ -3,17 +3,15 @@ import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-rout
 import { motion } from "motion/react";
 import {
   Brain,
+  Cable,
   CalendarDays,
   Check,
   ChevronsUpDown,
-  Gauge,
   Globe,
+  Library,
   ListChecks,
-  MessageSquareText,
   MessagesSquare,
   Network,
-  Newspaper,
-  Plug,
   Plus,
   Radar,
   SearchX,
@@ -22,42 +20,69 @@ import {
   Swords,
   type LucideIcon,
 } from "lucide-react";
-import { api, useAsync, type Project } from "./api";
+import { api, useAsync, useEvents, type AssetType, type Project, type TypeCount } from "./api";
+import { assetIcon } from "./assetIcons";
 import { SeemoWidget } from "./SeemoWidget";
 
-/** Project-scoped navigation. Content first; what we know about the business second; Seemo; settings last. */
-const NAV: { label: string; items: { sub: string; label: string; icon: LucideIcon }[] }[] = [
-  {
-    label: "Content",
-    items: [
-      { sub: "overview", label: "Overview", icon: Gauge },
-      { sub: "calendar", label: "Calendar", icon: CalendarDays },
-      { sub: "articles", label: "Articles", icon: Newspaper },
-      { sub: "posts", label: "Posts", icon: MessageSquareText },
-      { sub: "map", label: "Content map", icon: Network },
-      { sub: "gaps", label: "Content gaps", icon: SearchX },
-    ],
-  },
-  {
-    label: "Your business",
-    items: [
-      { sub: "", label: "Business profile", icon: Brain },
-      { sub: "crawl", label: "Website crawls", icon: Radar },
-      { sub: "competitors", label: "Competitors", icon: Swords },
-    ],
-  },
-  {
-    label: "Seemo",
-    items: [
-      { sub: "chats", label: "Chats with Seemo", icon: MessagesSquare },
-      { sub: "tasks", label: "Tasks", icon: ListChecks },
-    ],
-  },
-  {
-    label: "Settings",
-    items: [{ sub: "settings", label: "Project settings", icon: SlidersHorizontal }],
-  },
-];
+type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number };
+
+/** Built-in types the Content group always lists, so a new project shows where things will go. */
+const ALWAYS = ["article", "post"];
+
+/**
+ * Project-scoped navigation. Content is the library plus one item per asset type (types are
+ * data, so the group grows when Seemo makes a new kind of thing); what we know about the
+ * business; Seemo, which is the automation: chats, the calendar of tasks, and the connectors
+ * it publishes through; settings last.
+ */
+function navGroups(types: AssetType[], counts: TypeCount[]): { label: string; items: NavItem[] }[] {
+  const n = (id: string) => counts.find((c) => c.type === id)?.count ?? 0;
+  const shown = types.filter((t) => n(t.id) > 0 || ALWAYS.includes(t.id));
+  const total = counts.reduce((s, c) => s + c.count, 0);
+  return [
+    {
+      label: "Content",
+      items: [
+        { sub: "library", label: "Library", icon: Library, count: total || undefined },
+        ...shown.map((t) => ({ sub: `library/${t.id}`, label: t.plural, icon: assetIcon(t.icon), count: n(t.id) || undefined })),
+      ],
+    },
+    {
+      label: "Your business",
+      items: [
+        { sub: "", label: "Business profile", icon: Brain },
+        { sub: "map", label: "Content map", icon: Network },
+        { sub: "gaps", label: "Content gaps", icon: SearchX },
+        { sub: "crawl", label: "Website crawls", icon: Radar },
+        { sub: "competitors", label: "Competitors", icon: Swords },
+      ],
+    },
+    {
+      label: "Seemo",
+      items: [
+        { sub: "chats", label: "Chats", icon: MessagesSquare },
+        { sub: "calendar", label: "Calendar", icon: CalendarDays },
+        { sub: "tasks", label: "Tasks", icon: ListChecks },
+        { sub: "connectors", label: "Connectors", icon: Cable },
+      ],
+    },
+    {
+      label: "Settings",
+      items: [{ sub: "settings", label: "Project settings", icon: SlidersHorizontal }],
+    },
+  ];
+}
+
+/** Asset types and this project's counts, kept current from asset events. */
+function useAssetNav(slug: string | undefined) {
+  const types = useAsync(() => api.assetTypes().catch(() => [] as AssetType[]), []);
+  const counts = useAsync(() => (slug ? api.assetSummary(slug).catch(() => [] as TypeCount[]) : Promise.resolve([] as TypeCount[])), [slug]);
+  useEvents(slug ?? null, (e) => {
+    if (e.type === "asset_saved" || e.type === "asset_deleted") counts.reload();
+    if (e.type === "asset_type_saved") types.reload();
+  }, { demo: false });
+  return navGroups(types.data ?? [], counts.data ?? []);
+}
 
 export function Shell() {
   const { slug } = useParams();
@@ -67,6 +92,7 @@ export function Shell() {
   const { pathname } = useLocation();
   // First run: the onboarding stands alone, centred; the sidebar arrives with the first project.
   const bare = (projects.loading || list.length === 0) && (pathname === "/projects" || pathname === "/new");
+  const nav = useAssetNav(current?.slug);
 
   return (
     <div className={`shell ${bare ? "bare" : ""}`}>
@@ -78,18 +104,19 @@ export function Shell() {
         <ProjectSwitcher projects={list} current={current} />
         {current && (
           <nav className="nav" aria-label="Project">
-            {NAV.map((g) => (
+            {nav.map((g) => (
               <div className="grp" key={g.label}>
                 <p>{g.label}</p>
                 {g.items.map((it) => {
                   const to = it.sub ? `/p/${current.slug}/${it.sub}` : `/p/${current.slug}`;
                   return (
-                    <NavLink key={it.sub} to={to} end>
+                    <NavLink key={it.sub} to={to} end={!it.sub.startsWith("library/")}>
                       {({ isActive }) => (
                         <>
                           {isActive && <motion.span layoutId="nav-active" className="hl" transition={{ type: "spring", stiffness: 500, damping: 40 }} />}
                           <it.icon size={16} />
                           <span>{it.label}</span>
+                          {it.count !== undefined && <span className="ct">{it.count}</span>}
                         </>
                       )}
                     </NavLink>
@@ -100,9 +127,6 @@ export function Shell() {
           </nav>
         )}
         <div className="side-foot">
-          <NavLink to="/connections">
-            <Plug size={16} /> Connections
-          </NavLink>
           <NavLink to="/settings">
             <Settings size={16} /> Settings
           </NavLink>

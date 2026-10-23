@@ -1,0 +1,9 @@
+id: ad-campaign
+name: Ad campaign
+plural: Ad campaigns
+icon: megaphone
+description: Ad campaigns with ad groups, keywords and copy, for Google Ads, Meta and others.
+preview: campaign
+files:
+  - { role: campaign, accept: [yaml, json] }
+  - { role: creative, accept: [png, jpg, jpeg, webp, mp4] }

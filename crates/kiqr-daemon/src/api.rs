@@ -11,6 +11,7 @@ use axum::{
 };
 use futures::stream::Stream;
 use kiqr_core::{
+    assets::{self, Asset, AssetType, NewAsset, TypeCount},
     brand::{self, Brand},
     crawl::{CrawlControl, Crawler},
     events::EventKind,
@@ -38,6 +39,11 @@ pub fn router(app: App) -> Router {
         .route("/api/projects/{slug}/brief", get(get_brief).put(put_brief).post(start_brief))
         .route("/api/projects/{slug}/brand", get(get_brand).post(rebuild_brand))
         .route("/api/projects/{slug}/history", get(history))
+        .route("/api/asset-types", get(list_asset_types).post(save_asset_type))
+        .route("/api/projects/{slug}/assets", get(list_assets).post(create_asset))
+        .route("/api/projects/{slug}/assets/summary", get(asset_summary))
+        .route("/api/projects/{slug}/assets/{kind}/{id}", get(get_asset).put(put_asset).delete(delete_asset))
+        .route("/api/projects/{slug}/assets/{kind}/{id}/files/{name}", get(get_asset_file).put(put_asset_file).layer(axum::extract::DefaultBodyLimit::max(MAX_ASSET_FILE)))
         .route("/api/events", get(events))
         .with_state(app)
 }
@@ -49,9 +55,11 @@ pub struct ApiError(StatusCode, String);
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
         let msg = e.to_string();
-        let code = if msg.starts_with("no project") {
+        let code = if INVALID.iter().any(|p| msg.starts_with(p)) {
+            StatusCode::BAD_REQUEST
+        } else if msg.starts_with("no project") || msg.starts_with("no asset") {
             StatusCode::NOT_FOUND
-        } else if msg.contains("already exists") || msg.contains("only http") {
+        } else if msg.contains("already exists") || msg.contains("only http") || INVALID.iter().any(|p| msg.starts_with(p)) {
             StatusCode::BAD_REQUEST
         } else {
             StatusCode::INTERNAL_SERVER_ERROR
@@ -59,6 +67,12 @@ impl From<anyhow::Error> for ApiError {
         ApiError(code, msg)
     }
 }
+
+/// Largest file one upload may carry: room for a few minutes of video.
+const MAX_ASSET_FILE: usize = 1024 * 1024 * 1024;
+
+/// Messages that mean the request itself was wrong.
+const INVALID: &[&str] = &["no asset type", "a type id", "a type needs", "an asset needs", "a file name"];
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
@@ -73,7 +87,28 @@ struct Health {
     home: String,
     providers: Vec<ProviderStatus>,
     unblockingapi: bool,
+    /// The secrets KIQR knows about and whether each is set. Names only, never values.
+    secrets: Vec<SecretStatus>,
+    /// Model command-line tools found on this machine.
+    tools: Vec<ToolStatus>,
+    env_file: String,
+    address: String,
 }
+
+#[derive(Serialize)]
+struct SecretStatus {
+    name: &'static str,
+    set: bool,
+}
+
+#[derive(Serialize)]
+struct ToolStatus {
+    name: &'static str,
+    installed: bool,
+}
+
+/// Every secret KIQR reads from `.env`.
+const SECRETS: &[&str] = &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "UNBLOCKINGAPI_KEY", "KIQR_CLOUD_TOKEN"];
 
 #[derive(Serialize)]
 struct ProviderStatus {
@@ -94,6 +129,14 @@ async fn health(State(app): State<App>) -> Json<Health> {
         home: app.store.home().root().display().to_string(),
         providers,
         unblockingapi: std::env::var("UNBLOCKINGAPI_KEY").map(|k| !k.is_empty()).unwrap_or(false),
+        secrets: SECRETS.iter().map(|&name| SecretStatus { name, set: provider::has_env(name) }).collect(),
+        tools: vec![ToolStatus { name: "claude", installed: provider::which("claude").await }, ToolStatus { name: "codex", installed: provider::which("codex").await }],
+        env_file: app.store.home().env_file().display().to_string(),
+        address: format!(
+            "{}:{}",
+            std::env::var("KIQR_HOST").unwrap_or_else(|_| cfg.daemon.host.clone()),
+            std::env::var("KIQR_PORT").ok().unwrap_or_else(|| cfg.daemon.port.to_string())
+        ),
     })
 }
 
@@ -459,6 +502,104 @@ async fn history(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<
     let filter = format!("projects/{slug}");
     let rows = app.store.history(Some(&filter), 100).await?;
     Ok(Json(rows.into_iter().map(|(hash, at, message)| Commit { hash, at, message }).collect()))
+}
+
+// Assets: generated content lives outside git, so these routes emit events
+// and never commit. Asset types are configuration and are committed.
+
+async fn list_asset_types(State(app): State<App>) -> ApiResult<Vec<AssetType>> {
+    Ok(Json(assets::types(&app.store)))
+}
+
+async fn save_asset_type(State(app): State<App>, Json(t): Json<AssetType>) -> ApiResult<AssetType> {
+    let saved = assets::save_type(&app.store, &t)?;
+    app.store.commit(&format!("asset type: {} ({})", saved.name, saved.id)).await?;
+    app.bus.emit(None, EventKind::AssetTypeSaved { id: saved.id.clone(), name: saved.name.clone() });
+    Ok(Json(saved))
+}
+
+#[derive(Deserialize)]
+struct AssetFilter {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    status: Option<String>,
+    tag: Option<String>,
+}
+
+async fn list_assets(State(app): State<App>, Path(slug): Path<String>, Query(f): Query<AssetFilter>) -> ApiResult<Vec<Asset>> {
+    let _ = Project::load(&app.store, &slug)?;
+    let status = |a: &Asset| serde_json::to_value(a.status).ok().and_then(|v| v.as_str().map(str::to_string));
+    let list = assets::list(&app.store, &slug)?
+        .into_iter()
+        .filter(|a| f.kind.as_ref().is_none_or(|k| &a.kind == k))
+        .filter(|a| f.status.as_ref().is_none_or(|s| status(a).as_ref() == Some(s)))
+        .filter(|a| f.tag.as_ref().is_none_or(|t| a.tags.contains(t)))
+        .collect();
+    Ok(Json(list))
+}
+
+async fn asset_summary(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Vec<TypeCount>> {
+    let _ = Project::load(&app.store, &slug)?;
+    Ok(Json(assets::summary(&app.store, &slug)?))
+}
+
+fn emit_saved(app: &App, slug: &str, a: &Asset, created: bool) {
+    let status = serde_json::to_value(a.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+    app.bus.emit(Some(slug), EventKind::AssetSaved { asset_type: a.kind.clone(), id: a.id.clone(), title: a.title.clone(), status, created });
+}
+
+async fn create_asset(State(app): State<App>, Path(slug): Path<String>, Json(new): Json<NewAsset>) -> Result<(StatusCode, Json<Asset>), ApiError> {
+    let _ = Project::load(&app.store, &slug)?;
+    let a = assets::create(&app.store, &slug, new)?;
+    emit_saved(&app, &slug, &a, true);
+    Ok((StatusCode::CREATED, Json(a)))
+}
+
+async fn get_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>) -> ApiResult<Asset> {
+    Ok(Json(assets::load(&app.store, &slug, &kind, &id)?))
+}
+
+/// Change title, status, tags, summary, source or publications. The type, id,
+/// origin and file list stay as they are.
+async fn put_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>, Json(body): Json<Asset>) -> ApiResult<Asset> {
+    let current = assets::load(&app.store, &slug, &kind, &id)?;
+    if body.title.trim().is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "an asset needs a title".into()));
+    }
+    let next = Asset { id: current.id, kind: current.kind, created: current.created, files: current.files, title: body.title.trim().to_string(), ..body };
+    let saved = assets::save(&app.store, &slug, &next)?;
+    emit_saved(&app, &slug, &saved, false);
+    Ok(Json(saved))
+}
+
+async fn delete_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>) -> Result<StatusCode, ApiError> {
+    assets::delete(&app.store, &slug, &kind, &id)?;
+    app.bus.emit(Some(&slug), EventKind::AssetDeleted { asset_type: kind, id });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_asset_file(State(app): State<App>, Path((slug, kind, id, name)): Path<(String, String, String, String)>) -> Result<axum::response::Response, ApiError> {
+    let path = assets::file_path(&app.store, &slug, &kind, &id, &name)?;
+    let bytes = tokio::fs::read(&path).await.map_err(|e| ApiError(StatusCode::NOT_FOUND, format!("no asset file {name}: {e}")))?;
+    let mime = mime_guess::from_path(&path).first_or_octet_stream();
+    Ok(([(axum::http::header::CONTENT_TYPE, mime.to_string())], bytes).into_response())
+}
+
+#[derive(Deserialize)]
+struct FileRole {
+    role: Option<String>,
+}
+
+/// Upload one file as the raw request body. `?role=` says what it is (body, image, video…).
+async fn put_asset_file(
+    State(app): State<App>,
+    Path((slug, kind, id, name)): Path<(String, String, String, String)>,
+    Query(q): Query<FileRole>,
+    body: axum::body::Bytes,
+) -> ApiResult<Asset> {
+    let a = assets::write_file(&app.store, &slug, &kind, &id, q.role.as_deref().unwrap_or("file"), &name, &body)?;
+    emit_saved(&app, &slug, &a, false);
+    Ok(Json(a))
 }
 
 #[derive(Deserialize)]
