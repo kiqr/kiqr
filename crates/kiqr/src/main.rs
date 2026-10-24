@@ -2,6 +2,8 @@
 //! HTTP, so the CLI and the web UI always see the same state. `kiqr daemon`
 //! runs the daemon itself.
 
+mod mcp;
+
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
@@ -22,6 +24,29 @@ struct Cli {
 enum Command {
     /// Run the daemon in the foreground (the web UI is served from it)
     Daemon,
+    /// Serve KIQR's tools to a model over MCP on stdin/stdout. The daemon
+    /// starts this for Seemo's sessions; you rarely run it yourself.
+    #[command(hide = true)]
+    Mcp,
+    /// Talk to Seemo. Without a message, lists the project's chats.
+    Chat {
+        slug: String,
+        /// What to say. Seemo's reply streams here.
+        message: Option<String>,
+        /// Continue this chat instead of starting a new one
+        #[arg(long)]
+        chat: Option<String>,
+    },
+    /// Read a web page the way Seemo does (KIQR's fetcher, UnblockingAPI fallback); prints Markdown
+    Read {
+        slug: String,
+        url: String,
+    },
+    /// Seemo's scheduled tasks
+    Tasks {
+        #[command(subcommand)]
+        cmd: TasksCmd,
+    },
     /// Show daemon status, providers and the active home directory
     Status,
     /// Manage projects
@@ -91,6 +116,22 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum TasksCmd {
+    /// List a project's tasks with their schedule and last run
+    Ls { slug: String },
+    /// Show a task and its runs
+    Show { slug: String, task: String },
+    /// Run a task now and follow it
+    Run { slug: String, task: String },
+    /// Pause a task
+    Pause { slug: String, task: String },
+    /// Resume a paused task
+    Resume { slug: String, task: String },
+    /// Remove a task and its runs
+    Rm { slug: String, task: String },
+}
+
+#[derive(Subcommand)]
 enum AssetsCmd {
     /// List assets, newest change first
     Ls {
@@ -148,6 +189,10 @@ async fn run() -> Result<()> {
                 .init();
             kiqr_daemon::run(Home::resolve()).await
         }
+        Some(Command::Mcp) => {
+            let client = Client::new(cli.daemon_url)?;
+            mcp::serve(client).await
+        }
         None => {
             Cli::parse_from(["kiqr", "--help"]);
             Ok(())
@@ -159,9 +204,9 @@ async fn run() -> Result<()> {
     }
 }
 
-struct Client {
-    base: String,
-    http: reqwest::Client,
+pub(crate) struct Client {
+    pub(crate) base: String,
+    pub(crate) http: reqwest::Client,
 }
 
 impl Client {
@@ -173,14 +218,88 @@ impl Client {
                 .and_then(|t| serde_yaml_lite_port(&t));
             cfg.unwrap_or_else(|| "http://127.0.0.1:7777".into())
         });
-        // The daemon is local; never route to it through a system proxy.
-        let http = reqwest::Client::builder().no_proxy().build()?;
+        // The daemon is local; never route to it through a system proxy. Long
+        // timeout: approval polls wait up to two minutes.
+        let http = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(180)).build()?;
         Ok(Self { base: base.trim_end_matches('/').to_string(), http })
     }
 
     async fn run(&self, cmd: Command) -> Result<()> {
         match cmd {
-            Command::Daemon => unreachable!(),
+            Command::Daemon | Command::Mcp => unreachable!(),
+            Command::Chat { slug, message, chat } => match message {
+                None => {
+                    let v: Vec<serde_json::Value> = self.get(&format!("/api/projects/{slug}/chats")).await?;
+                    if v.is_empty() {
+                        println!("No chats yet. Start one: kiqr chat {slug} \"What do you know about us?\"");
+                    }
+                    for c in v {
+                        let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+                        println!("{:<24} {:<16} {:<40} {}", s("id"), &s("updated_at")[..16.min(s("updated_at").len())], s("title"), s("last_message"));
+                    }
+                }
+                Some(text) => {
+                    let id = match chat {
+                        Some(id) => id,
+                        None => {
+                            let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/chats"), &serde_json::json!({})).await?;
+                            v["id"].as_str().unwrap_or("").to_string()
+                        }
+                    };
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/chats/{id}/messages"), &serde_json::json!({ "text": text })).await?;
+                    eprintln!("chat {id}");
+                    self.stream_chat(&slug, &id).await?;
+                }
+            },
+            Command::Read { slug, url } => {
+                let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/web?url={}", mcp::urlencode(&url))).await?;
+                let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+                eprintln!("{} ({}, via {}{})", s("title"), v["status"], s("via"), if s("obstacle").is_empty() { String::new() } else { format!(", {}", s("obstacle")) });
+                println!("{}", s("markdown"));
+                if v["truncated"].as_bool() == Some(true) {
+                    eprintln!("[cut; the page is longer]");
+                }
+            }
+            Command::Tasks { cmd } => match cmd {
+                TasksCmd::Ls { slug } => {
+                    let v: Vec<serde_json::Value> = self.get(&format!("/api/projects/{slug}/tasks")).await?;
+                    if v.is_empty() {
+                        println!("No tasks. Ask Seemo for one in a chat, e.g. \"every weekday at 10:00, write a LinkedIn post\".");
+                    }
+                    for t in v {
+                        let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
+                        let next = t["next_run"].as_str().map(|x| x[..16.min(x.len())].to_string()).unwrap_or_else(|| "-".into());
+                        println!("{:<28} {:<8} {:<30} next {:<17} last {:<8} {}", s("id"), s("status"), s("schedule_text"), next, t["last_status"].as_str().unwrap_or("-"), s("title"));
+                    }
+                }
+                TasksCmd::Show { slug, task } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/tasks/{task}")).await?;
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    let runs: Vec<serde_json::Value> = self.get(&format!("/api/projects/{slug}/tasks/{task}/runs")).await?;
+                    for r in runs {
+                        let s = |k: &str| r[k].as_str().unwrap_or("").to_string();
+                        println!("{:<18} {:<8} {}", s("id"), s("status"), s("summary").lines().next().unwrap_or(""));
+                    }
+                }
+                TasksCmd::Run { slug, task } => {
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/tasks/{task}/run"), &serde_json::json!({})).await?;
+                    let run = v["run"].as_str().unwrap_or("").to_string();
+                    println!("Running {task} ({run})…");
+                    self.stream_events(Some(&slug), false, |ev| matches!(&ev.kind, EventKind::TaskRunFinished { run: r, .. } if *r == run)).await?;
+                }
+                TasksCmd::Pause { slug, task } => {
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/tasks/{task}/pause"), &serde_json::json!({})).await?;
+                    println!("Paused {task}.");
+                }
+                TasksCmd::Resume { slug, task } => {
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/tasks/{task}/resume"), &serde_json::json!({})).await?;
+                    println!("Resumed {task}.");
+                }
+                TasksCmd::Rm { slug, task } => {
+                    self.delete(&format!("/api/projects/{slug}/tasks/{task}")).await?;
+                    println!("Removed {task}.");
+                }
+            },
             Command::Status => {
                 let v: serde_json::Value = self.get("/api/health").await?;
                 println!("KIQR {}  home {}", v["version"].as_str().unwrap_or("?"), v["home"].as_str().unwrap_or("?"));
@@ -340,12 +459,75 @@ impl Client {
 
     /// With `replay`, the daemon first sends the project's current crawl from its start.
     async fn stream_events(&self, project: Option<&str>, replay: bool, stop_when: impl Fn(&Event) -> bool) -> Result<()> {
+        self.stream_raw(project, replay, |ev| {
+            print_event(ev);
+            stop_when(ev)
+        })
+        .await
+    }
+
+    /// Print one chat's turn as it streams: Seemo's words, the tools it uses,
+    /// and the cards; stops when the turn ends.
+    async fn stream_chat(&self, slug: &str, chat: &str) -> Result<()> {
+        use std::io::Write;
+        let mut streamed = false;
+        self.stream_raw(Some(slug), false, |ev| {
+            let mine = |c: &String| c == chat;
+            match &ev.kind {
+                EventKind::ChatDelta { chat: c, text } if mine(c) => {
+                    print!("{text}");
+                    let _ = std::io::stdout().flush();
+                    streamed = true;
+                    false
+                }
+                EventKind::ChatTool { chat: c, label, status, note, .. } if mine(c) => {
+                    if streamed {
+                        println!();
+                        streamed = false;
+                    }
+                    match status.as_str() {
+                        "started" => eprintln!("  · {label}…"),
+                        "failed" => eprintln!("  · {label}: failed{}", if note.is_empty() { String::new() } else { format!(" ({note})") }),
+                        _ => {}
+                    }
+                    false
+                }
+                EventKind::ChatMessage { chat: c, message } if mine(c) => {
+                    if let Some(card) = &message.card {
+                        if streamed {
+                            println!();
+                            streamed = false;
+                        }
+                        match card.kind.as_str() {
+                            "approval" if card.status == "pending" => eprintln!("  [Seemo is asking for a yes ({}): approve it in the web UI]", card.approval_kind.as_deref().unwrap_or("")),
+                            _ => eprintln!("  [{} {}]", card.kind, card.status),
+                        }
+                    }
+                    false
+                }
+                EventKind::ChatTurnFinished { chat: c, error } if mine(c) => {
+                    if streamed {
+                        println!();
+                    }
+                    if let Some(e) = error {
+                        eprintln!("Seemo couldn't finish: {e}");
+                    }
+                    true
+                }
+                _ => false,
+            }
+        })
+        .await
+    }
+
+    async fn stream_raw(&self, project: Option<&str>, replay: bool, mut on_event: impl FnMut(&Event) -> bool) -> Result<()> {
         let url = match project {
             Some(p) if replay => format!("{}/api/events?project={p}&replay=1", self.base),
             Some(p) => format!("{}/api/events?project={p}", self.base),
             None => format!("{}/api/events", self.base),
         };
-        let resp = self.http.get(&url).send().await.with_context(|| format!("connecting to {url}"))?.error_for_status()?;
+        // Events run for as long as the work does.
+        let resp = reqwest::Client::builder().no_proxy().build()?.get(&url).send().await.with_context(|| format!("connecting to {url}"))?.error_for_status()?;
         let mut stream = resp.bytes_stream();
         let mut buf = String::new();
         while let Some(chunk) = stream.next().await {
@@ -356,8 +538,7 @@ impl Client {
                 for line in frame.lines() {
                     if let Some(data) = line.strip_prefix("data:") {
                         if let Ok(ev) = serde_json::from_str::<Event>(data.trim()) {
-                            print_event(&ev);
-                            if stop_when(&ev) {
+                            if on_event(&ev) {
                                 return Ok(());
                             }
                         }
@@ -487,6 +668,44 @@ fn print_event(ev: &Event) {
         EventKind::AssetTypeSaved { id, name } => format!("type     {name} ({id}) saved"),
         EventKind::SeemoSays { text } => format!("Seemo: {text}"),
         EventKind::Committed { message } => format!("saved    {message}"),
+        EventKind::ChatCreated { chat, title } => format!("chat     {chat} started: {title}"),
+        EventKind::ChatRenamed { chat, title } => format!("chat     {chat} renamed: {title}"),
+        EventKind::ChatDeleted { chat } => format!("chat     {chat} removed"),
+        EventKind::ChatTurnStarted { .. } => "Seemo is thinking…".into(),
+        EventKind::ChatDelta { .. } => return,
+        EventKind::ChatTool { label, status, note, .. } => match status.as_str() {
+            "started" => format!("         {label}…"),
+            "failed" => format!("         {label}: failed{}", if note.is_empty() { String::new() } else { format!(" ({note})") }),
+            _ => return,
+        },
+        EventKind::ChatMessage { message, .. } => match message.role {
+            kiqr_core::chat::Role::Seemo => format!("Seemo: {}", message.text),
+            kiqr_core::chat::Role::User => format!("You: {}", message.text),
+            kiqr_core::chat::Role::Card => {
+                let c = message.card.as_ref();
+                format!("card     {} {}", c.map(|c| c.kind.as_str()).unwrap_or("card"), c.map(|c| c.status.as_str()).unwrap_or(""))
+            }
+            kiqr_core::chat::Role::Note => format!("note     {}", message.text),
+        },
+        EventKind::ChatTurnFinished { error, .. } => match error {
+            Some(e) => format!("Seemo couldn't finish: {e}"),
+            None => return,
+        },
+        EventKind::ApprovalRequested { approval, kind, .. } => format!("approval {kind} {approval} is waiting for you (approve it in the web UI)"),
+        EventKind::ApprovalResolved { approval, decision, .. } => format!("approval {approval}: {decision}"),
+        EventKind::TaskSaved { task, title, status, next_run } => format!(
+            "task     {task} \"{title}\" {status}{}",
+            next_run.map(|t| format!(", next run {}", t.with_timezone(&chrono::Local).format("%a %-d %b %H:%M"))).unwrap_or_default()
+        ),
+        EventKind::TaskDeleted { task } => format!("task     {task} removed"),
+        EventKind::TaskRunStarted { task, run } => format!("run      {task}/{run} started"),
+        EventKind::TaskRunStep { label, status, .. } => match status.as_str() {
+            "started" => format!("         {label}…"),
+            "failed" => format!("         {label}: failed"),
+            _ => return,
+        },
+        EventKind::TaskRunFinished { task, run, status, summary } => format!("run      {task}/{run} {status}{}", if summary.is_empty() { String::new() } else { format!(": {summary}") }),
+        EventKind::ConfigChanged { by, restart } => format!("config   changed by {by}{}", if *restart { " (restart the daemon to apply host/port)" } else { "" }),
     };
     println!("{t}  {line}");
 }

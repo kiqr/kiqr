@@ -28,6 +28,7 @@ pub fn install_builtin_skills(store: &Store) -> Result<bool> {
         ("business-brief", BUILTIN_BRIEF),
         ("crawl-site", include_str!("../../../skills/crawl-site/SKILL.md")),
         ("social-posts", BUILTIN_POSTS),
+        ("seemo-agent", crate::agent::BUILTIN_GUIDE),
     ] {
         let path = store.home().skills_dir().join(name).join("SKILL.md");
         if !path.exists() {
@@ -52,10 +53,41 @@ fn network_name(n: &str) -> String {
     }
 }
 
-fn skill_text(store: &Store, name: &str, builtin: &str) -> String {
+/// A skill's text: the user's copy in `~/.kiqr/skills/<name>/SKILL.md`, else
+/// the built-in one. Frontmatter stripped.
+pub fn skill_text(store: &Store, name: &str, builtin: &str) -> String {
     let path = store.home().skills_dir().join(name).join("SKILL.md");
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| builtin.to_string());
     strip_frontmatter(&text)
+}
+
+/// The built-in text of a skill, if it ships with KIQR.
+pub fn builtin_skill(name: &str) -> Option<&'static str> {
+    match name {
+        "extract-facts" => Some(BUILTIN_EXTRACT),
+        "build-profile" => Some(BUILTIN_BUILD),
+        "business-brief" => Some(BUILTIN_BRIEF),
+        "crawl-site" => Some(include_str!("../../../skills/crawl-site/SKILL.md")),
+        "social-posts" => Some(BUILTIN_POSTS),
+        "seemo-agent" => Some(crate::agent::BUILTIN_GUIDE),
+        _ => None,
+    }
+}
+
+/// Skill names: built-in ones plus any folder the user added.
+pub fn skill_names(store: &Store) -> Vec<String> {
+    let mut names: Vec<String> = ["extract-facts", "build-profile", "business-brief", "crawl-site", "social-posts", "seemo-agent"].iter().map(|s| s.to_string()).collect();
+    if let Ok(rd) = std::fs::read_dir(store.home().skills_dir()) {
+        for e in rd.flatten() {
+            if e.path().join("SKILL.md").exists() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+        }
+    }
+    names
 }
 
 fn strip_frontmatter(s: &str) -> String {

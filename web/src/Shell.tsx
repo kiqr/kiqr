@@ -14,6 +14,7 @@ import {
   Network,
   Plus,
   Radar,
+  Rocket,
   SearchX,
   Settings,
   SlidersHorizontal,
@@ -26,24 +27,24 @@ import { SeemoWidget } from "./SeemoWidget";
 
 type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number };
 
-/** Built-in types the Content group always lists, so a new project shows where things will go. */
-const ALWAYS = ["article", "post"];
-
 /**
  * Project-scoped navigation. Content is the library plus one item per asset type (types are
  * data, so the group grows when Seemo makes a new kind of thing); what we know about the
  * business; Seemo, which is the automation: chats, the calendar of tasks, and the connectors
  * it publishes through; settings last.
  */
-function navGroups(types: AssetType[], counts: TypeCount[]): { label: string; items: NavItem[] }[] {
-  const n = (id: string) => counts.find((c) => c.type === id)?.count ?? 0;
-  const shown = types.filter((t) => n(t.id) > 0 || ALWAYS.includes(t.id));
-  const total = counts.reduce((s, c) => s + c.count, 0);
+function navGroups(types: AssetType[], counts: TypeCount[] | undefined): { label: string; items: NavItem[] }[] {
+  const n = (id: string) => counts?.find((c) => c.type === id)?.count ?? 0;
+  // A type appears once the project has something of it; nothing is pinned.
+  const shown = types.filter((t) => n(t.id) > 0);
+  const total = (counts ?? []).reduce((s, c) => s + c.count, 0);
+  // Until the first asset exists, the library is where you get started.
+  const fresh = counts !== undefined && total === 0;
   return [
     {
       label: "Content",
       items: [
-        { sub: "library", label: "Library", icon: Library, count: total || undefined },
+        { sub: "library", label: fresh ? "Getting started" : "Library", icon: fresh ? Rocket : Library, count: total || undefined },
         ...shown.map((t) => ({ sub: `library/${t.id}`, label: t.plural, icon: assetIcon(t.icon), count: n(t.id) || undefined })),
       ],
     },
@@ -81,7 +82,7 @@ function useAssetNav(slug: string | undefined) {
     if (e.type === "asset_saved" || e.type === "asset_deleted") counts.reload();
     if (e.type === "asset_type_saved") types.reload();
   }, { demo: false });
-  return navGroups(types.data ?? [], counts.data ?? []);
+  return navGroups(types.data ?? [], counts.data);
 }
 
 export function Shell() {

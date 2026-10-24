@@ -147,6 +147,9 @@ pub struct NewAsset {
     pub source: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
     pub files: Vec<NewTextFile>,
+    /// Shortcut: the body text, saved as `<type>.md` with role `body`.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -253,10 +256,11 @@ pub fn list(store: &Store, slug: &str) -> Result<Vec<Asset>> {
     Ok(out)
 }
 
-/// Asset counts per type, most first.
+/// Asset counts per type, most first. Archived assets are not counted: they
+/// live in the Archive, not in the library's lists.
 pub fn summary(store: &Store, slug: &str) -> Result<Vec<TypeCount>> {
     let mut counts: Vec<TypeCount> = Vec::new();
-    for a in list(store, slug)? {
+    for a in list(store, slug)?.into_iter().filter(|a| a.status != Status::Archived) {
         match counts.iter_mut().find(|c| c.kind == a.kind) {
             Some(c) => c.count += 1,
             None => counts.push(TypeCount { kind: a.kind, count: 1 }),
@@ -301,10 +305,21 @@ pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
         publications: Vec::new(),
     };
     save(store, slug, &asset)?;
-    for f in new.files {
+    let mut files = new.files;
+    if let Some(text) = new.text.filter(|t| !t.trim().is_empty()) {
+        if !files.iter().any(|f| f.role == "body") {
+            files.push(NewTextFile { role: "body".into(), name: format!("{}.md", asset.kind), text: text.trim().to_string() + "\n" });
+        }
+    }
+    for f in files {
         asset = write_file(store, slug, &asset.kind, &asset.id, &f.role, &f.name, f.text.as_bytes())?;
     }
     Ok(asset)
+}
+
+/// The name of an asset's body file, if it has one.
+pub fn body_file(asset: &Asset) -> Option<&str> {
+    asset.files.iter().find(|f| f.role == "body").map(|f| f.path.as_str())
 }
 
 /// Save an asset's metadata as given, stamping `updated_at`.

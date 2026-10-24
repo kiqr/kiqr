@@ -4,8 +4,10 @@
 //! Markdown files under a local git repository the daemon commits to after
 //! every change. There is no database.
 
+pub mod agent;
 pub mod assets;
 pub mod brand;
+pub mod chat;
 pub mod config;
 pub mod crawl;
 pub mod events;
@@ -17,6 +19,8 @@ pub mod profile;
 pub mod project;
 pub mod provider;
 pub mod store;
+pub mod tasks;
+pub mod tools;
 
 pub use config::Config;
 pub use events::{Event, EventBus};

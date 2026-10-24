@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { DEMO, demoProject, demoState, runDemo } from "./demo";
 import { demoAssetFile, demoAssetRequest, demoAssetText } from "./demo-assets";
 import { demoBrand, demoBrief } from "./demo-brief";
+import { demoSeemoRequest, onDemoSeemo } from "./demo-chat";
 
 export type Project = {
   slug: string;
@@ -119,7 +120,74 @@ export type Config = {
   daemon: { host: string; port: number };
   crawl: { max_pages: number; concurrency: number; ai_concurrency: number; escalate_to_unblockingapi: boolean };
   models: { extract: string; synthesize: string; chat: string };
+  /** Seemo's sessions: spend ceiling per turn, how many run at once, the timezone for schedules. */
+  agent?: { max_budget_usd: number; max_concurrent: number; timezone: string };
 };
+
+// ---- Seemo: chats, approvals, tasks
+
+/** A tool Seemo used while writing a message. `ok` is null while it runs. */
+export type Step = { tool: string; label: string; ok: boolean | null; note?: string };
+/** A card in a chat: an approval Seemo is waiting for, which becomes a task card once approved. */
+export type Card = {
+  kind: "approval" | "task" | string;
+  approval?: string;
+  approval_kind?: "task" | "config" | string;
+  status: "pending" | "approved" | "declined" | "expired" | string;
+  task?: string;
+  payload: Record<string, unknown>;
+  result?: Record<string, unknown>;
+};
+export type Message = {
+  id: string;
+  at: string;
+  role: "user" | "seemo" | "card" | "note";
+  text: string;
+  steps?: Step[];
+  card?: Card;
+  kind?: string;
+  error?: string;
+};
+export type Chat = { id: string; title: string; created_at: string; updated_at: string; session_id: string | null; model: string; last_message: string; messages: number };
+/** A reply in progress, so a client that joins late catches up. */
+export type Streaming = { message: string; text: string; steps: Step[]; started: string };
+export type ChatView = Chat & { messages: Message[]; streaming: Streaming | null };
+
+export type Schedule = { kind: "once" | "rrule"; at?: string | null; rrule?: string | null; tz?: string; text?: string };
+export type RunStatus = "running" | "ok" | "failed" | "missed";
+export type Task = {
+  id: string;
+  title: string;
+  instruction: string;
+  schedule: Schedule;
+  schedule_text: string;
+  allowed: string[];
+  allowed_labels: string[];
+  status: "active" | "paused" | "done";
+  created_by: string;
+  follow_up_chat?: string | null;
+  created_at: string;
+  next_run: string | null;
+  last_run: string | null;
+  last_status: RunStatus | null;
+  runs: number;
+  running: boolean;
+};
+export type Run = {
+  id: string;
+  task: string;
+  started: string;
+  finished: string | null;
+  status: RunStatus;
+  trigger: string;
+  summary: string;
+  steps: Step[];
+  assets: string[];
+  session_id: string | null;
+  cost_usd: number | null;
+};
+export type CalendarItem = { task: string; title: string; at: string; schedule_text: string };
+export type ToolGroup = { id: string; label: string; tools: string[] };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -169,15 +237,39 @@ export const api = {
   assetText: (slug: string, a: Pick<Asset, "type" | "id">, name: string) =>
     DEMO ? Promise.resolve(demoAssetText(a, name)) : fetch(api.assetFile(slug, a, name)).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`)))),
   history: (slug: string) => req<{ hash: string; at: string; message: string }[]>(`/api/projects/${slug}/history`),
+
+  // Seemo
+  chats: (slug: string) => req<Chat[]>(`/api/projects/${slug}/chats`),
+  createChat: (slug: string, title?: string) => req<Chat>(`/api/projects/${slug}/chats`, { method: "POST", body: JSON.stringify({ title: title ?? "" }) }),
+  chat: (slug: string, id: string) => req<ChatView>(`/api/projects/${slug}/chats/${id}`),
+  renameChat: (slug: string, id: string, title: string) => req<Chat>(`/api/projects/${slug}/chats/${id}`, { method: "PUT", body: JSON.stringify({ title }) }),
+  deleteChat: (slug: string, id: string) => req<void>(`/api/projects/${slug}/chats/${id}`, { method: "DELETE" }),
+  /** Say something; Seemo's reply streams as `chat_delta`/`chat_tool` events and lands as `chat_message`. */
+  sendMessage: (slug: string, id: string, text: string) => req<{ message: string; reply: string }>(`/api/projects/${slug}/chats/${id}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+  stopChat: (slug: string, id: string) => req<{ stopping: boolean }>(`/api/projects/${slug}/chats/${id}/stop`, { method: "POST", body: "{}" }),
+  resolveApproval: (slug: string, id: string, decision: "approve" | "decline", allowed?: string[]) =>
+    req<{ id: string; status: string; result: Record<string, unknown> }>(`/api/projects/${slug}/approvals/${id}`, { method: "POST", body: JSON.stringify({ decision, allowed }) }),
+  tasks: (slug: string) => req<Task[]>(`/api/projects/${slug}/tasks`),
+  task: (slug: string, id: string) => req<Task>(`/api/projects/${slug}/tasks/${id}`),
+  runs: (slug: string, id: string) => req<Run[]>(`/api/projects/${slug}/tasks/${id}/runs`),
+  runTask: (slug: string, id: string) => req<{ started: boolean; run: string }>(`/api/projects/${slug}/tasks/${id}/run`, { method: "POST", body: "{}" }),
+  pauseTask: (slug: string, id: string) => req<Task>(`/api/projects/${slug}/tasks/${id}/pause`, { method: "POST", body: "{}" }),
+  resumeTask: (slug: string, id: string) => req<Task>(`/api/projects/${slug}/tasks/${id}/resume`, { method: "POST", body: "{}" }),
+  deleteTask: (slug: string, id: string) => req<void>(`/api/projects/${slug}/tasks/${id}`, { method: "DELETE" }),
+  calendar: (slug: string, from?: string, to?: string) =>
+    req<CalendarItem[]>(`/api/projects/${slug}/calendar${from ? `?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}` : ""}`),
+  tools: () => req<{ groups: ToolGroup[] }>("/api/tools"),
 };
 
 let demoConfig: Config = {
   daemon: { host: "127.0.0.1", port: 7777 },
   crawl: { max_pages: 200, concurrency: 5, ai_concurrency: 3, escalate_to_unblockingapi: true },
   models: { extract: "claude-cli/haiku", synthesize: "claude-cli/sonnet", chat: "claude-cli/sonnet" },
+  agent: { max_budget_usd: 2, max_concurrent: 3, timezone: "Europe/Stockholm" },
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  if (/\/(chats|approvals|tasks|calendar)(\/|\?|$)/.test(path) || path === "/api/tools") return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);
@@ -229,16 +321,58 @@ export function useEvents(project: string | null, onEvent: (e: KiqrEvent) => voi
       return runDemo(project ?? demoProject.slug, (e) => handler.current(e));
     }
     const url = project ? `/api/events?project=${encodeURIComponent(project)}${replay ? "&replay=1" : ""}` : "/api/events";
-    const es = new EventSource(url);
-    es.onmessage = (m) => {
-      try {
-        handler.current(JSON.parse(m.data));
-      } catch {
-        /* ignore malformed frames */
-      }
-    };
-    return () => es.close();
+    return subscribe(url, (e) => handler.current(e), key);
   }, [project, replay, key, demo]);
+}
+
+/**
+ * One EventSource per URL, shared by every listener: browsers allow six
+ * connections per origin and a chat page with the widget open has more
+ * listeners than that. `key` forces a fresh connection (a replay) for all.
+ */
+const sources = new Map<string, { es: EventSource; key: number; listeners: Set<(e: KiqrEvent) => void> }>();
+function subscribe(url: string, listener: (e: KiqrEvent) => void, key: number) {
+  let src = sources.get(url);
+  if (src && src.key !== key) {
+    src.es.close();
+    sources.delete(url);
+    src = undefined;
+  }
+  if (!src) {
+    const es = new EventSource(url);
+    const entry = { es, key, listeners: new Set<(e: KiqrEvent) => void>() };
+    es.onmessage = (m) => {
+      let ev: KiqrEvent;
+      try {
+        ev = JSON.parse(m.data);
+      } catch {
+        return;
+      }
+      for (const l of entry.listeners) l(ev);
+    };
+    sources.set(url, entry);
+    src = entry;
+  }
+  src.listeners.add(listener);
+  return () => {
+    const cur = sources.get(url);
+    if (!cur) return;
+    cur.listeners.delete(listener);
+    if (cur.listeners.size === 0) {
+      cur.es.close();
+      sources.delete(url);
+    }
+  };
+}
+
+/** Demo mode: chat events come from the scripted conversation. */
+export function useDemoSeemo(onEvent: (e: KiqrEvent) => void) {
+  const handler = useRef(onEvent);
+  handler.current = onEvent;
+  useEffect(() => {
+    if (!DEMO) return;
+    return onDemoSeemo((e) => handler.current(e));
+  }, []);
 }
 
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {

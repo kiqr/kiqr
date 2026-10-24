@@ -26,3 +26,6 @@ tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
+rrule = "0.14"
+chrono-tz = "0.10"
+iana-time-zone = "0.1"

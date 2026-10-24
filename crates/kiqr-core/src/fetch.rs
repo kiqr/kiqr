@@ -4,6 +4,7 @@
 //! unreadable otherwise.
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -185,4 +186,86 @@ pub fn obstacle(f: &Fetched, text_len: usize, script_len: usize) -> Option<Obsta
         return Some(Obstacle::JavaScriptShell);
     }
     None
+}
+
+/// One web page as Seemo reads it: the same path a crawl takes (local fetch,
+/// then UnblockingAPI when the page is blocked or an empty JavaScript shell
+/// and escalation is on), returned as Markdown instead of being cached.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReadPage {
+    pub url: String,
+    pub final_url: String,
+    pub status: u16,
+    /// `local` or `unblockingapi`.
+    pub via: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub markdown: String,
+    pub words: usize,
+    /// Set when the page could not be read properly; `markdown` is then whatever came back.
+    pub obstacle: Option<String>,
+    /// True when `markdown` was cut at the caller's limit.
+    pub truncated: bool,
+}
+
+/// Read one page. `max_chars` caps the Markdown (0 means no cap).
+pub async fn read_page(url: &Url, escalate: bool, max_chars: usize) -> Result<ReadPage> {
+    anyhow::ensure!(matches!(url.scheme(), "http" | "https"), "only http and https pages can be read");
+    let local = LocalFetcher::new()?;
+    let mut fetched = local.fetch(url).await?;
+    let mut page = crate::markdown::parse(&fetched.final_url, &fetched.body);
+    let mut hit = obstacle(&fetched, page.text_len, page.script_len);
+    if hit.is_some() && escalate {
+        if let Some(unblocking) = UnblockingFetcher::from_env() {
+            match unblocking.fetch(url).await {
+                Ok(f) => {
+                    page = crate::markdown::parse(&f.final_url, &f.body);
+                    fetched = f;
+                    hit = None;
+                }
+                Err(e) => tracing::warn!(%url, error = %e, "escalation failed"),
+            }
+        }
+    }
+    if !fetched.content_type.is_empty() && !fetched.content_type.contains("html") && !fetched.content_type.contains("text/") {
+        anyhow::bail!("{} is {}, not a web page", fetched.final_url, fetched.content_type);
+    }
+    let (markdown, truncated) = cut(&page.markdown, max_chars);
+    Ok(ReadPage {
+        url: url.to_string(),
+        final_url: fetched.final_url.to_string(),
+        status: fetched.status,
+        via: fetched.via.to_string(),
+        title: page.title,
+        description: page.description,
+        words: page.markdown.split_whitespace().count(),
+        markdown,
+        obstacle: hit.map(|o| o.reason()),
+        truncated,
+    })
+}
+
+/// Cut text at `max` characters on a line boundary where possible; 0 means no cut.
+pub fn cut(text: &str, max: usize) -> (String, bool) {
+    if max == 0 || text.chars().count() <= max {
+        return (text.to_string(), false);
+    }
+    let head: String = text.chars().take(max).collect();
+    let at = head.rfind('\n').filter(|&i| i > max / 2).unwrap_or(head.len());
+    (head[..at].trim_end().to_string(), true)
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+
+    #[test]
+    fn cut_keeps_whole_lines() {
+        let text = "one line\ntwo line\nthree line\n";
+        assert_eq!(cut(text, 0), (text.to_string(), false));
+        assert_eq!(cut(text, 100), (text.to_string(), false));
+        assert_eq!(cut(text, 20), ("one line\ntwo line".to_string(), true));
+        // No usable line break in the second half: a hard cut.
+        assert_eq!(cut("abcdefghij", 4), ("abcd".to_string(), true));
+    }
 }

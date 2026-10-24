@@ -1,7 +1,10 @@
 //! The KIQR daemon: one process that owns `~/.kiqr`, runs crawls and profile
 //! synthesis, serves the HTTP API and SSE events, and serves the web UI.
 
+mod agent;
 mod api;
+mod scheduler;
+mod seemo;
 mod web;
 
 use anyhow::Result;
@@ -19,6 +22,16 @@ pub struct App {
     pub crawls: Arc<RwLock<std::collections::HashMap<String, Arc<kiqr_core::crawl::CrawlControl>>>>,
     /// Serialises saving the brand of projects crawled before brand collection.
     pub brand_backfill: Arc<tokio::sync::Mutex<()>>,
+    /// Chat turns in progress, by chat id.
+    pub turns: Arc<RwLock<std::collections::HashMap<String, Arc<agent::Turn>>>>,
+    /// Approvals Seemo is waiting for (and recent decisions), by approval id.
+    pub approvals: Arc<RwLock<std::collections::HashMap<String, Arc<seemo::Approval>>>>,
+    /// Caps the agent processes running at once.
+    pub agents: Arc<tokio::sync::Semaphore>,
+    /// Follow-up notes waiting for a chat's turn to end, by chat id.
+    pub queued: Arc<RwLock<std::collections::HashMap<String, std::collections::VecDeque<String>>>>,
+    /// Where `kiqr mcp` reaches this daemon.
+    pub daemon_url: String,
 }
 
 impl App {
@@ -39,6 +52,10 @@ pub async fn run(home: Home) -> Result<()> {
     }
     seed_persona(&store).await?;
 
+    // KIQR_HOST / KIQR_PORT override config.yaml, so Docker can bind 0.0.0.0 without editing files.
+    let host = std::env::var("KIQR_HOST").unwrap_or_else(|_| config.daemon.host.clone());
+    let port = std::env::var("KIQR_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(config.daemon.port);
+    let loopback = if host == "0.0.0.0" || host == "::" || host.is_empty() { "127.0.0.1".to_string() } else { host.clone() };
     let app = App {
         store,
         bus: EventBus::new(),
@@ -46,7 +63,14 @@ pub async fn run(home: Home) -> Result<()> {
         jobs: Default::default(),
         crawls: Default::default(),
         brand_backfill: Default::default(),
+        turns: Default::default(),
+        approvals: Default::default(),
+        agents: Arc::new(tokio::sync::Semaphore::new(config.agent.max_concurrent.clamp(1, 10))),
+        queued: Default::default(),
+        daemon_url: format!("http://{loopback}:{port}"),
     };
+    scheduler::recover(&app);
+    tokio::spawn(scheduler::run(app.clone()));
 
     // Projects crawled before brand collection existed, or whose brand was
     // built by older rules, get it saved now, in the background, so the
@@ -66,9 +90,6 @@ pub async fn run(home: Home) -> Result<()> {
     }
 
     let router = api::router(app.clone()).fallback(web::serve);
-    // KIQR_HOST / KIQR_PORT override config.yaml, so Docker can bind 0.0.0.0 without editing files.
-    let host = std::env::var("KIQR_HOST").unwrap_or_else(|_| config.daemon.host.clone());
-    let port = std::env::var("KIQR_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(config.daemon.port);
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("KIQR daemon listening on http://{addr}  (home: {})", home.root().display());
@@ -76,7 +97,7 @@ pub async fn run(home: Home) -> Result<()> {
     Ok(())
 }
 
-const PERSONA: &str = include_str!("../../../seemo/PERSONA.md");
+pub(crate) const PERSONA: &str = include_str!("../../../seemo/PERSONA.md");
 
 async fn seed_persona(store: &Store) -> Result<()> {
     let path = store.home().seemo_dir().join("PERSONA.md");

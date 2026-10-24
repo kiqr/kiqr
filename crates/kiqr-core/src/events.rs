@@ -65,6 +65,64 @@ pub enum EventKind {
     AssetTypeSaved { id: String, name: String },
     SeemoSays { text: String },
     Committed { message: String },
+
+    // Seemo chats. `chat` is the chat id. None of these go into the crawl log.
+    ChatCreated { chat: String, title: String },
+    ChatRenamed { chat: String, title: String },
+    ChatDeleted { chat: String },
+    /// Seemo started answering `message` (the user message id, or a follow-up id).
+    ChatTurnStarted { chat: String, message: String },
+    /// A piece of the reply as it streams. Display only; the whole message
+    /// arrives as `chat_message` when the turn ends.
+    ChatDelta { chat: String, text: String },
+    /// Seemo used a tool. `status` is `started`, `done` or `failed`; `label`
+    /// is the human wording ("Reading the business brief").
+    ChatTool { chat: String, tool: String, label: String, status: String, #[serde(default)] note: String },
+    /// A message was added to the transcript, or (same id) changed: a card
+    /// whose status moved on.
+    ChatMessage { chat: String, message: crate::chat::Message },
+    ChatTurnFinished { chat: String, #[serde(default)] error: Option<String> },
+    /// Seemo asked for a yes before doing something. `kind` is `task` or `config`.
+    ApprovalRequested { chat: String, approval: String, kind: String },
+    ApprovalResolved { chat: String, approval: String, decision: String },
+
+    // Scheduled tasks. `task` is the task id, `run` the run id (a timestamp).
+    TaskSaved { task: String, title: String, status: String, #[serde(default)] next_run: Option<DateTime<Utc>> },
+    TaskDeleted { task: String },
+    TaskRunStarted { task: String, run: String },
+    /// A tool the run used; `status` is `started`, `done` or `failed`.
+    TaskRunStep { task: String, run: String, label: String, status: String },
+    TaskRunFinished { task: String, run: String, status: String, summary: String },
+
+    /// `config.yaml` changed and the daemon reloaded it. `by` is `you` or `seemo`.
+    /// `restart` says whether a change (host, port) only applies after a restart.
+    ConfigChanged { by: String, #[serde(default)] restart: bool },
+}
+
+impl EventKind {
+    /// Whether a crawl log keeps this event. Chat, task and config events are
+    /// not part of a crawl, and token deltas would flood it.
+    pub fn in_crawl_log(&self) -> bool {
+        !matches!(
+            self,
+            EventKind::ChatCreated { .. }
+                | EventKind::ChatRenamed { .. }
+                | EventKind::ChatDeleted { .. }
+                | EventKind::ChatTurnStarted { .. }
+                | EventKind::ChatDelta { .. }
+                | EventKind::ChatTool { .. }
+                | EventKind::ChatMessage { .. }
+                | EventKind::ChatTurnFinished { .. }
+                | EventKind::ApprovalRequested { .. }
+                | EventKind::ApprovalResolved { .. }
+                | EventKind::TaskSaved { .. }
+                | EventKind::TaskDeleted { .. }
+                | EventKind::TaskRunStarted { .. }
+                | EventKind::TaskRunStep { .. }
+                | EventKind::TaskRunFinished { .. }
+                | EventKind::ConfigChanged { .. }
+        )
+    }
 }
 
 /// A few of the facts a page produced, for the live feed.
@@ -113,7 +171,7 @@ impl EventBus {
         // exactly once: either in the log it copies or on the channel.
         let mut logs = self.logs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(log) = project.and_then(|p| logs.get_mut(p)) {
-            if log.open && log.events.len() < MAX_LOG {
+            if log.open && log.events.len() < MAX_LOG && ev.kind.in_crawl_log() {
                 log.events.push(ev.clone());
             }
         }
@@ -179,6 +237,9 @@ mod tests {
         assert!(log.open);
         bus.emit(Some("a"), EventKind::CrawlFinished { pages: 1, blocked: 0, failed: 0 });
         assert!(matches!(rx.try_recv().unwrap().kind, EventKind::CrawlFinished { .. }));
+        // Chat traffic during a crawl is sent live but never logged.
+        bus.emit(Some("a"), EventKind::ChatDelta { chat: "c1".into(), text: "hi".into() });
+        assert!(matches!(rx.try_recv().unwrap().kind, EventKind::ChatDelta { .. }));
         let done = bus.close_log("a").unwrap();
         assert_eq!(done.len(), 2);
         bus.emit(Some("a"), EventKind::SeemoSays { text: "after".into() });

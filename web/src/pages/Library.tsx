@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { ArrowLeft, Bot, Download, ExternalLink, FileText, Library as LibraryIcon, SearchX, Send, Trash2, User } from "lucide-react";
+import { ArrowLeft, Bot, Download, ExternalLink, FileText, Library as LibraryIcon, Rocket, SearchX, Send, Trash2, User } from "lucide-react";
 import { api, useAsync, useEvents, type Asset, type AssetStatus, type AssetType } from "../api";
+import { Markdown } from "../markdown";
 import { assetIcon } from "../assetIcons";
 import { ago } from "./Project";
 import { EmptyLibrary, Guide } from "./LibraryEmpty";
@@ -13,6 +14,8 @@ import "../library.css";
 
 const STATUSES: AssetStatus[] = ["draft", "ready", "scheduled", "published", "archived"];
 const STATUS_TONE: Record<AssetStatus, string> = { draft: "", ready: "acc", scheduled: "ai", published: "ok", archived: "" };
+/** Badge wording, sentence case like "All". Archived assets live in the Archive. */
+const STATUS_LABEL: Record<AssetStatus, string> = { draft: "Draft", ready: "Ready", scheduled: "Scheduled", published: "Published", archived: "Archive" };
 const IMAGE = /\.(png|jpe?g|webp|gif|svg|avif)$/i;
 const VIDEO = /\.(mp4|webm|mov)$/i;
 const AUDIO = /\.(mp3|wav|ogg|m4a)$/i;
@@ -33,8 +36,12 @@ export function LibraryPage() {
   useEffect(() => setStatus(null), [type]);
   const t = types.find((x) => x.id === type);
   const all = assets.data ?? [];
-  const list = all.filter((a) => !status || a.status === status);
-  const Icon = t ? assetIcon(t.icon) : LibraryIcon;
+  // Archived assets show only in the Archive, never under All.
+  const live = all.filter((a) => a.status !== "archived");
+  const list = status ? all.filter((a) => a.status === status) : live;
+  // Until the first asset exists, the library page is the getting-started page.
+  const fresh = !t && !!assets.data && all.length === 0;
+  const Icon = t ? assetIcon(t.icon) : fresh ? Rocket : LibraryIcon;
 
   return (
     <div className="prof lib">
@@ -45,25 +52,31 @@ export function LibraryPage() {
           </span>
           <div>
             <p className="cap">{t ? "Library" : "Content"}</p>
-            <h1 className="d2">{t ? t.plural : "Library"}</h1>
-            <p>{t ? t.description : "Everything you and Seemo have made for this project: articles, posts, images, videos and whatever else you dream up."}</p>
+            <h1 className="d2">{t ? t.plural : fresh ? "Getting started" : "Library"}</h1>
+            <p>
+              {t
+                ? t.description
+                : fresh
+                  ? "A few steps from your website to your first posts. Everything you and Seemo make lands here, in your library."
+                  : "Everything you and Seemo have made for this project: articles, posts, images, videos and whatever else you dream up."}
+            </p>
           </div>
         </div>
       </div>
 
       {!t && all.length > 0 && <Guide slug={slug} hideWhenComplete />}
-      {!t && all.length > 0 && <TypeStrip slug={slug} types={types} assets={all} />}
+      {!t && live.length > 0 && <TypeStrip slug={slug} types={types} assets={live} />}
 
       {all.length > 0 && (
         <div className="filters">
           <button className={`chip ${status === null ? "acc" : ""}`} onClick={() => setStatus(null)}>
-            All {all.length}
+            All {live.length}
           </button>
           {STATUSES.map((s) => {
             const n = all.filter((a) => a.status === s).length;
             return n ? (
               <button key={s} className={`chip ${status === s ? "acc" : ""}`} onClick={() => setStatus(s)}>
-                {s} {n}
+                {STATUS_LABEL[s]} {n}
               </button>
             ) : null;
           })}
@@ -120,7 +133,7 @@ function AssetCard({ slug, a, t, i, showType }: { slug: string; a: Asset; t?: As
           <p className="nm">{a.title}</p>
           {a.summary && <p className="ds">{a.summary}</p>}
           <div className="lib-meta">
-            <span className={`chip ${STATUS_TONE[a.status]}`}>{a.status}</span>
+            <span className={`chip ${STATUS_TONE[a.status]}`}>{a.status === "archived" ? "Archived" : STATUS_LABEL[a.status]}</span>
             {a.publications.map((p, k) => (
               <span key={k} className="chip ok" title={p.account}>
                 <Send size={11} /> {p.connector}
@@ -136,14 +149,25 @@ function AssetCard({ slug, a, t, i, showType }: { slug: string; a: Asset; t?: As
   );
 }
 
-/** Who made it: you, Seemo in a chat, or a scheduled task. */
+/** Who made it: you, Seemo in a chat, or a scheduled task. Chats and tasks link to where it happened. */
 function Maker({ by, long }: { by: string; long?: boolean }) {
+  const { slug = "" } = useParams();
   const seemo = by === "seemo" || by.startsWith("task:") || by.startsWith("chat:");
-  const label = by.startsWith("task:") ? `Task ${by.slice(5)}` : by.startsWith("chat:") ? "Seemo, in a chat" : by === "seemo" ? "Seemo" : "You";
-  return (
-    <span className={`maker ${seemo ? "ai" : ""}`} title={label}>
+  const label = by.startsWith("task:") ? `Seemo, in a task` : by.startsWith("chat:") ? "Seemo, in a chat" : by === "seemo" ? "Seemo" : "You";
+  const to = by.startsWith("task:") ? `/p/${slug}/tasks#${by.slice(5)}` : by.startsWith("chat:") ? `/p/${slug}/chats/${by.slice(5)}` : null;
+  const inner = (
+    <>
       {seemo ? <Bot size={12} /> : <User size={12} />}
       {long && label}
+    </>
+  );
+  return to && long ? (
+    <Link className={`maker ${seemo ? "ai" : ""}`} title={label} to={to}>
+      {inner}
+    </Link>
+  ) : (
+    <span className={`maker ${seemo ? "ai" : ""}`} title={label}>
+      {inner}
     </span>
   );
 }
@@ -249,7 +273,7 @@ export function AssetPage() {
             <div className="lib-status">
               {STATUSES.map((s) => (
                 <button key={s} disabled={busy} className={`chip ${a.status === s ? STATUS_TONE[s] || "acc" : ""}`} onClick={() => a.status !== s && setStatus(s)}>
-                  {s}
+                  {s === "archived" ? "Archived" : STATUS_LABEL[s]}
                 </button>
               ))}
             </div>
@@ -371,36 +395,6 @@ function Preview({ slug, a, t }: { slug: string; a: Asset; t?: AssetType }) {
       ) : null}
       {!visual && !audio && !text && <p className="muted sm">Nothing to preview yet. Its files are listed beside it.</p>}
     </>
-  );
-}
-
-/** Enough Markdown for drafts: headings, paragraphs, lists, quotes, bold, italics and code. */
-function Markdown({ text }: { text: string }) {
-  const blocks = text.replace(/\r/g, "").split(/\n{2,}/);
-  return (
-    <div className="lib-md">
-      {blocks.map((b, i) => {
-        const h = /^(#{1,4})\s+(.*)$/.exec(b.trim());
-        if (h) {
-          const H = (["h1", "h2", "h3", "h4"] as const)[h[1].length - 1];
-          return <H key={i}>{inline(h[2])}</H>;
-        }
-        const lines = b.split("\n");
-        if (lines.every((l) => /^\s*([-*]|\d+\.)\s+/.test(l))) {
-          const L = /^\s*\d+\./.test(lines[0]) ? "ol" : "ul";
-          return <L key={i}>{lines.map((l, k) => <li key={k}>{inline(l.replace(/^\s*([-*]|\d+\.)\s+/, ""))}</li>)}</L>;
-        }
-        if (lines.every((l) => l.startsWith(">"))) return <blockquote key={i}>{inline(lines.map((l) => l.replace(/^>\s?/, "")).join(" "))}</blockquote>;
-        if (b.startsWith("```")) return <pre key={i}>{b.replace(/^```\w*\n?|```$/g, "")}</pre>;
-        return <p key={i}>{inline(lines.join(" "))}</p>;
-      })}
-    </div>
-  );
-}
-
-function inline(s: string): React.ReactNode[] {
-  return s.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g).map((part, i) =>
-    part.startsWith("**") ? <b key={i}>{part.slice(2, -2)}</b> : part.startsWith("`") ? <code key={i}>{part.slice(1, -1)}</code> : part.startsWith("*") && part.length > 2 ? <em key={i}>{part.slice(1, -1)}</em> : part,
   );
 }
 

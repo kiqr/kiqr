@@ -12,6 +12,7 @@ pub struct Config {
     pub daemon: DaemonConfig,
     pub crawl: CrawlDefaults,
     pub models: Models,
+    pub agent: AgentConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,9 +45,28 @@ pub struct Models {
     pub chat: String,
 }
 
+/// Seemo's agent sessions: chats and task runs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// Spend ceiling for one chat turn or one task run, in USD (API-key billing;
+    /// subscriptions ignore it).
+    pub max_budget_usd: f64,
+    /// Agent processes allowed at once, across all projects.
+    pub max_concurrent: usize,
+    /// IANA timezone used for schedules and for telling Seemo the local time.
+    /// Empty means the machine's timezone.
+    pub timezone: String,
+}
+
 impl Default for Config {
     fn default() -> Self {
-        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default() }
+        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default() }
+    }
+}
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self { max_budget_usd: 2.0, max_concurrent: 3, timezone: String::new() }
     }
 }
 impl Default for DaemonConfig {

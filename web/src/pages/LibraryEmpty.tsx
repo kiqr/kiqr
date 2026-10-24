@@ -9,6 +9,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { api, useAsync, useEvents, type Asset } from "../api";
+import { openSeemo } from "../SeemoWidget";
 import { DEMO } from "../demo";
 
 type Idea = { icon: LucideIcon; name: string; example: string };
@@ -182,24 +183,58 @@ export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComple
   const { skipped, toggle } = useSkipped(slug);
   const [writing, setWriting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The chat the guide started, so this step follows it (and survives a reload).
+  const chatKey = `kiqr.guide.chat.${slug}`;
+  const [chatId, setChatId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(chatKey);
+    } catch {
+      return null;
+    }
+  });
   useEvents(
     slug,
     (e) => {
       if (e.type === "asset_saved" && e.asset_type === "post") posts.reload();
       if (e.type === "job_finished" && e.job === "posts") setWriting(false);
       if (e.type === "seemo_says" && typeof e.text === "string" && e.text.startsWith("I couldn't write the posts")) setError(e.text.replace(/^I couldn't write the posts: /, ""));
+      if (chatId && e.chat === chatId) {
+        if (e.type === "chat_turn_finished" && e.error) {
+          setError(String(e.error));
+          setWriting(false);
+        }
+        if (e.type === "chat_message") {
+          const m = e.message as { role: string; card?: { status: string } };
+          if (m.card && (m.card.status === "declined" || m.card.status === "expired")) setWriting(false);
+        }
+      }
+      if (e.type === "task_run_finished" && e.status === "failed" && writing) {
+        setError(String(e.summary || "the task failed"));
+        setWriting(false);
+      }
     },
     { demo: false },
   );
 
+  /** Ask Seemo in a new chat; it makes a task, the task writes the posts. */
   const generate = async () => {
     setError(null);
     setWriting(true);
     try {
-      await api.generateAssets(slug, "post", 3);
+      const c = await api.createChat(slug, "Three social media posts to start with");
+      setChatId(c.id);
+      try {
+        localStorage.setItem(chatKey, c.id);
+      } catch {
+        /* private window */
+      }
+      openSeemo(c.id);
+      await api.sendMessage(slug, c.id, "Write three social media posts for the library as draft post assets, using the social-posts skill, and tell me when they are in.");
       if (DEMO) {
-        posts.reload();
-        setWriting(false);
+        window.setTimeout(() => {
+          posts.reload();
+          setWriting(false);
+        }, 4000);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -231,15 +266,15 @@ export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComple
       text: postCount
         ? `${postCount} post${postCount === 1 ? "" : "s"} in the library.`
         : writing
-          ? "Seemo is writing them from your profile, in your tone of voice…"
+          ? "Seemo is on it in a chat: it proposes a task, you approve it, and the posts land here. Follow along in the corner or in Chats."
           : error
             ? `That didn't work: ${error}`
             : "Seemo writes three posts from your profile, in your tone of voice. You review them before anything goes out.",
       state: optional("posts", postCount ? "done" : hasBrief ? "now" : "next"),
       optional: true,
-      to: postCount ? `/p/${slug}/library/post` : undefined,
-      action: postCount ? "See posts" : undefined,
-      run: !postCount && hasBrief ? generate : undefined,
+      to: postCount ? `/p/${slug}/library/post` : writing && chatId ? `/p/${slug}/chats/${chatId}` : undefined,
+      action: postCount ? "See posts" : writing ? "Open the chat" : undefined,
+      run: !postCount && hasBrief && !writing ? generate : undefined,
       busy: writing,
     },
     { id: "connect", icon: Cable, title: "Connect where you publish", text: "Your blog, X, Reddit, LinkedIn, Google Ads, and image and video tools.", state: optional("connect", "soon"), optional: true },
@@ -247,9 +282,11 @@ export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComple
       id: "schedule",
       icon: MessagesSquare,
       title: "Ask Seemo, or put it on the calendar",
-      text: "“Every weekday at 10:00, reply to relevant Reddit posts.” Confirm once; it runs on its own.",
-      state: optional("schedule", "soon"),
+      text: "“Every weekday at 10:00, write a LinkedIn post.” Seemo proposes a task, you confirm once; it runs on its own.",
+      state: optional("schedule", hasBrief ? "now" : "next"),
       optional: true,
+      to: `/p/${slug}/chats`,
+      action: "Open chats",
     },
   ];
   const settled = steps.filter((s) => s.state === "done" || s.state === "skipped").length;
@@ -259,7 +296,7 @@ export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComple
     <div className="pcard lib-guide">
       <div className="lib-guide-head">
         <div>
-          <p className="cap">Getting started</p>
+          <p className="cap">Step by step</p>
           <h2>From your website to marketing that runs itself</h2>
         </div>
         <div className="lib-guide-prog" aria-label={`${settled} of ${steps.length} steps done or skipped`}>

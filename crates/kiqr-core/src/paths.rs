@@ -71,8 +71,28 @@ impl Home {
     pub fn facts_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("facts")
     }
+    /// Seemo conversations: `chats/<id>/chat.yaml` + `messages.jsonl`. Committed.
     pub fn chats_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("chats")
+    }
+    pub fn chat_dir(&self, slug: &str, chat: &str) -> PathBuf {
+        self.chats_dir(slug).join(chat)
+    }
+    /// Scheduled tasks: `tasks/<id>/task.yaml` and their runs in `tasks/<id>/runs/<ts>.yaml`. Committed.
+    pub fn tasks_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("tasks")
+    }
+    pub fn task_dir(&self, slug: &str, task: &str) -> PathBuf {
+        self.tasks_dir(slug).join(task)
+    }
+    pub fn runs_dir(&self, slug: &str, task: &str) -> PathBuf {
+        self.task_dir(slug, task).join("runs")
+    }
+    /// Working directory for the agent processes Seemo runs in. Empty on
+    /// purpose, so nothing from the daemon's own directory leaks into them;
+    /// `tmp/` is ignored by git.
+    pub fn agent_dir(&self) -> PathBuf {
+        self.root.join("tmp").join("agent")
     }
     /// Generated assets: `assets/<type>/<id>/`. Ignored by git.
     pub fn assets_dir(&self, slug: &str) -> PathBuf {

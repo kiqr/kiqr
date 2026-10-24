@@ -46,19 +46,20 @@ pub fn router(app: App) -> Router {
         .route("/api/projects/{slug}/assets/{kind}/{id}", get(get_asset).put(put_asset).delete(delete_asset))
         .route("/api/projects/{slug}/assets/{kind}/{id}/files/{name}", get(get_asset_file).put(put_asset_file).layer(axum::extract::DefaultBodyLimit::max(MAX_ASSET_FILE)))
         .route("/api/events", get(events))
+        .merge(crate::seemo::routes())
         .with_state(app)
 }
 
-type ApiResult<T> = Result<Json<T>, ApiError>;
+pub(crate) type ApiResult<T> = Result<Json<T>, ApiError>;
 
-pub struct ApiError(StatusCode, String);
+pub struct ApiError(pub StatusCode, pub String);
 
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
         let msg = e.to_string();
         let code = if INVALID.iter().any(|p| msg.starts_with(p)) {
             StatusCode::BAD_REQUEST
-        } else if msg.starts_with("no project") || msg.starts_with("no asset") {
+        } else if msg.starts_with("no project") || msg.starts_with("no asset") || msg.starts_with("no chat") || msg.starts_with("no task") || msg.starts_with("no run") {
             StatusCode::NOT_FOUND
         } else if msg.contains("already exists") || msg.contains("only http") || INVALID.iter().any(|p| msg.starts_with(p)) {
             StatusCode::BAD_REQUEST
@@ -146,10 +147,20 @@ async fn get_config(State(app): State<App>) -> Json<kiqr_core::Config> {
 }
 
 async fn put_config(State(app): State<App>, Json(cfg): Json<kiqr_core::Config>) -> ApiResult<kiqr_core::Config> {
-    cfg.save(&app.store)?;
-    app.store.commit("config: update").await?;
-    *app.config.write().await = cfg.clone();
+    let current = app.config.read().await.clone();
+    let restart = cfg.daemon.host != current.daemon.host || cfg.daemon.port != current.daemon.port;
+    apply_config(&app, cfg.clone(), "you", restart).await?;
     Ok(Json(cfg))
+}
+
+/// Save `config.yaml`, commit, and make the daemon use it from now on. Host
+/// and port are read once at start-up, so those need a restart (`restart`).
+pub(crate) async fn apply_config(app: &App, cfg: kiqr_core::Config, by: &str, restart: bool) -> Result<(), ApiError> {
+    cfg.save(&app.store)?;
+    app.store.commit(&format!("config: update{}", if by == "you" { "" } else { " (by Seemo)" })).await?;
+    *app.config.write().await = cfg;
+    app.bus.emit(None, EventKind::ConfigChanged { by: by.into(), restart });
+    Ok(())
 }
 
 async fn list_projects(State(app): State<App>) -> ApiResult<Vec<Project>> {

@@ -7,7 +7,7 @@ import {
   Bot, Check, Cloud, Cpu, Database, FolderGit2, HardDrive, KeyRound, Plug, Radar, Server, Settings as SettingsIcon, ShieldCheck, Sparkles, Terminal, X,
   type LucideIcon,
 } from "lucide-react";
-import { api, useAsync, type Config, type Health } from "../api";
+import { api, useAsync, useEvents, type Config, type Health } from "../api";
 import "../settings.css";
 
 type Tab = { id: string; label: string; icon: LucideIcon };
@@ -32,6 +32,17 @@ export function Settings() {
   }, [config.data]);
 
   const dirty = !!draft && !!config.data && JSON.stringify(draft) !== JSON.stringify(config.data);
+  // Seemo can change settings from a chat; show them here as soon as it does, unless you are mid-edit.
+  useEvents(
+    null,
+    (e) => {
+      if (e.type === "config_changed" && !dirty) {
+        config.reload();
+        health.reload();
+      }
+    },
+    { demo: false },
+  );
   const save = async () => {
     if (!draft) return;
     setSaving(true);
