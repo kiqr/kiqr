@@ -35,8 +35,25 @@ impl Home {
     pub fn config_file(&self) -> PathBuf {
         self.root.join("config.yaml")
     }
+    /// Skills and connections: `skills/<name>/SKILL.md` and/or `extension.yaml`.
     pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
+    }
+    /// A project's own skills and connections. Committed.
+    pub fn project_skills_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("skills")
+    }
+    /// Publishing channels: `channels/<id>/channel.yaml`. Committed.
+    pub fn channels_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("channels")
+    }
+    /// Brand files fetched for rendering (logo, icon). Ignored by git, like the cache.
+    pub fn brand_files_dir(&self, slug: &str) -> PathBuf {
+        self.cache_dir(slug).join("brand")
+    }
+    /// Scratch space for rendering (HTML handed to a headless browser). Ignored.
+    pub fn render_dir(&self) -> PathBuf {
+        self.root.join("tmp").join("render")
     }
     pub fn seemo_dir(&self) -> PathBuf {
         self.root.join("seemo")

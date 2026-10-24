@@ -356,8 +356,77 @@ export function AssetPage() {
               </ul>
             )}
           </div>
+          <PublishBox slug={slug} a={a} onDone={asset.reload} />
         </aside>
       </div>
+    </div>
+  );
+}
+
+/** Send the asset out through one of the project's channels, and where it went so far. */
+function PublishBox({ slug, a, onDone }: { slug: string; a: Asset; onDone: () => void }) {
+  const channels = useAsync(() => api.channels(slug).catch(() => ({ channels: [], kinds: [] })), [slug]);
+  const list = (channels.data?.channels ?? []).filter((c) => c.ready);
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const chosen = pick || list[0]?.id || "";
+  const publish = async () => {
+    if (!chosen) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.publishAsset(slug, a, chosen);
+      setMsg({ ok: true, text: `Published to ${r.channel_label}${r.url ? ` at ${r.url}` : ""}.` });
+      onDone();
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="pcard">
+      <p className="cap">Publish</p>
+      {a.publications.length > 0 && (
+        <ul className="lib-pubs">
+          {a.publications.map((p, i) => (
+            <li key={i}>
+              <Send size={12} />
+              <span>{p.connector}</span>
+              {p.url ? (
+                <a href={p.url} target="_blank" rel="noreferrer">
+                  open <ExternalLink size={11} />
+                </a>
+              ) : (
+                <small>{p.account ?? ""}</small>
+              )}
+              <small>{ago(p.at)}</small>
+            </li>
+          ))}
+        </ul>
+      )}
+      {list.length === 0 ? (
+        <p className="muted sm">
+          No channel to publish to yet. <Link to={`/p/${slug}/channels`}>Add one</Link>.
+        </p>
+      ) : (
+        <div className="lib-publish">
+          {list.length > 1 && (
+            <select className="input" value={chosen} onChange={(e) => setPick(e.target.value)}>
+              {list.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label} ({c.destination_text})
+                </option>
+              ))}
+            </select>
+          )}
+          <button className="btn g" disabled={busy || !chosen} onClick={() => void publish()}>
+            <Send size={14} /> {busy ? "Publishing…" : `Publish to ${list.find((c) => c.id === chosen)?.label ?? "channel"}`}
+          </button>
+        </div>
+      )}
+      {msg && <p className={`sm ${msg.ok ? "ok" : "err"}`}>{msg.text}</p>}
     </div>
   );
 }

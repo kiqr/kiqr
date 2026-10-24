@@ -9,11 +9,12 @@ import { ProjectPage } from "./pages/Project";
 import { CrawlPage } from "./pages/Crawl";
 import { Placeholder, ProjectSettings } from "./pages/Settings";
 import { Settings } from "./pages/GlobalSettings";
-import { ComingNext, ContentGaps, ContentMap, Redirect } from "./pages/Content";
+import { ContentGaps, ContentMap, Redirect } from "./pages/Content";
 import { AssetPage, LibraryPage } from "./pages/Library";
 import { ChatsPage } from "./pages/Chats";
 import { CalendarPage, TasksPage } from "./pages/Tasks";
-import { Cable } from "lucide-react";
+import { SkillsPage } from "./pages/Skills";
+import { ChannelsPage } from "./pages/Channels";
 
 // Demo mode (previews, the kiqr.dev site) keeps routing in memory so the single
 // file works anywhere, including sandboxed preview frames with no real URL.
@@ -45,10 +46,9 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/p/:slug/chats/:id" element={<ChatsPage />} />
           <Route path="/p/:slug/calendar" element={<CalendarPage />} />
           <Route path="/p/:slug/tasks" element={<TasksPage />} />
-          <Route
-            path="/p/:slug/connectors"
-            element={<ComingNext cap="Seemo" icon={Cable} title="Connectors" text="Where Seemo makes and publishes things: X, Reddit, your blog, Google Ads, image and video APIs. Install a community connector in one click, or add your own MCP server; credentials stay in a .env file on this machine." />}
-          />
+          <Route path="/p/:slug/skills" element={<SkillsPage />} />
+          <Route path="/p/:slug/channels" element={<ChannelsPage />} />
+          <Route path="/p/:slug/connectors" element={<Redirect to="channels" />} />
           <Route path="/p/:slug/settings" element={<ProjectSettings />} />
           <Route path="/connections" element={<Navigate to="/settings/connections" replace />} />
           <Route path="/settings" element={<Settings />} />

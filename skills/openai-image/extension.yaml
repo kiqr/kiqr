@@ -1,0 +1,29 @@
+# OpenAI's image model. Good at text in images and product shots.
+id: openai-image
+name: OpenAI images
+version: 0.1.0
+summary: Images from a prompt with gpt-image-1. About $0.04 to $0.17 per image.
+transport: http
+homepage: https://platform.openai.com/docs/guides/image-generation
+auth:
+  - { env: OPENAI_API_KEY, label: OpenAI API key, help: https://platform.openai.com/api-keys }
+hosts: [api.openai.com]
+provides:
+  image:
+    cost: about $0.04 to $0.17 per image
+    map:
+      orientation: { landscape: 1536x1024, portrait: 1024x1536, square: 1024x1024, "*": 1536x1024 }
+    request:
+      method: POST
+      url: https://api.openai.com/v1/images/generations
+      headers: { Authorization: "Bearer ${OPENAI_API_KEY}", Content-Type: application/json }
+      json:
+        model: gpt-image-1
+        prompt: "{{prompt}}"
+        size: "{{orientation}}"
+        n: 1
+      timeout_s: 180
+    result:
+      file_b64: /data/0/b64_json
+      text: /data/0/revised_prompt
+      mime: image/png

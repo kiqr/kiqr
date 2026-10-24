@@ -29,3 +29,5 @@ uuid.workspace = true
 rrule = "0.14"
 chrono-tz = "0.10"
 iana-time-zone = "0.1"
+resvg = "0.48"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

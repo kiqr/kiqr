@@ -70,6 +70,9 @@ pub struct Step {
     pub ok: Option<bool>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// An image the step produced, as a URL the browser can load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// A card in the transcript. `kind` is `approval` (a task or config change

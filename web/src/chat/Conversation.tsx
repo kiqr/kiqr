@@ -3,7 +3,7 @@
 // running). Used full-size on the Chats page and compact in the widget.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, ArrowUp, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Settings2, Square, X } from "lucide-react";
+import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, X } from "lucide-react";
 import { api, useAsync, useEvents, type Card, type Message, type Step, type Streaming, type Task } from "../api";
 import { Markdown } from "../markdown";
 import { ago } from "../pages/Project";
@@ -94,11 +94,24 @@ function Steps({ steps, live }: { steps: Step[]; live?: boolean }) {
   if (!steps.length) return null;
   const running = steps.find((s) => s.ok === null);
   const failed = steps.filter((s) => s.ok === false).length;
+  const images = steps.filter((s) => s.image).map((s) => s.image!);
+  const gallery = images.length > 0 && (
+    <div className="step-images">
+      {images.map((u) => (
+        <a key={u} href={u} target="_blank" rel="noreferrer">
+          <img src={u} alt="" loading="lazy" />
+        </a>
+      ))}
+    </div>
+  );
   if (live && running)
     return (
-      <p className="steps-live">
-        <Loader2 size={13} className="spin" /> {running.label}…
-      </p>
+      <>
+        {gallery}
+        <p className="steps-live">
+          <Loader2 size={13} className="spin" /> {running.label}…
+        </p>
+      </>
     );
   const summary = steps.length === 1 ? steps[0].label : `${steps.length} steps${failed ? `, ${failed} failed` : ""}`;
   return (
@@ -118,6 +131,7 @@ function Steps({ steps, live }: { steps: Step[]; live?: boolean }) {
           ))}
         </ul>
       )}
+      {gallery}
     </div>
   );
 }
@@ -128,6 +142,28 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
   if (card.kind === "approval" && card.status === "pending") return <ApprovalCard slug={slug} card={card} compact={compact} />;
   if (card.approval_kind === "task" && card.task) return <TaskCard slug={slug} taskId={card.task} compact={compact} />;
   if (card.approval_kind === "task") return <Resolved kind="task" status={card.status} title={String(card.payload.title ?? "Task")} />;
+  if (card.approval_kind === "skill") return <Resolved kind="skill" status={card.status} title={String(card.payload.name ?? "Skill")} />;
+  if (card.approval_kind === "channel") return <Resolved kind="channel" status={card.status} title={String(card.payload.label ?? "Channel")} />;
+  if (card.approval_kind === "publish" || card.approval_kind === "email") {
+    const p = card.payload as Record<string, unknown>;
+    const title = card.approval_kind === "email" ? `“${String(p.subject ?? "")}” to ${String(p.to ?? "")}` : `${String((p.asset as { title?: string })?.title ?? "Asset")} → ${String(p.channel_label ?? p.destination_text ?? "")}`;
+    const url = card.result?.url as string | undefined;
+    return (
+      <div className={`ccard ${card.status}`}>
+        <p className="cap">
+          <Send size={13} /> {card.status === "approved" ? (card.approval_kind === "email" ? "Sent" : "Published") : `${card.approval_kind === "email" ? "Email" : "Publish"} ${card.status}`}
+        </p>
+        <p className="ttl">{title}</p>
+        {url && (
+          <p className="sm">
+            <a href={url} target="_blank" rel="noreferrer">
+              {url} <ExternalLink size={11} />
+            </a>
+          </p>
+        )}
+      </div>
+    );
+  }
   if (card.approval_kind === "config") {
     const changes = (card.payload.changes as { key: string; from: unknown; to: unknown }[] | undefined) ?? [];
     return (
@@ -153,7 +189,7 @@ function Resolved({ kind, status, title }: { kind: string; status: string; title
   return (
     <div className={`ccard ${status}`}>
       <p className="cap">
-        <ListChecks size={13} /> {kind === "task" ? "Task" : "Change"} {status}
+        {kind === "skill" ? <BookOpen size={13} /> : kind === "channel" ? <Send size={13} /> : <ListChecks size={13} />} {kind === "task" ? "Task" : kind === "skill" ? "Skill" : kind === "channel" ? "Channel" : "Change"} {status === "approved" && (kind === "skill" || kind === "channel") ? "added" : status}
       </p>
       <p className="ttl">{title}</p>
     </div>
@@ -177,14 +213,73 @@ function ApprovalCard({ slug, card, compact }: { slug: string; card: Card; compa
     }
   };
   const isTask = card.approval_kind === "task";
+  const isSkill = card.approval_kind === "skill";
+  const isPublish = card.approval_kind === "publish";
+  const isEmail = card.approval_kind === "email";
+  const isChannel = card.approval_kind === "channel";
   const next = ((p.next as string[]) ?? []).slice(0, 3);
   const instruction = String(p.instruction ?? "");
+  const skillText = String(p.text ?? "");
+  const files = (p.files as { name: string; bytes: number }[] | undefined) ?? [];
+  const caption = isTask ? "Seemo proposes a task" : isSkill ? "Seemo wants to remember a skill" : isPublish ? "Seemo wants to publish" : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a channel" : "Seemo proposes a settings change";
+  const yes = isTask ? "Approve and run" : isSkill ? "Save the skill" : isPublish ? "Publish it" : isEmail ? "Send it" : isChannel ? "Add the channel" : "Apply";
   return (
     <div className="ccard pending">
       <p className="cap">
-        {isTask ? <ListChecks size={13} /> : <Settings2 size={13} />} {isTask ? "Seemo proposes a task" : "Seemo proposes a settings change"}
+        {isTask ? <ListChecks size={13} /> : isSkill ? <BookOpen size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : <Settings2 size={13} />} {caption}
       </p>
-      {isTask ? (
+      {isPublish || isEmail ? (
+        <>
+          <p className="ttl">{isEmail ? String(p.subject ?? "") : String((p.asset as { title?: string })?.title ?? "")}</p>
+          <p className="sched">
+            {isEmail ? (
+              <>
+                to <b>{String(p.to ?? "")}</b>
+              </>
+            ) : (
+              <>
+                to <b>{String(p.channel_label ?? "")}</b> <span className="muted">· {String(p.destination_text ?? "")}</span>
+              </>
+            )}
+            <span className="muted"> · via {String(p.connection_name ?? "")}</span>
+          </p>
+          {!!p.excerpt && <p className={`instr ${more ? "open" : ""}`}>{String(p.excerpt)}</p>}
+          {String(p.excerpt ?? "").length > 220 && !compact && (
+            <button className="btn t sm" onClick={() => setMore((m) => !m)}>
+              {more ? "Less" : "Read it all"}
+            </button>
+          )}
+          {files.length > 0 && <p className="muted sm">Attached: {files.map((f) => f.name).join(", ")}</p>}
+          {!!p.note && <p className="muted sm">{String(p.note)}</p>}
+        </>
+      ) : isChannel ? (
+        <>
+          <p className="ttl">{String(p.label ?? "")}</p>
+          <p className="sched">
+            {String(p.kind_label ?? p.kind ?? "")} via {String(p.connection_name ?? "")}
+          </p>
+          <ul className="kvs">
+            {Object.entries((p.destination as Record<string, unknown>) ?? {}).map(([k, v]) => (
+              <li key={k}>
+                <code>{k}</code> <span className="to">{String(v)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted sm">Publishing to it will still ask you each time.</p>
+        </>
+      ) : isSkill ? (
+        <>
+          <p className="ttl">{String(p.name)}</p>
+          <p className="sched">{String(p.description ?? "")}</p>
+          <p className={`instr ${more ? "open" : ""}`}>{skillText}</p>
+          {skillText.length > 220 && !compact && (
+            <button className="btn t sm" onClick={() => setMore((m) => !m)}>
+              {more ? "Less" : "Read the whole skill"}
+            </button>
+          )}
+          <p className="muted sm">Kept for {String(p.scope_text ?? "this project")}; Seemo reads it before matching requests.</p>
+        </>
+      ) : isTask ? (
         <>
           <p className="ttl">{String(p.title)}</p>
           <p className="sched">
@@ -226,7 +321,7 @@ function ApprovalCard({ slug, card, compact }: { slug: string; card: Card; compa
       )}
       <div className="acts">
         <button className="btn p" disabled={!!busy} onClick={() => decide("approve")}>
-          {busy === "approve" ? <Loader2 size={14} className="spin" /> : <Check size={14} />} {isTask ? "Approve and run" : "Apply"}
+          {busy === "approve" ? <Loader2 size={14} className="spin" /> : <Check size={14} />} {yes}
         </button>
         <button className="btn g" disabled={!!busy} onClick={() => decide("decline")}>
           Decline

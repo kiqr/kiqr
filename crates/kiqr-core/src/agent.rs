@@ -89,7 +89,7 @@ pub enum AgentEvent {
     ToolStarted { id: String, name: String, input: Value },
     ToolFinished { id: String, ok: bool, output: String },
     /// The last line.
-    Result { session_id: String, text: String, cost_usd: Option<f64>, is_error: bool, subtype: String },
+    Result { session_id: String, text: String, cost_usd: Option<f64>, is_error: bool, subtype: String, num_turns: u64 },
 }
 
 pub fn parse_stream_line(line: &str) -> Vec<AgentEvent> {
@@ -148,6 +148,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentEvent> {
             cost_usd: v["total_cost_usd"].as_f64(),
             is_error: v["is_error"].as_bool().unwrap_or(false) || v["subtype"].as_str().is_some_and(|x| x.starts_with("error")),
             subtype: s(&v["subtype"]),
+            num_turns: v["num_turns"].as_u64().unwrap_or(0),
         }],
         _ => vec![],
     }
@@ -197,7 +198,12 @@ pub struct Context {
     /// Set for a task run: the task's title. Chats leave it empty.
     pub task_run: Option<String>,
     pub allowed: Vec<Group>,
+    /// Skills to read before acting: (name, when to use it).
+    pub skills: Vec<(String, String)>,
 }
+
+/// Room for the skills list in the prompt; past it, names only.
+pub const MAX_SKILLS_BLOCK: usize = 3_000;
 
 /// The brief as compact JSON: without the page lists (that is the content map).
 pub fn compact_brief(brief: &Brief) -> Value {
@@ -234,6 +240,21 @@ pub fn system_prompt(persona: &str, guide: &str, ctx: &Context, brief: Option<&B
         for t in &ctx.tasks {
             head.push_str(&format!("  - {t}\n"));
         }
+    }
+    if !ctx.skills.is_empty() {
+        head.push_str("\n# Skills\n\nStanding instructions, KIQR's and the user's. When one fits the request, read it with `read_skill` first and follow it.\n");
+        let mut block = String::new();
+        let mut names_only = false;
+        for (name, desc) in &ctx.skills {
+            let line = if names_only || desc.is_empty() { format!("- {name}\n") } else { format!("- {name} — {desc}\n") };
+            if !names_only && block.len() + line.len() > MAX_SKILLS_BLOCK {
+                names_only = true;
+                block.push_str(&format!("- {name}\n"));
+                continue;
+            }
+            block.push_str(&line);
+        }
+        head.push_str(&block);
     }
     match &ctx.task_run {
         Some(title) => head.push_str(&format!(

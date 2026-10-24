@@ -4,7 +4,7 @@
 //! the run record and the events.
 
 use crate::App;
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use kiqr_core::agent::{self as core_agent, AgentEvent, Session, Spec};
 use kiqr_core::chat::{self, Chat, Message, Role, Step};
@@ -12,7 +12,7 @@ use kiqr_core::events::EventKind;
 use kiqr_core::profile::Brief;
 use kiqr_core::project::Project;
 use kiqr_core::tasks::{self, Run, RunStatus, Task, TaskStatus};
-use kiqr_core::tools::{self, Group};
+use kiqr_core::tools::{self, Group, ToolSpec};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -120,7 +120,7 @@ impl Sink<'_> {
         match self {
             Sink::Chat { slug, turn } => {
                 *turn.steps.lock().unwrap_or_else(|e| e.into_inner()) = steps.to_vec();
-                app.bus.emit(Some(slug), EventKind::ChatTool { chat: turn.chat.clone(), tool: s.tool.clone(), label: s.label.clone(), status: status.into(), note: s.note.clone() });
+                app.bus.emit(Some(slug), EventKind::ChatTool { chat: turn.chat.clone(), tool: s.tool.clone(), label: s.label.clone(), status: status.into(), note: s.note.clone(), image: s.image.clone() });
             }
             Sink::Run { slug, task, run } => {
                 app.bus.emit(Some(slug), EventKind::TaskRunStep { task: task.to_string(), run: run.to_string(), label: s.label.clone(), status: status.into() });
@@ -130,7 +130,7 @@ impl Sink<'_> {
 }
 
 /// Run one `claude` process to completion, streaming to `sink`.
-async fn drive(app: &App, spec: &Spec, prompt: &str, sink: &Sink<'_>) -> Outcome {
+async fn drive(app: &App, spec: &Spec, specs: &[ToolSpec], prompt: &str, sink: &Sink<'_>) -> Outcome {
     let mut out = Outcome::default();
     let dir = app.store.home().agent_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -180,6 +180,8 @@ async fn drive(app: &App, spec: &Spec, prompt: &str, sink: &Sink<'_>) -> Outcome
     let mut buf = String::new();
     let mut last_flush = Instant::now();
     let mut saw_result = false;
+    // A resume of a session Claude no longer has ends in a zero-turn error result.
+    let mut zero_turn_error = false;
     let mut init_failed: Option<String> = None;
 
     while let Ok(Some(line)) = lines.next_line().await {
@@ -215,7 +217,7 @@ async fn drive(app: &App, spec: &Spec, prompt: &str, sink: &Sink<'_>) -> Outcome
                 AgentEvent::Text(t) => parts.push(t),
                 AgentEvent::ToolStarted { id, name, input } => {
                     let short = name.strip_prefix("mcp__kiqr__").unwrap_or(&name).to_string();
-                    steps.push(Step { tool: short.clone(), label: tools::label_for(&short, &input), ok: None, note: String::new() });
+                    steps.push(Step { tool: short.clone(), label: tools::label_for(specs, &short, &input), ok: None, note: String::new(), image: None });
                     step_ids.push(id);
                     sink.step(app, &steps, steps.len() - 1);
                 }
@@ -223,21 +225,32 @@ async fn drive(app: &App, spec: &Spec, prompt: &str, sink: &Sink<'_>) -> Outcome
                     if let Some(i) = step_ids.iter().position(|x| *x == id) {
                         steps[i].ok = Some(ok);
                         steps[i].note = core_agent::tool_note(&output, ok);
-                        if ok && matches!(steps[i].tool.as_str(), "create_asset" | "update_asset") {
+                        if ok {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&output) {
-                                if let (Some(t), Some(id)) = (v["type"].as_str(), v["id"].as_str()) {
-                                    let key = format!("{t}/{id}");
+                                // Assets made or changed, by the asset routes or by an ability that attached a file.
+                                let made = match (v["type"].as_str(), v["id"].as_str()) {
+                                    (Some(t), Some(id)) => Some(format!("{t}/{id}")),
+                                    _ => match (v["asset"]["type"].as_str(), v["asset"]["id"].as_str()) {
+                                        (Some(t), Some(id)) => Some(format!("{t}/{id}")),
+                                        _ => None,
+                                    },
+                                };
+                                if let Some(key) = made {
                                     if !out.assets.contains(&key) {
                                         out.assets.push(key);
                                     }
+                                }
+                                if v["mime"].as_str().is_some_and(|m| m.starts_with("image/")) {
+                                    steps[i].image = v["url"].as_str().map(str::to_string);
                                 }
                             }
                         }
                         sink.step(app, &steps, i);
                     }
                 }
-                AgentEvent::Result { session_id, text, cost_usd, is_error, subtype } => {
+                AgentEvent::Result { session_id, text, cost_usd, is_error, subtype, num_turns } => {
                     saw_result = true;
+                    zero_turn_error = is_error && num_turns == 0;
                     if !session_id.is_empty() {
                         out.session_id = Some(session_id);
                     }
@@ -267,12 +280,16 @@ async fn drive(app: &App, spec: &Spec, prompt: &str, sink: &Sink<'_>) -> Outcome
 
     out.text = parts.join("\n\n").trim().to_string();
     out.steps = steps;
+    let lost = stderr.contains("No conversation found") || (stderr.contains("session") && stderr.contains("not found"));
     if let Some(e) = init_failed {
+        // No session was created; keeping the id would make every later turn resume nothing.
+        out.session_id = None;
         out.error = Some(e);
     } else if sink.stopped() {
         out.error = Some("stopped".into());
+    } else if saw_result && zero_turn_error && lost {
+        out.session_lost = true;
     } else if !saw_result && out.error.is_none() {
-        let lost = stderr.contains("No conversation found") || (stderr.contains("session") && stderr.contains("not found"));
         out.session_lost = lost;
         out.error = Some(if stderr_tail.is_empty() {
             format!("claude exited {} without an answer", status.map(|s| s.to_string()).unwrap_or_else(|| "early".into()))
@@ -282,6 +299,9 @@ async fn drive(app: &App, spec: &Spec, prompt: &str, sink: &Sink<'_>) -> Outcome
     }
     out
 }
+
+/// Skills that drive KIQR's own pipeline, not something Seemo picks up in a chat.
+pub(crate) const PIPELINE_SKILLS: &[&str] = &["extract-facts", "build-profile", "business-brief", "crawl-site", "seemo-agent"];
 
 /// What the system prompt needs about this moment.
 async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])>) -> core_agent::Context {
@@ -300,7 +320,25 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
             format!("{} (`{}`): {}, {}{next}", t.title, t.id, t.schedule.describe(tz), t.status.id())
         })
         .collect();
+    let skills: Vec<(String, String)> = {
+        let reg = app.registry.read().await;
+        reg.visible(&project.slug)
+            .into_iter()
+            .filter(|e| !PIPELINE_SKILLS.contains(&e.name.as_str()))
+            .filter_map(|e| {
+                let meta = e.skill.as_ref()?;
+                let mut desc = meta.description.trim().to_string();
+                if let Some(m) = &e.manifest {
+                    if !crate::ext::ready(m) {
+                        desc.push_str(&format!(" (its connection, {}, is not set up yet)", m.name));
+                    }
+                }
+                Some((e.name.clone(), kiqr_core::profile::truncate_chars(&desc, 200)))
+            })
+            .collect()
+    };
     core_agent::Context {
+        skills,
         project_name: project.name.clone(),
         project_url: project.url.clone(),
         slug: project.slug.clone(),
@@ -309,7 +347,7 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
         running_jobs,
         tasks: task_lines,
         task_run: task_run.map(|(t, _)| t.to_string()),
-        allowed: task_run.map(|(_, a)| a.to_vec()).unwrap_or_else(|| Group::ALL.to_vec()),
+        allowed: task_run.map(|(_, a)| a.to_vec()).unwrap_or_else(|| Group::BUILTIN.to_vec()),
     }
 }
 
@@ -324,8 +362,7 @@ async fn spec_for(app: &App, project: &Project, session: Session, chat: Option<&
     let brief = Brief::load(&app.store, &project.slug)?;
     let ctx = context(app, project, task_run).await;
     let system = core_agent::system_prompt(&persona(app), &guide, &ctx, brief.as_ref());
-    let exe = std::env::current_exe().context("locating the kiqr binary")?;
-    let mcp = core_agent::mcp_config(&exe, &app.daemon_url, &project.slug, chat, run, allowed);
+    let mcp = core_agent::mcp_config(&app.exe, &app.daemon_url, &project.slug, chat, run, allowed);
     Ok(Spec { model, session, system, mcp, max_budget_usd: cfg.agent.max_budget_usd })
 }
 
@@ -343,16 +380,18 @@ pub async fn chat_turn(app: App, slug: String, mut chat: Chat, turn: std::sync::
             None => Session::New(uuid::Uuid::new_v4().to_string()),
         };
         let resumed = matches!(session, Session::Resume(_));
-        let spec = spec_for(&app, &project, session, Some(&chat.id), None, &Group::ALL, None).await?;
+        let groups = crate::ext::chat_groups(&app, &slug).await;
+        let specs = crate::ext::tool_specs(&app, &slug, &groups).await;
+        let spec = spec_for(&app, &project, session, Some(&chat.id), None, &groups, None).await?;
         let sink = Sink::Chat { slug: &slug, turn: &turn };
-        let mut out = drive(&app, &spec, &prompt, &sink).await;
+        let mut out = drive(&app, &spec, &specs, &prompt, &sink).await;
         if out.session_lost && resumed && !turn.stopped.load(Ordering::SeqCst) {
             // The provider forgot the session; start again from our transcript.
             let history = chat::transcript(&chat.messages(&app.store, &slug)?, 40_000);
             let prompt = if history.is_empty() { prompt.clone() } else { format!("Earlier in this conversation:\n\n{history}\n\n---\n\n{prompt}") };
             let spec = Spec { session: Session::New(uuid::Uuid::new_v4().to_string()), ..spec };
             turn.text.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            out = drive(&app, &spec, &prompt, &sink).await;
+            out = drive(&app, &spec, &specs, &prompt, &sink).await;
         }
         anyhow::Ok(out)
     }
@@ -452,9 +491,10 @@ async fn task_run(app: App, slug: String, mut task: Task, mut run: Run, key: Str
     let result = async {
         let project = Project::load(&app.store, &slug)?;
         let spec = spec_for(&app, &project, Session::New(uuid::Uuid::new_v4().to_string()), None, Some((&task.id, &run.id)), &allowed, Some((&task.title, &allowed))).await?;
+        let specs = crate::ext::tool_specs(&app, &slug, &allowed).await;
         let sink = Sink::Run { slug: &slug, task: &task.id, run: &run.id };
         let prompt = format!("Task: {}\n\n{}", task.title, task.instruction);
-        anyhow::Ok(drive(&app, &spec, &prompt, &sink).await)
+        anyhow::Ok(drive(&app, &spec, &specs, &prompt, &sink).await)
     }
     .await;
     let out = match result {

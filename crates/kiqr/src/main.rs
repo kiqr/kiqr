@@ -47,6 +47,59 @@ enum Command {
         #[command(subcommand)]
         cmd: TasksCmd,
     },
+    /// Skills: how Seemo does things, yours and KIQR's (a folder may also bring a connection)
+    Skills {
+        #[command(subcommand)]
+        cmd: SkillsCmd,
+    },
+    /// Connections: what provides Seemo's abilities (image models, mail, your own tools)
+    Connections {
+        #[command(subcommand)]
+        cmd: ConnectionsCmd,
+    },
+    /// Render an SVG or HTML file to a PNG on an asset, as Seemo's create_image does
+    Render {
+        slug: String,
+        /// File to render (.svg or .html)
+        file: std::path::PathBuf,
+        /// Put it on this asset (`type/id`); default: a new image asset
+        #[arg(long)]
+        asset: Option<String>,
+        /// File name without extension (default: image)
+        #[arg(long)]
+        name: Option<String>,
+        /// x | linkedin | instagram | instagram_portrait | og | cover | WxH
+        #[arg(long)]
+        size: Option<String>,
+        /// Title for a new image asset
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Channels: where a project publishes (an email address, a blog…)
+    Channels { slug: String },
+    /// Publish an asset through a channel: `kiqr publish <slug> <type>/<id> <channel>`
+    Publish {
+        slug: String,
+        asset: String,
+        channel: String,
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// Send an email through the mail connection (the text is Markdown)
+    Email {
+        slug: String,
+        to: String,
+        subject: String,
+        text: String,
+        /// Attach this asset's files: `type/id`
+        #[arg(long)]
+        asset: Option<String>,
+    },
+    /// Secrets in .env, by name; values are typed, never shown
+    Secrets {
+        #[command(subcommand)]
+        cmd: SecretsCmd,
+    },
     /// Show daemon status, providers and the active home directory
     Status,
     /// Manage projects
@@ -132,6 +185,48 @@ enum TasksCmd {
 }
 
 #[derive(Subcommand)]
+enum SkillsCmd {
+    /// List skills (everywhere, or what one project sees with --project)
+    Ls {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Print a skill's text
+    Show {
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Install a skill folder from a path or a git URL (global, or into one project)
+    Add {
+        source: String,
+        #[arg(long)]
+        project: Option<String>,
+        /// Folder name to install under
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Remove a skill folder you added
+    Rm {
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConnectionsCmd {
+    /// List connections and which ability each serves
+    Ls,
+}
+
+#[derive(Subcommand)]
+enum SecretsCmd {
+    /// Set a secret: `kiqr secrets set FAL_KEY` then type it (an empty value clears it)
+    Set { name: String },
+}
+
+#[derive(Subcommand)]
 enum AssetsCmd {
     /// List assets, newest change first
     Ls {
@@ -204,6 +299,35 @@ async fn run() -> Result<()> {
     }
 }
 
+/// Read one line from the terminal without echoing it.
+fn read_secret() -> Result<String> {
+    use std::io::{BufRead, IsTerminal};
+    let stdin = std::io::stdin();
+    let tty = stdin.is_terminal();
+    let mut saved: Option<libc::termios> = None;
+    if tty {
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(0, &mut t) == 0 {
+                saved = Some(t);
+                let mut off = t;
+                off.c_lflag &= !libc::ECHO;
+                libc::tcsetattr(0, libc::TCSANOW, &off);
+            }
+        }
+    }
+    let mut line = String::new();
+    let r = stdin.lock().read_line(&mut line);
+    if let Some(t) = saved {
+        unsafe {
+            libc::tcsetattr(0, libc::TCSANOW, &t);
+        }
+        eprintln!();
+    }
+    r?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
 pub(crate) struct Client {
     pub(crate) base: String,
     pub(crate) http: reqwest::Client,
@@ -260,6 +384,130 @@ impl Client {
                     eprintln!("[cut; the page is longer]");
                 }
             }
+            Command::Skills { cmd } => match cmd {
+                SkillsCmd::Ls { project } => {
+                    let path = match &project {
+                        Some(p) => format!("/api/projects/{p}/skills"),
+                        None => "/api/skills".to_string(),
+                    };
+                    let v: Vec<serde_json::Value> = self.get(&path).await?;
+                    for e in v {
+                        let s = |k: &str| e[k].as_str().unwrap_or("").to_string();
+                        let scope = match e["scope"]["scope"].as_str() {
+                            Some("project") => e["scope"]["project"].as_str().unwrap_or("").to_string(),
+                            _ => "global".into(),
+                        };
+                        let conn = e["connection"]["name"].as_str().map(|n| format!(" [{n}{}]", if e["connection"]["ready"].as_bool() == Some(true) { "" } else { ", not connected" })).unwrap_or_default();
+                        println!("{:<24} {:<14} {}{}{}", s("name"), scope, s("description"), conn, if e["builtin"].as_bool() == Some(true) { "  (built-in)" } else { "" });
+                    }
+                }
+                SkillsCmd::Show { name, project } => {
+                    let path = match &project {
+                        Some(p) => format!("/api/projects/{p}/skills/{name}"),
+                        None => format!("/api/skills/{name}"),
+                    };
+                    let resp = self.http.get(format!("{}{path}", self.base)).send().await.map_err(connect_hint)?;
+                    if !resp.status().is_success() {
+                        let v: serde_json::Value = resp.json().await.unwrap_or_default();
+                        return Err(anyhow!("{}", v["error"].as_str().unwrap_or("request failed")));
+                    }
+                    println!("{}", resp.text().await?);
+                }
+                SkillsCmd::Add { source, project, name } => {
+                    let path = match &project {
+                        Some(p) => format!("/api/projects/{p}/skills"),
+                        None => "/api/skills".to_string(),
+                    };
+                    let source = if source.starts_with("http") || source.starts_with("git@") { source } else { std::fs::canonicalize(&source).map(|p| p.display().to_string()).unwrap_or(source) };
+                    let v: serde_json::Value = self.post(&path, &serde_json::json!({ "source": source, "name": name })).await?;
+                    println!("installed {}{}", v["name"].as_str().unwrap_or(""), v["connection"]["name"].as_str().map(|n| format!(" with the connection {n}")).unwrap_or_default());
+                }
+                SkillsCmd::Rm { name, project } => {
+                    let path = match &project {
+                        Some(p) => format!("/api/projects/{p}/skills/{name}"),
+                        None => format!("/api/skills/{name}"),
+                    };
+                    self.delete(&path).await?;
+                    println!("removed {name}");
+                }
+            },
+            Command::Connections { cmd } => match cmd {
+                ConnectionsCmd::Ls => {
+                    let v: serde_json::Value = self.get("/api/extensions").await?;
+                    for c in v["connections"].as_array().cloned().unwrap_or_default() {
+                        let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+                        let state = if c["ready"].as_bool() == Some(true) {
+                            "ready".to_string()
+                        } else {
+                            format!("needs {}", c["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default())
+                        };
+                        let provides = c["provides"].as_array().map(|p| p.iter().filter_map(|x| x["label"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                        println!("{:<16} {:<22} {:<28} {}", s("id"), s("name"), state, provides);
+                    }
+                    for b in v["broken"].as_array().cloned().unwrap_or_default() {
+                        println!("{:<16} cannot be used: {}", b["folder"].as_str().unwrap_or(""), b["error"].as_str().unwrap_or(""));
+                    }
+                    println!();
+                    for a in v["abilities"].as_array().cloned().unwrap_or_default() {
+                        let active = a["active"]["name"].as_str().map(|n| format!("via {n}")).unwrap_or_else(|| "off (no connection)".into());
+                        println!("{:<16} {}", a["label"].as_str().unwrap_or(""), active);
+                    }
+                }
+            },
+            Command::Render { slug, file, asset, name, size, title } => {
+                let source = std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
+                let format = if file.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) { "html" } else { "svg" };
+                let mut body = serde_json::json!({ "source": source, "format": format, "name": name.unwrap_or_else(|| "image".into()), "by": "user" });
+                if let Some(a) = asset {
+                    let (t, i) = a.split_once('/').ok_or_else(|| anyhow!("asset is type/id"))?;
+                    body["asset"] = serde_json::json!({ "type": t, "id": i });
+                }
+                if let Some(s) = size {
+                    body["size"] = serde_json::json!(s);
+                }
+                if let Some(t) = title {
+                    body["title"] = serde_json::json!(t);
+                }
+                let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/render"), &body).await?;
+                println!("{} {}×{} via {} → {}/{} {}", v["file"].as_str().unwrap_or(""), v["width"], v["height"], v["renderer"].as_str().unwrap_or(""), v["asset"]["type"].as_str().unwrap_or(""), v["asset"]["id"].as_str().unwrap_or(""), v["url"].as_str().unwrap_or(""));
+            }
+            Command::Channels { slug } => {
+                let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/channels")).await?;
+                let list = v["channels"].as_array().cloned().unwrap_or_default();
+                if list.is_empty() {
+                    println!("No channels yet.");
+                }
+                for c in list {
+                    let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+                    println!("{:<24} {:<10} {:<28} {:<22} {} published{}", s("id"), s("kind"), s("destination_text"), s("connection_name"), c["publications"], if c["ready"].as_bool() == Some(true) { "" } else { "  (connection not set up)" });
+                }
+                let kinds = v["kinds"].as_array().cloned().unwrap_or_default();
+                if !kinds.is_empty() {
+                    println!("\nKinds a new channel can use: {}", kinds.iter().map(|k| format!("{} via {}{}", k["kind"].as_str().unwrap_or(""), k["connection_name"].as_str().unwrap_or(""), if k["ready"].as_bool() == Some(true) { "" } else { " (needs a key)" })).collect::<Vec<_>>().join("; "));
+                }
+            }
+            Command::Publish { slug, asset, channel, note } => {
+                let (t, i) = asset.split_once('/').ok_or_else(|| anyhow!("asset is type/id"))?;
+                let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/assets/{t}/{i}/publish"), &serde_json::json!({ "channel": channel, "note": note, "by": "user" })).await?;
+                println!("published {} → {}{}", v["asset"]["title"].as_str().unwrap_or(""), v["channel_label"].as_str().unwrap_or(""), v["url"].as_str().map(|u| format!(" {u}")).unwrap_or_else(|| v["detail"].as_str().map(|d| format!(" ({d})")).unwrap_or_default()));
+            }
+            Command::Email { slug, to, subject, text, asset } => {
+                let mut body = serde_json::json!({ "to": to, "subject": subject, "text": text });
+                if let Some(a) = asset {
+                    let (t, i) = a.split_once('/').ok_or_else(|| anyhow!("asset is type/id"))?;
+                    body["asset"] = serde_json::json!({ "type": t, "id": i });
+                }
+                let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/email"), &body).await?;
+                println!("sent \"{}\" to {} via {}", v["subject"].as_str().unwrap_or(""), v["to"].as_str().unwrap_or(""), v["connection"].as_str().unwrap_or(""));
+            }
+            Command::Secrets { cmd } => match cmd {
+                SecretsCmd::Set { name } => {
+                    eprint!("{name}: ");
+                    let value = read_secret()?;
+                    let v: serde_json::Value = self.put(&format!("/api/secrets/{name}"), &serde_json::json!({ "value": value })).await?;
+                    println!("{} {}", v["name"].as_str().unwrap_or(&name), if v["set"].as_bool() == Some(true) { "set" } else { "cleared" });
+                }
+            },
             Command::Tasks { cmd } => match cmd {
                 TasksCmd::Ls { slug } => {
                     let v: Vec<serde_json::Value> = self.get(&format!("/api/projects/{slug}/tasks")).await?;
@@ -706,6 +954,15 @@ fn print_event(ev: &Event) {
         },
         EventKind::TaskRunFinished { task, run, status, summary } => format!("run      {task}/{run} {status}{}", if summary.is_empty() { String::new() } else { format!(": {summary}") }),
         EventKind::ConfigChanged { by, restart } => format!("config   changed by {by}{}", if *restart { " (restart the daemon to apply host/port)" } else { "" }),
+        EventKind::SkillSaved { name, scope } => format!("skill    {name} saved ({scope})"),
+        EventKind::SkillDeleted { name, scope } => format!("skill    {name} removed ({scope})"),
+        EventKind::ExtensionInstalled { id, name } => format!("connect  {name} ({id}) installed"),
+        EventKind::ExtensionRemoved { id } => format!("connect  {id} removed"),
+        EventKind::SecretSet { name, set } => format!("secret   {name} {}", if *set { "set" } else { "cleared" }),
+        EventKind::MediaCreated { ability, asset_type, id, file, provider } => format!("{ability:<8} {asset_type}/{id}/{file} via {provider}"),
+        EventKind::ChannelSaved { channel, label, kind } => format!("channel  {channel} \"{label}\" ({kind})"),
+        EventKind::ChannelDeleted { channel } => format!("channel  {channel} removed"),
+        EventKind::AssetPublished { asset_type, id, channel, url } => format!("publish  {asset_type}/{id} → {channel}{}", url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
     };
     println!("{t}  {line}");
 }

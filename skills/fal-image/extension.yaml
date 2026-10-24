@@ -1,0 +1,26 @@
+# fal.ai: Flux and friends behind one key. Images in a few seconds, paid per use.
+id: fal-image
+name: fal.ai images
+version: 0.1.0
+summary: Photos and illustrations from a text prompt. About $0.03 per image.
+transport: http
+homepage: https://fal.ai
+auth:
+  - { env: FAL_KEY, label: fal.ai API key, help: https://fal.ai/dashboard/keys }
+hosts: [fal.run, fal.media]
+provides:
+  image:
+    cost: about $0.03 per image
+    request:
+      method: POST
+      url: https://fal.run/fal-ai/flux/schnell
+      headers: { Authorization: "Key ${FAL_KEY}", Content-Type: application/json }
+      json:
+        prompt: "{{prompt}}"
+        image_size: { width: "{{width|1600}}", height: "{{height|900}}" }
+        num_images: 1
+        enable_safety_checker: true
+      timeout_s: 120
+    result:
+      file_url: /images/0/url
+      mime: image/jpeg

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
 import {
+  BookOpen,
   Brain,
-  Cable,
   CalendarDays,
   Check,
   ChevronsUpDown,
@@ -16,6 +16,7 @@ import {
   Radar,
   Rocket,
   SearchX,
+  Send,
   Settings,
   SlidersHorizontal,
   Swords,
@@ -30,7 +31,7 @@ type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number };
 /**
  * Project-scoped navigation. Content is the library plus one item per asset type (types are
  * data, so the group grows when Seemo makes a new kind of thing); what we know about the
- * business; Seemo, which is the automation: chats, the calendar of tasks, and the connectors
+ * business; Seemo, which is the automation: chats, the calendar of tasks, skills, and the channels
  * it publishes through; settings last.
  */
 function navGroups(types: AssetType[], counts: TypeCount[] | undefined): { label: string; items: NavItem[] }[] {
@@ -64,7 +65,8 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined): { label
         { sub: "chats", label: "Chats", icon: MessagesSquare },
         { sub: "calendar", label: "Calendar", icon: CalendarDays },
         { sub: "tasks", label: "Tasks", icon: ListChecks },
-        { sub: "connectors", label: "Connectors", icon: Cable },
+        { sub: "skills", label: "Skills", icon: BookOpen },
+        { sub: "channels", label: "Channels", icon: Send },
       ],
     },
     {

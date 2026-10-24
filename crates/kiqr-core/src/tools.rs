@@ -9,12 +9,19 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// A family of tools, confirmed as one unit for a task.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// A family of tools, confirmed as one unit for a task. The built-in groups
+/// are fixed; `Ext(id)` is the extra tools of one connection (an extension
+/// outside any ability contract), named after it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Group {
     /// Read the profile, brief, brand, assets, tasks, config and skills.
     Read,
+    /// Read pages on the web through KIQR's own fetcher.
+    Web,
+    /// Make images (the `image` ability).
+    Images,
+    /// Make video and music (the `video` and `music` abilities).
+    Media,
     /// Edit profile fields (locking them) and the brief.
     WriteProfile,
     /// Create and change assets and asset types.
@@ -25,43 +32,65 @@ pub enum Group {
     Tasks,
     /// Change `config.yaml` and project settings.
     Config,
-    /// Read pages on the web through KIQR's own fetcher.
-    Web,
+    /// Send and publish: email, channels. Always behind an approval.
+    Publish,
+    /// One connection's own tools, by extension id.
+    Ext(String),
 }
 
 impl Group {
-    pub const ALL: [Group; 7] = [Group::Read, Group::Web, Group::WriteProfile, Group::WriteAssets, Group::Jobs, Group::Tasks, Group::Config];
+    pub const BUILTIN: [Group; 10] = [Group::Read, Group::Web, Group::Images, Group::Media, Group::WriteProfile, Group::WriteAssets, Group::Jobs, Group::Tasks, Group::Config, Group::Publish];
     /// What a task run may use unless its creator narrowed it: everything but
-    /// making more tasks and changing settings, which need a person.
-    pub const TASK_DEFAULT: [Group; 5] = [Group::Read, Group::Web, Group::WriteProfile, Group::WriteAssets, Group::Jobs];
+    /// making more tasks, changing settings and publishing, which need a person.
+    pub const TASK_DEFAULT: [Group; 7] = [Group::Read, Group::Web, Group::Images, Group::Media, Group::WriteProfile, Group::WriteAssets, Group::Jobs];
 
-    pub fn id(self) -> &'static str {
+    pub fn id(&self) -> String {
         match self {
-            Group::Read => "read",
-            Group::WriteProfile => "write_profile",
-            Group::WriteAssets => "write_assets",
-            Group::Jobs => "jobs",
-            Group::Tasks => "tasks",
-            Group::Config => "config",
-            Group::Web => "web",
+            Group::Read => "read".into(),
+            Group::Web => "web".into(),
+            Group::Images => "images".into(),
+            Group::Media => "media".into(),
+            Group::WriteProfile => "write_profile".into(),
+            Group::WriteAssets => "write_assets".into(),
+            Group::Jobs => "jobs".into(),
+            Group::Tasks => "tasks".into(),
+            Group::Config => "config".into(),
+            Group::Publish => "publish".into(),
+            Group::Ext(id) => format!("ext:{id}"),
         }
     }
 
     pub fn parse(s: &str) -> Option<Group> {
-        Group::ALL.into_iter().find(|g| g.id() == s.trim())
+        let s = s.trim();
+        if let Some(id) = s.strip_prefix("ext:") {
+            return if valid_ext_id(id) { Some(Group::Ext(id.to_string())) } else { None };
+        }
+        Group::BUILTIN.into_iter().find(|g| g.id() == s)
     }
 
-    /// Wording for the confirmation card and the Tasks page.
-    pub fn label(self) -> &'static str {
+    /// Wording for the confirmation card and the Tasks page. An `Ext` group
+    /// is named after its connection by the daemon, which knows the registry.
+    pub fn label(&self) -> String {
         match self {
-            Group::Read => "Read the profile, brief, brand, assets and tasks",
-            Group::WriteProfile => "Edit the business profile and brief",
-            Group::WriteAssets => "Create and edit assets",
-            Group::Jobs => "Start crawls and profile builds",
-            Group::Tasks => "Create and change tasks",
-            Group::Config => "Change KIQR settings",
-            Group::Web => "Read pages on the web",
+            Group::Read => "Read the profile, brief, brand, assets and tasks".into(),
+            Group::Web => "Read pages on the web".into(),
+            Group::Images => "Make images".into(),
+            Group::Media => "Make video and music".into(),
+            Group::WriteProfile => "Edit the business profile and brief".into(),
+            Group::WriteAssets => "Create and edit assets".into(),
+            Group::Jobs => "Start crawls and profile builds".into(),
+            Group::Tasks => "Create and change tasks".into(),
+            Group::Config => "Change KIQR settings".into(),
+            Group::Publish => "Send and publish (asks first)".into(),
+            Group::Ext(id) => format!("Use {id}"),
         }
+    }
+
+    /// May a task run hold this group? Making tasks and changing settings need
+    /// a person in a chat. Publishing may be granted to a task; every publish
+    /// still opens a card and waits.
+    pub fn task_allowed(&self) -> bool {
+        !matches!(self, Group::Tasks | Group::Config)
     }
 
     /// Parse a comma-separated list, as `KIQR_ALLOWED` carries it.
@@ -80,6 +109,24 @@ impl Group {
     }
 }
 
+/// Extension ids: lowercase letters, digits and dashes.
+pub fn valid_ext_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && !id.starts_with('-')
+}
+
+impl Serialize for Group {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.id())
+    }
+}
+
+impl<'de> Deserialize<'de> for Group {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Group::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown tool group '{s}'")))
+    }
+}
+
 /// How `kiqr mcp` performs a tool: one request to the daemon, or an approval
 /// that waits for the user.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,13 +139,56 @@ pub enum Call {
     Approval(&'static str),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Body {
     None,
     /// Every argument not used in the path.
     Args,
     /// The arguments go in the query string.
     Query,
+}
+
+/// A tool as `kiqr mcp` receives it from the daemon: the built-in catalogue
+/// plus the abilities with a ready connection and the connections' own
+/// tools. Owned and serialisable, so a new connection needs no CLI rebuild.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub group: Group,
+    pub label: String,
+    pub description: String,
+    pub input_schema: Value,
+    pub call: CallSpec,
+    /// What a call costs, in words, when the connection says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CallSpec {
+    Http { method: String, path: String, body: Body },
+    Approval { approval: String },
+    /// `POST /api/projects/{slug}/abilities/{ability}` with the arguments.
+    Ability { ability: String },
+    /// `POST /api/projects/{slug}/ext/{ext}/tools/{tool}` with the arguments.
+    Ext { ext: String, tool: String },
+}
+
+impl Tool {
+    pub fn spec(&self) -> ToolSpec {
+        let call = match &self.call {
+            Call::Http { method, path, body } => CallSpec::Http { method: method.to_string(), path: path.to_string(), body: *body },
+            Call::Approval(k) => CallSpec::Approval { approval: k.to_string() },
+        };
+        ToolSpec { name: self.name.to_string(), group: self.group.clone(), label: self.label.to_string(), description: self.description.to_string(), input_schema: (self.schema)(), call, cost: None }
+    }
+}
+
+/// The built-in tools in these groups, as specs.
+pub fn builtin_specs(groups: &[Group]) -> Vec<ToolSpec> {
+    catalogue().iter().filter(|t| groups.contains(&t.group)).map(Tool::spec).collect()
 }
 
 pub struct Tool {
@@ -165,6 +255,14 @@ pub fn catalogue() -> Vec<Tool> {
             label: "Looking at the brand",
             description: "Brand assets collected from the website: name, tagline, logo, icon, cover, colours, fonts, images and social profiles.",
             call: Call::Http { method: "GET", path: "/api/projects/{slug}/brand", body: Body::None },
+            schema: no_args,
+        },
+        Tool {
+            name: "brand_kit",
+            group: Read,
+            label: "Opening the brand kit",
+            description: "What to design with: the brand's colours with roles (dark, light, accent, text), fonts as they will render on this machine, the logo and icon as local file URLs for <image href>, the site name and tagline, preset sizes, and whether HTML rendering is available. Read it before making an image.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/brand/kit", body: Body::None },
             schema: no_args,
         },
         Tool {
@@ -255,9 +353,17 @@ pub fn catalogue() -> Vec<Tool> {
             name: "read_skill",
             group: Read,
             label: "Reading a skill",
-            description: "The text of a skill, i.e. the standing instructions for a kind of work. Skills: social-posts (how to write posts), business-brief, build-profile, extract-facts, crawl-site, seemo-agent.",
-            call: Call::Http { method: "GET", path: "/api/skills/{name}", body: Body::None },
+            description: "The text of a skill: standing instructions for a kind of work, written by KIQR or by the user. The system prompt lists the skills and when to use each; read the one that matches before acting.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/skills/{name}", body: Body::None },
             schema: || obj(json!({ "name": { "type": "string" } }), &["name"]),
+        },
+        Tool {
+            name: "list_skills",
+            group: Read,
+            label: "Listing the skills",
+            description: "Every skill this project can use: name, when to use it, and whether a connection it needs is ready.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/skills", body: Body::None },
+            schema: no_args,
         },
         Tool {
             name: "list_chats",
@@ -412,7 +518,7 @@ pub fn catalogue() -> Vec<Tool> {
                         },
                         "required": ["kind"],
                     },
-                    "allowed": { "type": "array", "items": { "type": "string", "enum": ["read", "write_profile", "write_assets", "jobs"] }, "description": "Tool groups the runs may use; default read, write_profile, write_assets, jobs" },
+                    "allowed": { "type": "array", "items": { "type": "string" }, "description": "Tool groups the runs may use: read, web, images, media, write_profile, write_assets, jobs, or ext:<connection id> for a connection's own tools. Default: all of the first seven." },
                     "follow_up": { "type": "boolean", "description": "Tell this chat when the first run finishes (default true for one-off tasks)" },
                 }),
                 &["title", "instruction", "schedule"],
@@ -466,6 +572,46 @@ pub fn catalogue() -> Vec<Tool> {
             call: Call::Http { method: "POST", path: "/api/projects/{slug}/tasks/{task}/run", body: Body::None },
             schema: || obj(json!({ "task": { "type": "string" } }), &["task"]),
         },
+        // --------------------------------------------------------- publish
+        Tool {
+            name: "list_channels",
+            group: Publish,
+            label: "Checking the channels",
+            description: "Where this project publishes: its channels (an email address, a blog…) and the kinds a new channel could use, by connection. Publishing itself always asks the user.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/channels", body: Body::None },
+            schema: no_args,
+        },
+        Tool {
+            name: "create_channel",
+            group: Publish,
+            label: "Proposing a channel",
+            description: "Add a place to publish to: a kind from list_channels (e.g. email) and its destination fields (e.g. to). The user sees it and confirms; this call waits for that answer.",
+            call: Call::Approval("channel"),
+            schema: || obj(
+                json!({
+                    "label": { "type": "string", "description": "What to call it, e.g. 'Newsletter to Jane'" },
+                    "kind": { "type": "string", "description": "A kind from list_channels: email, wordpress…" },
+                    "connection": { "type": "string", "description": "Connection id, when several offer the kind" },
+                    "destination": { "type": "object", "description": "The kind's destination fields, e.g. {to: 'jane@example.com'}", "additionalProperties": true },
+                }),
+                &["kind", "destination"],
+            ),
+        },
+        Tool {
+            name: "publish_asset",
+            group: Publish,
+            label: "Proposing to publish",
+            description: "Send an asset out through a channel (by id from list_channels). The user sees what goes where and confirms; this call waits for that answer. The asset becomes `published` with a record of where it went.",
+            call: Call::Approval("publish"),
+            schema: || obj(
+                json!({
+                    "asset": { "type": "object", "properties": { "type": { "type": "string" }, "id": { "type": "string" } }, "required": ["type", "id"] },
+                    "channel": { "type": "string", "description": "Channel id" },
+                    "note": { "type": "string", "description": "A line for the user about why now" },
+                }),
+                &["asset", "channel"],
+            ),
+        },
         // ---------------------------------------------------------- config
         Tool {
             name: "change_config",
@@ -479,6 +625,22 @@ pub fn catalogue() -> Vec<Tool> {
                     "reason": { "type": "string", "description": "One sentence on why" },
                 }),
                 &["changes"],
+            ),
+        },
+        Tool {
+            name: "save_skill",
+            group: Config,
+            label: "Proposing a skill",
+            description: "Keep a way of working as a skill: standing instructions you will read before similar requests (how we write product updates, how to publish to the blog, what a weekly report contains). The user sees the text and confirms; this call waits for that answer. `description` is one line saying when to use it. Scope `this_project` (default) or `everywhere`.",
+            call: Call::Approval("skill"),
+            schema: || obj(
+                json!({
+                    "name": { "type": "string", "description": "kebab-case id, e.g. product-updates" },
+                    "description": { "type": "string", "description": "When to use it, one line" },
+                    "text": { "type": "string", "description": "The instructions, Markdown" },
+                    "scope": { "type": "string", "enum": ["this_project", "everywhere"] },
+                }),
+                &["name", "description", "text"],
             ),
         },
         Tool {
@@ -511,23 +673,32 @@ pub fn allowed(groups: &[Group]) -> Vec<Tool> {
 
 /// The chat wording for a tool call, with the argument that identifies the
 /// target when there is an obvious one ("Reading a profile section: pricing").
-pub fn label_for(name: &str, args: &Value) -> String {
-    let Some(t) = find(name) else { return format!("Using {name}") };
-    let target = ["section", "name", "title", "task", "type", "url"].iter().find_map(|k| args.get(*k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()));
+/// `specs` are the tools of this session (built-in and connections'); a name
+/// not among them falls back to the built-in catalogue.
+pub fn label_for(specs: &[ToolSpec], name: &str, args: &Value) -> String {
+    let name = name.strip_prefix("mcp__kiqr__").unwrap_or(name);
+    let found = specs.iter().find(|t| t.name == name).map(|t| t.label.clone()).or_else(|| find(name).map(|t| t.label.to_string()));
+    let Some(label) = found else { return format!("Using {name}") };
+    let target = ["section", "name", "title", "task", "type", "url", "channel"].iter().find_map(|k| args.get(*k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()));
     match target {
-        Some(x) if t.name != "create_task" && t.name != "create_asset" => format!("{}: {x}", t.label),
-        _ => t.label.to_string(),
+        Some(x) if name != "create_task" && name != "create_asset" && name != "create_image" => format!("{label}: {x}"),
+        _ => label,
     }
 }
 
 /// An MCP `tools/list` entry.
-pub fn mcp_entry(t: &Tool) -> Value {
-    json!({ "name": t.name, "description": t.description, "inputSchema": (t.schema)() })
+pub fn mcp_entry(t: &ToolSpec) -> Value {
+    let mut d = t.description.clone();
+    if let Some(c) = &t.cost {
+        d.push_str(&format!(" Cost: {c}."));
+    }
+    json!({ "name": t.name, "description": d, "inputSchema": t.input_schema })
 }
 
-/// The tool groups and their labels, for the UI.
-pub fn groups_json() -> Value {
-    json!(Group::ALL.iter().map(|g| json!({ "id": g.id(), "label": g.label(), "tools": catalogue().iter().filter(|t| t.group == *g).map(|t| t.name).collect::<Vec<_>>() })).collect::<Vec<_>>())
+/// The built-in tool groups and their labels, for the UI. The daemon appends
+/// the connections' groups.
+pub fn groups_json() -> Vec<Value> {
+    Group::BUILTIN.iter().map(|g| json!({ "id": g.id(), "label": g.label(), "tools": catalogue().iter().filter(|t| t.group == *g).map(|t| t.name).collect::<Vec<_>>() })).collect()
 }
 
 #[cfg(test)]
@@ -549,17 +720,36 @@ mod tests {
 
     #[test]
     fn groups_round_trip() {
-        let g = Group::parse_list("read, write_assets,bogus,read");
-        assert_eq!(g, vec![Group::Read, Group::WriteAssets]);
-        assert_eq!(Group::join(&g), "read,write_assets");
+        let g = Group::parse_list("read, write_assets,bogus,read,ext:fal-image,ext:Bad Id");
+        assert_eq!(g, vec![Group::Read, Group::WriteAssets, Group::Ext("fal-image".into())]);
+        assert_eq!(Group::join(&g), "read,write_assets,ext:fal-image");
         assert!(allowed(&[Group::Read]).iter().all(|t| t.group == Group::Read));
         assert!(find("mcp__kiqr__get_brief").is_some());
+        let json = serde_json::to_string(&g).unwrap();
+        assert_eq!(json, r#"["read","write_assets","ext:fal-image"]"#);
+        let back: Vec<Group> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, g);
+        assert!(serde_json::from_str::<Vec<Group>>(r#"["nope"]"#).is_err());
+        assert!(!Group::Config.task_allowed() && Group::Publish.task_allowed() && Group::Images.task_allowed());
     }
 
     #[test]
     fn labels_name_the_target() {
-        assert_eq!(label_for("get_section", &json!({ "section": "pricing" })), "Reading a profile section: pricing");
-        assert_eq!(label_for("create_asset", &json!({ "type": "post", "title": "x" })), "Adding to the library");
-        assert_eq!(label_for("nope", &json!({})), "Using nope");
+        let specs = builtin_specs(&Group::BUILTIN);
+        assert_eq!(label_for(&specs, "get_section", &json!({ "section": "pricing" })), "Reading a profile section: pricing");
+        assert_eq!(label_for(&[], "mcp__kiqr__create_asset", &json!({ "type": "post", "title": "x" })), "Adding to the library");
+        assert_eq!(label_for(&[], "nope", &json!({})), "Using nope");
+        let ext = ToolSpec { name: "wp_post".into(), group: Group::Ext("wp".into()), label: "Posting to WordPress".into(), description: String::new(), input_schema: json!({}), call: CallSpec::Ext { ext: "wp".into(), tool: "wp_post".into() }, cost: None };
+        assert_eq!(label_for(&[ext], "wp_post", &json!({ "title": "Hello" })), "Posting to WordPress: Hello");
+    }
+
+    #[test]
+    fn specs_round_trip() {
+        let specs = builtin_specs(&Group::BUILTIN);
+        assert_eq!(specs.len(), catalogue().len());
+        let text = serde_json::to_string(&specs).unwrap();
+        let back: Vec<ToolSpec> = serde_json::from_str(&text).unwrap();
+        assert_eq!(back[0].name, "get_project");
+        assert!(matches!(&back.iter().find(|t| t.name == "create_task").unwrap().call, CallSpec::Approval { approval } if approval == "task"));
     }
 }

@@ -77,7 +77,7 @@ pub enum EventKind {
     ChatDelta { chat: String, text: String },
     /// Seemo used a tool. `status` is `started`, `done` or `failed`; `label`
     /// is the human wording ("Reading the business brief").
-    ChatTool { chat: String, tool: String, label: String, status: String, #[serde(default)] note: String },
+    ChatTool { chat: String, tool: String, label: String, status: String, #[serde(default)] note: String, #[serde(default)] image: Option<String> },
     /// A message was added to the transcript, or (same id) changed: a card
     /// whose status moved on.
     ChatMessage { chat: String, message: crate::chat::Message },
@@ -97,6 +97,24 @@ pub enum EventKind {
     /// `config.yaml` changed and the daemon reloaded it. `by` is `you` or `seemo`.
     /// `restart` says whether a change (host, port) only applies after a restart.
     ConfigChanged { by: String, #[serde(default)] restart: bool },
+
+    // Skills, connections and secrets (global, no project).
+    /// A skill was written or installed. `scope` is `global` or a project slug.
+    SkillSaved { name: String, scope: String },
+    SkillDeleted { name: String, scope: String },
+    /// A connection (extension manifest) was installed or removed.
+    ExtensionInstalled { id: String, name: String },
+    ExtensionRemoved { id: String },
+    /// A secret was set or cleared in `.env`. Name only, never the value.
+    SecretSet { name: String, set: bool },
+
+    // Abilities and channels.
+    /// An ability made a file into an asset: `ability` is image, video or music.
+    MediaCreated { ability: String, asset_type: String, id: String, file: String, provider: String },
+    ChannelSaved { channel: String, label: String, kind: String },
+    ChannelDeleted { channel: String },
+    /// An asset went out through a channel.
+    AssetPublished { asset_type: String, id: String, channel: String, #[serde(default)] url: Option<String> },
 }
 
 impl EventKind {
@@ -121,6 +139,15 @@ impl EventKind {
                 | EventKind::TaskRunStep { .. }
                 | EventKind::TaskRunFinished { .. }
                 | EventKind::ConfigChanged { .. }
+                | EventKind::SkillSaved { .. }
+                | EventKind::SkillDeleted { .. }
+                | EventKind::ExtensionInstalled { .. }
+                | EventKind::ExtensionRemoved { .. }
+                | EventKind::SecretSet { .. }
+                | EventKind::MediaCreated { .. }
+                | EventKind::ChannelSaved { .. }
+                | EventKind::ChannelDeleted { .. }
+                | EventKind::AssetPublished { .. }
         )
     }
 }

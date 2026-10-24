@@ -3,6 +3,11 @@
 
 mod agent;
 mod api;
+mod builtin;
+mod ext;
+mod images;
+mod mcp_host;
+mod publish;
 mod scheduler;
 mod seemo;
 mod web;
@@ -32,6 +37,15 @@ pub struct App {
     pub queued: Arc<RwLock<std::collections::HashMap<String, std::collections::VecDeque<String>>>>,
     /// Where `kiqr mcp` reaches this daemon.
     pub daemon_url: String,
+    /// This binary, resolved once: after an upgrade or rebuild the running
+    /// process would otherwise see its own path as deleted.
+    pub exe: std::path::PathBuf,
+    /// Skills and connections: every folder under `skills/`, reloaded on change.
+    pub registry: Arc<RwLock<kiqr_core::extensions::Registry>>,
+    /// The built-in image renderer: fonts loaded once, browser found once.
+    pub renderer: Arc<kiqr_core::render::Renderer>,
+    /// MCP servers the daemon hosts for `transport: mcp` connections.
+    pub mcp: Arc<mcp_host::McpHost>,
 }
 
 impl App {
@@ -49,6 +63,9 @@ pub async fn run(home: Home) -> Result<()> {
     }
     if kiqr_core::assets::install_builtin_types(&store)? {
         store.commit("asset types: install built-in types").await?;
+    }
+    if kiqr_core::extensions::install_builtin(&store)? {
+        store.commit("skills: install built-in connections").await?;
     }
     seed_persona(&store).await?;
 
@@ -68,7 +85,15 @@ pub async fn run(home: Home) -> Result<()> {
         agents: Arc::new(tokio::sync::Semaphore::new(config.agent.max_concurrent.clamp(1, 10))),
         queued: Default::default(),
         daemon_url: format!("http://{loopback}:{port}"),
+        exe: own_exe(),
+        registry: Arc::new(RwLock::new(kiqr_core::extensions::Registry::load(&home))),
+        renderer: Arc::new(kiqr_core::render::Renderer::new(home.render_dir())),
+        mcp: Arc::new(mcp_host::McpHost::default()),
     };
+    match app.renderer.chrome() {
+        Some(c) => tracing::info!("images: SVG via resvg, HTML via {}", c.display()),
+        None => tracing::info!("images: SVG via resvg; no browser found, so no HTML rendering"),
+    }
     scheduler::recover(&app);
     tokio::spawn(scheduler::run(app.clone()));
 
@@ -106,4 +131,12 @@ async fn seed_persona(store: &Store) -> Result<()> {
         store.commit("seemo: install persona").await?;
     }
     Ok(())
+}
+
+/// The path of this binary as it should be spawned later.
+fn own_exe() -> std::path::PathBuf {
+    let raw = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("kiqr"));
+    let cleaned = raw.to_string_lossy().trim_end_matches(" (deleted)").to_string();
+    let p = std::path::PathBuf::from(cleaned);
+    p.canonicalize().unwrap_or(p)
 }

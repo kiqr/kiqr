@@ -62,6 +62,23 @@
 .set-conn.st-off .ic { color: var(--muted); background: var(--panel-2); border-color: var(--line-2); }
 .set-conn.st-soon .ic { color: var(--accent-2); background: rgba(129,140,248,.1); border-color: rgba(129,140,248,.22); border-style: dashed; }
 .set-conn .how { font-size: 12px; color: var(--dim); margin-top: 8px; }
+.set-conn .how.warn { color: var(--warn); }
+.set-conn .grow { flex: 1; }
+.set-conn .ds .lnk, .set-key .lnk { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); font-size: 12px; }
+.set-conn.st-warn .ic { color: var(--warn); background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.3); }
+.set-keys { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.set-key { display: flex; flex-direction: column; gap: 4px; }
+.set-key .lb { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.set-key .lb small { color: var(--dim); }
+.set-key .hint { color: var(--dim); }
+.set-key .in { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.set-key .in .input { max-width: 260px; }
+.set-key .err { color: var(--bad); font-size: 12px; }
+.set-conn-acts { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.set-broken { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--bad); }
+.set-broken code { font: 12px var(--mono); color: var(--fg); margin-right: 8px; }
+.btn.sm { padding: 4px 10px; font-size: 12px; }
+select.input { appearance: auto; }
 .set-note { font-size: 12px; color: var(--dim); margin-top: 4px; }
 
 .set-git { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }

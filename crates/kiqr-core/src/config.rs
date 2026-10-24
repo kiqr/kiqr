@@ -13,6 +13,9 @@ pub struct Config {
     pub crawl: CrawlDefaults,
     pub models: Models,
     pub agent: AgentConfig,
+    /// Which connection serves an ability when several could: `image: fal-image`.
+    /// An ability not listed uses the built-in connection, else the only ready one.
+    pub abilities: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,7 +64,7 @@ pub struct AgentConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default() }
+        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default() }
     }
 }
 impl Default for AgentConfig {

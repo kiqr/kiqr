@@ -17,7 +17,7 @@ use kiqr_core::events::EventKind;
 use kiqr_core::profile::{self, Brief, BriefSource, Field, Section};
 use kiqr_core::project::Project;
 use kiqr_core::tasks::{self, Run, Schedule, ScheduleKind, Task, TaskStatus};
-use kiqr_core::tools::{self, Group};
+use kiqr_core::tools::Group;
 use kiqr_core::{assets, Config};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,9 +26,6 @@ use tokio::sync::watch;
 
 pub fn routes() -> Router<App> {
     Router::new()
-        .route("/api/tools", get(get_tools))
-        .route("/api/skills", get(list_skills))
-        .route("/api/skills/{name}", get(get_skill))
         .route("/api/projects/{slug}/profile/{section}", get(get_section))
         .route("/api/projects/{slug}/profile/{section}/fields/{field}", axum::routing::put(put_field))
         .route("/api/projects/{slug}/brief", patch(patch_brief))
@@ -57,12 +54,6 @@ fn bad(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 
-// ------------------------------------------------------------- tools, skills
-
-async fn get_tools() -> Json<Value> {
-    Json(json!({ "groups": tools::groups_json(), "tools": tools::catalogue().iter().map(|t| json!({ "name": t.name, "group": t.group.id(), "label": t.label, "description": t.description })).collect::<Vec<_>>() }))
-}
-
 // --------------------------------------------------------------------- web
 
 #[derive(Deserialize)]
@@ -82,22 +73,6 @@ async fn read_web(State(app): State<App>, Path(slug): Path<String>, Query(q): Qu
     let max = q.max_chars.unwrap_or(20_000).min(100_000);
     let page = kiqr_core::fetch::read_page(&url, escalate, max).await.map_err(|e| bad(e.to_string()))?;
     Ok(Json(page))
-}
-
-async fn list_skills(State(app): State<App>) -> Json<Vec<String>> {
-    Json(kiqr_core::extract::skill_names(&app.store))
-}
-
-/// A skill's text, the user's copy first. Plain text.
-async fn get_skill(State(app): State<App>, Path(name): Path<String>) -> Result<String, ApiError> {
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(bad("a skill name is letters, digits and dashes"));
-    }
-    let path = app.store.home().skills_dir().join(&name).join("SKILL.md");
-    if let Ok(t) = std::fs::read_to_string(&path) {
-        return Ok(t);
-    }
-    kiqr_core::extract::builtin_skill(&name).map(str::to_string).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no skill '{name}'")))
 }
 
 // ---------------------------------------------------------- profile patches
@@ -363,12 +338,15 @@ struct NewApproval {
     kind: String,
     #[serde(default)]
     chat: Option<String>,
+    /// From a task run: the card goes to the task's follow-up chat (made if needed).
+    #[serde(default)]
+    task: Option<String>,
     #[serde(default)]
     payload: Value,
 }
 
 /// What a task approval holds once checked: the fields plus the next runs.
-fn task_preview(app_cfg: &Config, payload: &Value) -> Result<Value, ApiError> {
+fn task_preview(app_cfg: &Config, payload: &Value, names: &std::collections::HashMap<String, String>) -> Result<Value, ApiError> {
     let title = payload["title"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("a task needs a title"))?;
     let instruction = payload["instruction"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("a task needs an instruction"))?;
     let mut schedule: Schedule = serde_json::from_value(payload["schedule"].clone()).map_err(|e| bad(format!("the schedule is not in the expected shape: {e}")))?;
@@ -378,7 +356,7 @@ fn task_preview(app_cfg: &Config, payload: &Value) -> Result<Value, ApiError> {
         schedule.tz = tz.name().to_string();
     }
     let allowed: Vec<Group> = match payload["allowed"].as_array() {
-        Some(a) if !a.is_empty() => a.iter().filter_map(|v| v.as_str()).filter_map(Group::parse).filter(|g| Group::TASK_DEFAULT.contains(g)).collect(),
+        Some(a) if !a.is_empty() => a.iter().filter_map(|v| v.as_str()).filter_map(Group::parse).filter(|g| g.task_allowed()).collect(),
         _ => Group::TASK_DEFAULT.to_vec(),
     };
     let now = Utc::now();
@@ -390,7 +368,7 @@ fn task_preview(app_cfg: &Config, payload: &Value) -> Result<Value, ApiError> {
         "schedule": schedule,
         "schedule_text": schedule.describe(tz),
         "allowed": allowed,
-        "allowed_labels": allowed.iter().map(|g| g.label()).collect::<Vec<_>>(),
+        "allowed_labels": allowed.iter().map(|g| crate::ext::group_label(g, names)).collect::<Vec<_>>(),
         "follow_up": follow_up,
         "next": next,
         "timezone": tz.name(),
@@ -439,6 +417,25 @@ pub fn apply_changes(cfg: &Config, changes: &serde_json::Map<String, Value>) -> 
     Ok((new_cfg, list, restart))
 }
 
+/// What a skill approval holds once checked.
+fn skill_preview(slug: &str, payload: &Value) -> Result<Value, ApiError> {
+    let raw = payload["name"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("a skill needs a name"))?;
+    let name = assets::slugify(raw);
+    if name.is_empty() {
+        return Err(bad("the skill name needs some letters"));
+    }
+    let description = payload["description"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("say in one line when the skill applies"))?;
+    let text = payload["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("a skill needs its instructions"))?;
+    let everywhere = payload["scope"].as_str() == Some("everywhere");
+    Ok(json!({
+        "name": name,
+        "description": description,
+        "text": text,
+        "scope": if everywhere { "everywhere" } else { "this_project" },
+        "scope_text": if everywhere { "every project".to_string() } else { format!("this project ({slug})") },
+    }))
+}
+
 fn config_preview(cfg: &Config, payload: &Value) -> Result<Value, ApiError> {
     let changes = payload["changes"].as_object().filter(|m| !m.is_empty()).ok_or_else(|| bad("name at least one setting to change"))?;
     let (_, list, restart) = apply_changes(cfg, changes).map_err(bad)?;
@@ -449,18 +446,43 @@ fn config_preview(cfg: &Config, payload: &Value) -> Result<Value, ApiError> {
 async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewApproval>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let _ = Project::load(&app.store, &slug)?;
     let cfg = app.config.read().await.clone();
+    let names = crate::ext::connection_names(&app, &slug).await;
     let preview = match b.kind.as_str() {
-        "task" => task_preview(&cfg, &b.payload)?,
+        "task" => task_preview(&cfg, &b.payload, &names)?,
         "config" => config_preview(&cfg, &b.payload)?,
+        "skill" => skill_preview(&slug, &b.payload)?,
+        "channel" => crate::publish::channel_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
+        "publish" => crate::publish::publish_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
+        "email" => crate::publish::email_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         other => return Err(bad(format!("unknown approval kind '{other}'"))),
     };
-    let chat_id = b.chat.filter(|c| !c.is_empty());
-    let Some(chat_id) = chat_id else {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "this needs a person: it can only be asked from a chat, not from a task run".into()));
+    let from_task = b.task.clone().filter(|t| !t.is_empty());
+    let chat_id = match b.chat.filter(|c| !c.is_empty()) {
+        Some(c) => c,
+        None => match &from_task {
+            // A run asked: the card waits in the task's chat, made now if it has none.
+            Some(task_id) => {
+                let mut task = Task::load(&app.store, &slug, task_id)?;
+                match task.follow_up_chat.clone().filter(|c| Chat::load(&app.store, &slug, c).is_ok()) {
+                    Some(c) => c,
+                    None => {
+                        let c = Chat::create(&app.store, &slug, &format!("Task: {}", task.title), &cfg.models.chat)?;
+                        app.bus.emit(Some(&slug), EventKind::ChatCreated { chat: c.id.clone(), title: c.title.clone() });
+                        task.follow_up_chat = Some(c.id.clone());
+                        task.save(&app.store, &slug)?;
+                        c.id
+                    }
+                }
+            }
+            None => return Err(ApiError(StatusCode::PRECONDITION_FAILED, "this needs a person: it can only be asked from a chat or a task run".into())),
+        },
     };
     let mut chat = Chat::load(&app.store, &slug, &chat_id)?;
-    if !app.turns.read().await.contains_key(&chat_id) {
+    if from_task.is_none() && !app.turns.read().await.contains_key(&chat_id) {
         return Err(conflict("the chat is not in a turn; approvals can only be asked while answering"));
+    }
+    if from_task.is_some() {
+        app.bus.emit(Some(&slug), EventKind::SeemoSays { text: format!("A task is waiting for your yes in the chat \"{}\".", chat.title) });
     }
     let id = chat::message_id();
     let card = Message {
@@ -542,6 +564,22 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },
+            "skill" => match approve_skill(&app, &slug, &approval).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(e) => return Err(e),
+            },
+            "channel" => match crate::publish::save_channel(&app, &slug, &approval.payload, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(e) => return Err(e),
+            },
+            "publish" => match crate::publish::do_publish(&app, &slug, &approval.payload, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(e) => return Err(e),
+            },
+            "email" => match crate::publish::do_email(&app, &slug, &approval.payload).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(e) => return Err(e),
+            },
             _ => match approve_config(&app, &approval).await {
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
@@ -567,7 +605,7 @@ async fn approve_task(app: &App, slug: &str, approval: &Approval, allowed: Optio
     }
     let allowed: Vec<Group> = allowed
         .filter(|a| !a.is_empty())
-        .map(|a| a.into_iter().filter(|g| Group::TASK_DEFAULT.contains(g)).collect())
+        .map(|a| a.into_iter().filter(|g| g.task_allowed()).collect())
         .unwrap_or_else(|| serde_json::from_value(p["allowed"].clone()).unwrap_or_else(|_| Group::TASK_DEFAULT.to_vec()));
     let now = Utc::now();
     let mut task = Task {
@@ -608,6 +646,20 @@ async fn approve_task(app: &App, slug: &str, approval: &Approval, allowed: Optio
         "next_run": task.next_run,
         "running": running,
         "note": if running { "The task was confirmed and is running now. Its card in the chat shows progress; you will be told when it finishes." } else { "The task was confirmed and is scheduled." },
+    }))
+}
+
+async fn approve_skill(app: &App, slug: &str, approval: &Approval) -> Result<Value, ApiError> {
+    let p = &approval.payload;
+    let name = p["name"].as_str().unwrap_or("").to_string();
+    let scope = if p["scope"].as_str() == Some("everywhere") { kiqr_core::extensions::Scope::Global } else { kiqr_core::extensions::Scope::Project(slug.to_string()) };
+    let body = format!("---\nname: {name}\ndescription: {}\n---\n\n{}\n", p["description"].as_str().unwrap_or("").replace('\n', " "), p["text"].as_str().unwrap_or("").trim());
+    let view = crate::ext::save_skill(app, scope.clone(), &name, &body).await?;
+    Ok(json!({
+        "name": name,
+        "scope": p["scope"],
+        "skill": view.0,
+        "note": "Saved. From now on it is listed among the skills and read before matching requests.",
     }))
 }
 
@@ -662,13 +714,14 @@ async fn list_tasks(State(app): State<App>, Path(slug): Path<String>) -> ApiResu
     let cfg = app.config.read().await.clone();
     let tz = tasks::local_tz(&cfg.agent.timezone);
     let jobs = app.jobs.read().await.clone();
-    Ok(Json(Task::list(&app.store, &slug)?.into_iter().map(|t| task_view(&t, tz, jobs.contains(&format!("task:{}", t.id)))).collect()))
+    let names = crate::ext::connection_names(&app, &slug).await;
+    Ok(Json(Task::list(&app.store, &slug)?.into_iter().map(|t| task_view(&t, tz, jobs.contains(&format!("task:{}", t.id)), &names)).collect()))
 }
 
-fn task_view(t: &Task, tz: chrono_tz::Tz, running: bool) -> Value {
+fn task_view(t: &Task, tz: chrono_tz::Tz, running: bool, names: &std::collections::HashMap<String, String>) -> Value {
     let mut v = serde_json::to_value(t).unwrap_or(Value::Null);
     v["schedule_text"] = json!(t.schedule.describe(tz));
-    v["allowed_labels"] = json!(t.allowed.iter().map(|g| g.label()).collect::<Vec<_>>());
+    v["allowed_labels"] = json!(t.allowed.iter().map(|g| crate::ext::group_label(g, names)).collect::<Vec<_>>());
     v["running"] = json!(running);
     v
 }
@@ -686,7 +739,8 @@ struct NewTask {
 async fn create_task(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewTask>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let _ = Project::load(&app.store, &slug)?;
     let cfg = app.config.read().await.clone();
-    let preview = task_preview(&cfg, &json!({ "title": b.title, "instruction": b.instruction, "schedule": b.schedule, "allowed": b.allowed, "follow_up": false }))?;
+    let names = crate::ext::connection_names(&app, &slug).await;
+    let preview = task_preview(&cfg, &json!({ "title": b.title, "instruction": b.instruction, "schedule": b.schedule, "allowed": b.allowed, "follow_up": false }), &names)?;
     let (tx, _) = watch::channel(None);
     let a = Approval { id: String::new(), slug: slug.clone(), chat: None, kind: "task".into(), payload: preview, message_id: None, created: Utc::now(), tx };
     let v = approve_task(&app, &slug, &a, None).await?;
@@ -697,7 +751,8 @@ async fn get_task(State(app): State<App>, Path((slug, id)): Path<(String, String
     let t = Task::load(&app.store, &slug, &id)?;
     let cfg = app.config.read().await.clone();
     let running = app.jobs.read().await.contains(&format!("task:{id}"));
-    Ok(Json(task_view(&t, tasks::local_tz(&cfg.agent.timezone), running)))
+    let names = crate::ext::connection_names(&app, &slug).await;
+    Ok(Json(task_view(&t, tasks::local_tz(&cfg.agent.timezone), running, &names)))
 }
 
 #[derive(Deserialize, Default)]
@@ -728,12 +783,13 @@ async fn patch_task(State(app): State<App>, Path((slug, id)): Path<(String, Stri
         t.plan_next(Utc::now(), tz).map_err(|e| bad(e.to_string()))?;
     }
     if let Some(a) = p.allowed {
-        t.allowed = a.into_iter().filter(|g| Group::TASK_DEFAULT.contains(g)).collect();
+        t.allowed = a.into_iter().filter(|g| g.task_allowed()).collect();
     }
     t.save(&app.store, &slug)?;
     app.store.commit(&format!("task({slug}): edit {}", t.title)).await?;
     agent::emit_task(&app, &slug, &t);
-    Ok(Json(task_view(&t, tz, false)))
+    let names = crate::ext::connection_names(&app, &slug).await;
+    Ok(Json(task_view(&t, tz, false, &names)))
 }
 
 async fn delete_task(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> Result<StatusCode, ApiError> {
@@ -761,7 +817,8 @@ async fn set_status(app: &App, slug: &str, id: &str, status: TaskStatus) -> ApiR
     t.save(&app.store, slug)?;
     app.store.commit(&format!("task({slug}): {} {}", status.id(), t.title)).await?;
     agent::emit_task(app, slug, &t);
-    Ok(Json(task_view(&t, tz, false)))
+    let names = crate::ext::connection_names(&app, &slug).await;
+    Ok(Json(task_view(&t, tz, false, &names)))
 }
 
 async fn pause_task(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {

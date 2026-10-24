@@ -63,6 +63,59 @@
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* images a step produced */
+.step-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
+.step-images a { display: block; border-radius: var(--r); overflow: hidden; border: 1px solid var(--line); background: var(--panel-2); max-width: 360px; transition: border-color 200ms; }
+.step-images a:hover { border-color: var(--line-2); }
+.step-images img { display: block; width: 100%; height: auto; }
+.conv.compact .step-images a { max-width: 100%; }
+
+/* skills and channels pages */
+.skills, .channels { display: flex; flex-direction: column; gap: 10px; }
+.skill, .channel { padding: 16px 18px; }
+.skill .row, .channel .row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: start; }
+.channel .ic { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; flex: none; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(94,234,212,.22); }
+.channel.off .ic { color: var(--muted); background: var(--panel-2); border-color: var(--line-2); }
+.channel h3 { font: 600 15px/1.3 var(--sans); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.channel h3 .chip { text-decoration: none; }
+.channel .meta { font-size: 13px; color: var(--muted); margin-top: 2px; display: flex; gap: 6px 14px; flex-wrap: wrap; }
+.channel .meta .mono { font: 500 12.5px var(--mono); color: var(--fg); }
+.channel .acts { display: flex; gap: 2px; }
+.channel .acts .btn.t { padding: 6px 8px; }
+.skill .ic { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; flex: none; color: var(--accent-2); background: rgba(129,140,248,.12); border: 1px solid rgba(129,140,248,.25); }
+.skill h3 { font: 600 15px/1.3 var(--sans); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.skill h3 .chip { text-decoration: none; }
+.skill .meta { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.skill .meta .dim { color: var(--dim); }
+.skill .acts { display: flex; gap: 2px; }
+.skill .acts .btn.t { padding: 6px 8px; }
+.skill .err { color: var(--bad); font-size: 12.5px; margin-top: 6px; }
+.skill.broken { border-color: rgba(248,113,113,.35); }
+.skill-text { margin: 12px 0 0 46px; padding: 12px 14px; border-radius: var(--r); background: var(--panel-2); border: 1px solid var(--line); font-size: 13.5px; }
+.skill-form { padding: 20px; margin-bottom: 18px; display: flex; flex-direction: column; gap: 14px; }
+.skill-form .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.skill-form label { display: flex; flex-direction: column; gap: 6px; }
+.skill-form .nm { font-size: 13px; font-weight: 500; }
+.skill-form .ds { font-size: 12px; color: var(--dim); }
+.skill-form textarea.input { font: 400 13.5px/1.55 var(--sans); resize: vertical; min-height: 160px; }
+.skill-form .starters { display: flex; flex-wrap: wrap; gap: 6px; }
+.skill-form .starters .chip, .skill-form .scope .chip, .adv-body .install .chip { cursor: pointer; }
+.skill-form .scope { display: flex; align-items: center; gap: 8px; }
+.skill-form .scope .nm { margin-right: 4px; }
+.skill-form .acts { display: flex; gap: 8px; }
+.skill-form .err, .adv-body .err { color: var(--bad); font-size: 13px; }
+.adv-body .ok { color: var(--ok); }
+.pcard.adv { margin-top: 24px; padding: 14px 18px; }
+.adv-head { display: flex; align-items: center; gap: 6px; border: 0; background: none; color: var(--muted); font: 500 13px var(--sans); cursor: pointer; padding: 2px 0; }
+.adv-head:hover { color: var(--fg); }
+.adv-body { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.adv-body code svg { vertical-align: -2px; margin-right: 4px; }
+.adv-body .install { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.adv-body .install .input { flex: 1; min-width: 260px; }
+.adv-body .packs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.adv-body .packs li { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.adv-body .packs .bad { color: var(--bad); }
+
 /* cards: an approval waiting, a task running */
 .ccard { align-self: stretch; max-width: 640px; margin-left: 38px; padding: 14px 16px; border-radius: var(--r); background: var(--panel-2); border: 1px solid var(--line); animation: rise 200ms ease-out; }
 .conv.compact .ccard { margin-left: 0; padding: 12px 13px; }
@@ -168,4 +221,5 @@
   .ccard { margin-left: 0; }
   .agenda { grid-template-columns: 1fr; }
   .agenda .side { position: static; }
+  .skill-form .grid { grid-template-columns: 1fr; }
 }

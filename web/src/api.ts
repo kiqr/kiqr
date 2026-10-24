@@ -122,12 +122,14 @@ export type Config = {
   models: { extract: string; synthesize: string; chat: string };
   /** Seemo's sessions: spend ceiling per turn, how many run at once, the timezone for schedules. */
   agent?: { max_budget_usd: number; max_concurrent: number; timezone: string };
+  /** Which connection serves an ability when several are ready: `{ image: "fal-image" }`. */
+  abilities?: Record<string, string>;
 };
 
 // ---- Seemo: chats, approvals, tasks
 
 /** A tool Seemo used while writing a message. `ok` is null while it runs. */
-export type Step = { tool: string; label: string; ok: boolean | null; note?: string };
+export type Step = { tool: string; label: string; ok: boolean | null; note?: string; image?: string };
 /** A card in a chat: an approval Seemo is waiting for, which becomes a task card once approved. */
 export type Card = {
   kind: "approval" | "task" | string;
@@ -188,6 +190,67 @@ export type Run = {
 };
 export type CalendarItem = { task: string; title: string; at: string; schedule_text: string };
 export type ToolGroup = { id: string; label: string; tools: string[] };
+
+// ---- Skills and connections
+export type Scope = { scope: "global" } | { scope: "project"; project: string };
+/** A folder under skills/: a skill (SKILL.md), a connection (extension.yaml), or both. */
+export type Skill = {
+  name: string;
+  title: string;
+  description: string;
+  abilities: string[];
+  channels: string[];
+  scope: Scope;
+  builtin: boolean;
+  has_skill: boolean;
+  /** One of KIQR's own pipeline prompts (reading pages, building the profile), not something Seemo picks up in a chat. */
+  pipeline?: boolean;
+  connection: { id: string; name: string; ready: boolean } | null;
+  error: string | null;
+  folder: string;
+};
+export type ConnectionAuth = { env: string; label: string; help: string; optional: boolean; set: boolean };
+/** What provides an ability: a service behind a key, a program here, or KIQR itself. */
+export type Connection = {
+  id: string;
+  name: string;
+  version: string;
+  summary: string;
+  transport: "http" | "command" | "mcp" | "builtin";
+  homepage: string;
+  builtin: boolean;
+  folder: string;
+  scope: Scope;
+  ready: boolean;
+  missing: string[];
+  auth: ConnectionAuth[];
+  provides: { ability: string; label: string; cost: string | null }[];
+  tools: { name: string; label: string; cost: string | null }[];
+  channels: { kind: string; label: string }[];
+  hosts: string[];
+  command: string | null;
+  env: string[];
+  program_found: boolean | null;
+};
+/** Where a project publishes. */
+export type Channel = {
+  id: string;
+  label: string;
+  extension: string;
+  kind: string;
+  destination: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+  asks_first: boolean;
+  publications: number;
+  last_published?: string | null;
+  connection_name: string;
+  ready: boolean;
+  destination_text: string;
+};
+export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown> };
+export type AbilityInfo = { id: string; label: string; tool: string; configured: string | null; active: { id: string; name: string } | null; connections: { id: string; name: string; ready: boolean }[] };
+export type Extensions = { connections: Connection[]; broken: { folder: string; scope: Scope; error: string }[]; abilities: AbilityInfo[] };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -259,6 +322,29 @@ export const api = {
   calendar: (slug: string, from?: string, to?: string) =>
     req<CalendarItem[]>(`/api/projects/${slug}/calendar${from ? `?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}` : ""}`),
   tools: () => req<{ groups: ToolGroup[] }>("/api/tools"),
+
+  // Skills and connections
+  /** Skills a project sees (its own first), or every folder when `slug` is empty. */
+  skills: (slug?: string) => req<Skill[]>(slug ? `/api/projects/${slug}/skills` : "/api/skills"),
+  skillText: (slug: string, name: string) => (DEMO ? demoSeemoRequest<string>(`/api/projects/${slug}/skills/${name}`) : fetch(`/api/projects/${slug}/skills/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))),
+  /** Write a SKILL.md: for one project (`slug`) or everywhere (`null`). */
+  saveSkill: (slug: string | null, name: string, text: string) => req<Skill>(slug ? `/api/projects/${slug}/skills/${name}` : `/api/skills/${name}`, { method: "PUT", body: JSON.stringify({ text }) }),
+  deleteSkill: (slug: string | null, name: string) => req<void>(slug ? `/api/projects/${slug}/skills/${name}` : `/api/skills/${name}`, { method: "DELETE" }),
+  /** Install a skill folder (a path on this machine or a git URL). */
+  installSkill: (source: string, slug?: string, name?: string) => req<Skill>(slug ? `/api/projects/${slug}/skills` : "/api/skills", { method: "POST", body: JSON.stringify({ source, name }) }),
+  extensions: () => req<Extensions>("/api/extensions"),
+  removeConnection: (id: string, slug?: string) => req<void>(`/api/extensions/${id}${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "DELETE" }),
+  /** Set a secret in .env by name; an empty value clears it. The value is never read back. */
+  setSecret: (name: string, value: string) => req<{ name: string; set: boolean }>(`/api/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
+
+  // Channels and publishing
+  channels: (slug: string) => req<{ channels: Channel[]; kinds: ChannelKindInfo[] }>(`/api/projects/${slug}/channels`),
+  createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string> }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
+  deleteChannel: (slug: string, id: string) => req<void>(`/api/projects/${slug}/channels/${id}`, { method: "DELETE" }),
+  /** Publish an asset through a channel. From the UI the click is the yes. */
+  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel: string, note = "") =>
+    req<{ published: boolean; url: string | null; detail: string; channel_label: string }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel, note, by: "user" }) }),
+  sendEmail: (slug: string, m: { to: string; subject: string; text: string; asset?: { type: string; id: string } }) => req<{ sent: boolean; to: string; subject: string; connection: string }>(`/api/projects/${slug}/email`, { method: "POST", body: JSON.stringify(m) }),
 };
 
 let demoConfig: Config = {
@@ -266,10 +352,11 @@ let demoConfig: Config = {
   crawl: { max_pages: 200, concurrency: 5, ai_concurrency: 3, escalate_to_unblockingapi: true },
   models: { extract: "claude-cli/haiku", synthesize: "claude-cli/sonnet", chat: "claude-cli/sonnet" },
   agent: { max_budget_usd: 2, max_concurrent: 3, timezone: "Europe/Stockholm" },
+  abilities: {},
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (/\/(chats|approvals|tasks|calendar)(\/|\?|$)/.test(path) || path === "/api/tools") return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|skills|channels|email)(\/|\?|$)/.test(path) || /\/publish$/.test(path) || path === "/api/tools" || path.startsWith("/api/extensions") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

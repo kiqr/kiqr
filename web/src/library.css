@@ -122,3 +122,14 @@
 .lib-can-it .soon { margin-left: auto; }
 .lib-can-it .ds { position: relative; font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
 @media (max-width: 640px) { .lib-steps li { flex-wrap: wrap; } .lib-steps .acts { margin-left: 44px; } }
+
+/* publish box on the asset page */
+.lib-pubs { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.lib-pubs li { display: flex; align-items: center; gap: 8px; }
+.lib-pubs li svg { color: var(--ok); flex: none; }
+.lib-pubs li small { color: var(--dim); font-size: 12px; margin-left: auto; }
+.lib-pubs li a { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; }
+.lib-publish { display: flex; flex-direction: column; gap: 8px; }
+.lib-publish .btn { justify-content: center; }
+.lib-preview + .lib-side .ok { color: var(--ok); }
+.lib-side .err { color: var(--bad); }

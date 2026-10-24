@@ -46,7 +46,7 @@ export function useChat(slug: string | null, chatId: string | null) {
         setStreaming((s) => ({ message: s?.message ?? "", text: (s?.text ?? "") + (e.text as string), steps: s?.steps ?? [], started: s?.started ?? e.at }));
         break;
       case "chat_tool": {
-        const step: Step = { tool: e.tool as string, label: e.label as string, ok: e.status === "started" ? null : e.status === "done", note: (e.note as string) || undefined };
+        const step: Step = { tool: e.tool as string, label: e.label as string, ok: e.status === "started" ? null : e.status === "done", note: (e.note as string) || undefined, image: (e.image as string) || undefined };
         setStreaming((s) => {
           const steps = [...(s?.steps ?? [])];
           if (e.status === "started") steps.push(step);

@@ -47,6 +47,9 @@ pub fn router(app: App) -> Router {
         .route("/api/projects/{slug}/assets/{kind}/{id}/files/{name}", get(get_asset_file).put(put_asset_file).layer(axum::extract::DefaultBodyLimit::max(MAX_ASSET_FILE)))
         .route("/api/events", get(events))
         .merge(crate::seemo::routes())
+        .merge(crate::ext::routes())
+        .merge(crate::images::routes())
+        .merge(crate::publish::routes())
         .with_state(app)
 }
 
@@ -110,7 +113,7 @@ struct ToolStatus {
 }
 
 /// Every secret KIQR reads from `.env`.
-const SECRETS: &[&str] = &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "UNBLOCKINGAPI_KEY", "KIQR_CLOUD_TOKEN"];
+pub(crate) const SECRETS: &[&str] = &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "UNBLOCKINGAPI_KEY", "KIQR_CLOUD_TOKEN"];
 
 #[derive(Serialize)]
 struct ProviderStatus {
@@ -555,7 +558,7 @@ async fn asset_summary(State(app): State<App>, Path(slug): Path<String>) -> ApiR
     Ok(Json(assets::summary(&app.store, &slug)?))
 }
 
-fn emit_saved(app: &App, slug: &str, a: &Asset, created: bool) {
+pub(crate) fn emit_saved(app: &App, slug: &str, a: &Asset, created: bool) {
     let status = serde_json::to_value(a.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
     app.bus.emit(Some(slug), EventKind::AssetSaved { asset_type: a.kind.clone(), id: a.id.clone(), title: a.title.clone(), status, created });
 }

@@ -7,7 +7,7 @@
 
 use crate::Client;
 use anyhow::Result;
-use kiqr_core::tools::{self, Body, Call, Group};
+use kiqr_core::tools::{self, Body, CallSpec, Group, ToolSpec};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -16,19 +16,29 @@ struct Scope {
     chat: Option<String>,
     task: Option<String>,
     allowed: Vec<Group>,
+    /// The tools of this session, from the daemon (built-ins, abilities with a
+    /// ready connection, the connections' own tools).
+    specs: Vec<ToolSpec>,
 }
 
 pub async fn serve(client: Client) -> Result<()> {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-    let scope = Scope {
-        project: env("KIQR_PROJECT").unwrap_or_default(),
-        chat: env("KIQR_CHAT"),
-        task: env("KIQR_TASK"),
-        allowed: env("KIQR_ALLOWED").map(|a| Group::parse_list(&a)).unwrap_or_else(|| Group::ALL.to_vec()),
-    };
-    if scope.project.is_empty() {
+    let allowed = env("KIQR_ALLOWED").map(|a| Group::parse_list(&a)).unwrap_or_else(|| Group::BUILTIN.to_vec());
+    let project = env("KIQR_PROJECT").unwrap_or_default();
+    if project.is_empty() {
         eprintln!("kiqr mcp: KIQR_PROJECT is not set");
     }
+    // Without KIQR_ALLOWED the daemon decides (a chat's full set, connections included).
+    let allowed_q = env("KIQR_ALLOWED").map(|a| format!("&allowed={}", urlencode(&a))).unwrap_or_default();
+    let specs = match request(&client, "GET", &format!("/api/tools?project={}{allowed_q}", urlencode(&project)), None).await {
+        Ok((status, text)) if status.is_success() => serde_json::from_str::<Value>(&text).ok().and_then(|v| serde_json::from_value::<Vec<ToolSpec>>(v["tools"].clone()).ok()),
+        _ => None,
+    }
+    .unwrap_or_else(|| {
+        eprintln!("kiqr mcp: could not fetch the tool list from the daemon; serving the built-in tools");
+        tools::builtin_specs(&allowed)
+    });
+    let scope = Scope { project, chat: env("KIQR_CHAT"), task: env("KIQR_TASK"), allowed, specs };
     let stdin = tokio::io::stdin();
     let mut lines = tokio::io::BufReader::new(stdin).lines();
     let mut out = tokio::io::stdout();
@@ -51,7 +61,7 @@ pub async fn serve(client: Client) -> Result<()> {
             })),
             "notifications/initialized" | "notifications/cancelled" => continue,
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools::allowed(&scope.allowed).iter().map(tools::mcp_entry).collect::<Vec<_>>() })),
+            "tools/list" => Ok(json!({ "tools": scope.specs.iter().map(tools::mcp_entry).collect::<Vec<_>>() })),
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("").to_string();
                 let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
@@ -95,20 +105,29 @@ fn tool_ok(text: String, structured: Option<Value>) -> Value {
 const MAX_RESULT: usize = 120_000;
 
 async fn call(client: &Client, scope: &Scope, name: &str, mut args: Value) -> Value {
-    let Some(tool) = tools::find(name) else { return tool_error(format!("no tool named {name}")) };
-    if !scope.allowed.contains(&tool.group) {
+    let short = name.strip_prefix("mcp__kiqr__").unwrap_or(name);
+    let Some(tool) = scope.specs.iter().find(|t| t.name == short) else {
         return tool_error(format!(
-            "This session may not use {}: it is allowed to {}. Do what you can without it and say so in your report.",
-            tool.name,
+            "This session has no tool named {short}. It is allowed to {}. Do what you can without it and say so.",
             scope.allowed.iter().map(|g| g.label().to_lowercase()).collect::<Vec<_>>().join("; ")
         ));
-    }
+    };
     if !args.is_object() {
         args = json!({});
     }
+    // Who made it: the chat or task behind this session.
+    let by = scope.task.as_ref().map(|t| format!("task:{t}")).or_else(|| scope.chat.as_ref().map(|c| format!("chat:{c}"))).unwrap_or_else(|| "seemo".into());
     match &tool.call {
-        Call::Approval(kind) => approval(client, scope, kind, args).await,
-        Call::Http { method, path, body } => {
+        CallSpec::Approval { approval } => approval_call(client, scope, approval, args).await,
+        CallSpec::Ability { ability } => {
+            args["by"] = json!(by);
+            post_tool(client, &format!("/api/projects/{}/abilities/{ability}", scope.project), args).await
+        }
+        CallSpec::Ext { ext, tool: t } => {
+            args["by"] = json!(by);
+            post_tool(client, &format!("/api/projects/{}/ext/{ext}/tools/{t}", scope.project), args).await
+        }
+        CallSpec::Http { method, path, body } => {
             // Fill the path from the project and the arguments it names.
             let mut url = path.replace("{slug}", &scope.project);
             let mut used = vec![];
@@ -131,9 +150,7 @@ async fn call(client: &Client, scope: &Scope, name: &str, mut args: Value) -> Va
             for k in used {
                 obj.remove(&k);
             }
-            // Who made it: the chat or task behind this session.
             if tool.name == "create_asset" {
-                let by = scope.task.as_ref().map(|t| format!("task:{t}")).or_else(|| scope.chat.as_ref().map(|c| format!("chat:{c}"))).unwrap_or_else(|| "seemo".into());
                 obj.insert("by".into(), json!(by));
             }
             let (send_body, query) = match body {
@@ -144,19 +161,28 @@ async fn call(client: &Client, scope: &Scope, name: &str, mut args: Value) -> Va
                     (None, if q.is_empty() { String::new() } else { format!("?{}", q.join("&")) })
                 }
             };
-            match request(client, method, &format!("{url}{query}"), send_body).await {
-                Ok((status, text)) if status.is_success() => {
-                    let structured = serde_json::from_str::<Value>(&text).ok();
-                    let shown = if text.chars().count() > MAX_RESULT { format!("{}\n\n[cut after {MAX_RESULT} characters]", text.chars().take(MAX_RESULT).collect::<String>()) } else { text };
-                    tool_ok(if shown.is_empty() { "ok".into() } else { shown }, structured)
-                }
-                Ok((status, text)) => {
-                    let msg = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(text);
-                    tool_error(format!("{} ({})", msg.trim(), status.as_u16()))
-                }
-                Err(e) => tool_error(format!("could not reach the KIQR daemon: {e}")),
-            }
+            answer(request(client, method, &format!("{url}{query}"), send_body).await)
         }
+    }
+}
+
+async fn post_tool(client: &Client, path: &str, args: Value) -> Value {
+    answer(request(client, "POST", path, Some(args)).await)
+}
+
+/// A daemon answer as a tool result.
+fn answer(r: Result<(reqwest::StatusCode, String)>) -> Value {
+    match r {
+        Ok((status, text)) if status.is_success() => {
+            let structured = serde_json::from_str::<Value>(&text).ok();
+            let shown = if text.chars().count() > MAX_RESULT { format!("{}\n\n[cut after {MAX_RESULT} characters]", text.chars().take(MAX_RESULT).collect::<String>()) } else { text };
+            tool_ok(if shown.is_empty() { "ok".into() } else { shown }, structured)
+        }
+        Ok((status, text)) => {
+            let msg = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(text);
+            tool_error(format!("{} ({})", msg.trim(), status.as_u16()))
+        }
+        Err(e) => tool_error(format!("could not reach the KIQR daemon: {e}")),
     }
 }
 
@@ -175,11 +201,11 @@ async fn request(client: &Client, method: &str, path: &str, body: Option<Value>)
 
 /// Open an approval in the chat and wait for the person. Polls in short
 /// waits so a dropped connection costs little; gives up after 15 minutes.
-async fn approval(client: &Client, scope: &Scope, kind: &str, args: Value) -> Value {
-    let Some(chat) = &scope.chat else {
-        return tool_error("This needs a person to say yes, and this is a task run with nobody watching. Leave it out and mention it in your report.");
-    };
-    let open = request(client, "POST", &format!("/api/projects/{}/approvals", scope.project), Some(json!({ "kind": kind, "chat": chat, "payload": args }))).await;
+async fn approval_call(client: &Client, scope: &Scope, kind: &str, args: Value) -> Value {
+    if scope.chat.is_none() && scope.task.is_none() {
+        return tool_error("This needs a person to say yes, and nobody is attached to this session. Leave it out and say so.");
+    }
+    let open = request(client, "POST", &format!("/api/projects/{}/approvals", scope.project), Some(json!({ "kind": kind, "chat": scope.chat, "task": scope.task, "payload": args }))).await;
     let (status, text) = match open {
         Ok(x) => x,
         Err(e) => return tool_error(format!("could not reach the KIQR daemon: {e}")),

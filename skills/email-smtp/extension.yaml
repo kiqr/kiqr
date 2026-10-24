@@ -1,0 +1,25 @@
+# Email over SMTP. Works with Gmail (an app password), Fastmail, Outlook,
+# or any mail host. Values live in .env; the daemon sends.
+id: kiqr-smtp
+name: Email (SMTP)
+version: 0.1.0
+summary: Send email from your own mail account. Every send asks you first.
+transport: builtin
+homepage: https://support.google.com/accounts/answer/185833
+auth:
+  - { env: SMTP_HOST, label: Mail server, help: "Gmail: smtp.gmail.com" }
+  - { env: SMTP_PORT, label: Port, help: "Usually 587 (STARTTLS) or 465 (TLS)", optional: true }
+  - { env: SMTP_USER, label: User name, help: "Usually your email address" }
+  - { env: SMTP_PASSWORD, label: Password or app password, help: "Gmail needs an app password: https://myaccount.google.com/apppasswords. Leave empty only for a relay that needs none.", optional: true }
+  - { env: SMTP_FROM, label: From address, help: "What recipients see, e.g. Jane <jane@example.com>", optional: true }
+  - { env: SMTP_SECURITY, label: Security, help: "starttls (default, port 587), tls (port 465) or none (a relay on this machine only)", optional: true }
+provides:
+  email:
+    cost: free
+channels:
+  - kind: email
+    label: Email
+    publish: email
+    destination:
+      to: { type: string, label: "To", help: "One address, or several separated by commas" }
+      subject: { type: string, label: "Subject", help: "Leave empty to use the asset's title", optional: true }

@@ -1,9 +1,41 @@
 // Demo mode for Seemo: a saved conversation, a task, and a scripted reply
 // when you send something, so the chat screens work without a daemon.
-import type { CalendarItem, Chat, ChatView, KiqrEvent, Message, Run, Task } from "./api";
+import type { CalendarItem, Channel, Chat, ChatView, Extensions, KiqrEvent, Message, Run, Skill, Task } from "./api";
 
 const slug = "unblockingapi-com";
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+const DEMO_IMAGE =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" font-family="Inter, sans-serif"><rect width="1600" height="900" fill="#0B1220"/><rect x="128" y="128" width="12" height="644" fill="#ef2f72"/><text x="188" y="330" fill="#FFFFFF" font-size="88" font-weight="700">One request.</text><text x="188" y="436" fill="#FFFFFF" font-size="88" font-weight="700">One credit.</text><text x="188" y="540" fill="#CBD5E1" font-size="36">No multipliers. Failed requests are free.</text><text x="188" y="744" fill="#ef2f72" font-size="30" font-weight="600">UnblockingAPI</text></svg>`,
+  );
+
+const demoSkills: Skill[] = [
+  { name: "product-updates", title: "Product update posts", description: "When asked for a post about something we shipped.", abilities: [], channels: [], scope: { scope: "project", project: slug }, builtin: false, has_skill: true, connection: null, error: null, folder: "~/.kiqr/projects/unblockingapi-com/skills/product-updates" },
+  { name: "make-images", title: "make-images", description: "How to make an on-brand image for a post, an article cover or a standalone visual with the built-in renderer, or with a generator when the user wants a photo or an illustration.", abilities: ["image"], channels: [], scope: { scope: "global" }, builtin: true, has_skill: true, connection: { id: "kiqr-render", name: "Built-in renderer", ready: true }, error: null, folder: "~/.kiqr/skills/make-images" },
+  { name: "social-posts", title: "social-posts", description: "Write a few ready-to-publish social media posts from the business brief, in the brand's tone of voice.", abilities: [], channels: [], scope: { scope: "global" }, builtin: true, has_skill: true, connection: null, error: null, folder: "~/.kiqr/skills/social-posts" },
+  { name: "fal-image", title: "fal-image", description: "", abilities: [], channels: [], scope: { scope: "global" }, builtin: true, has_skill: false, connection: { id: "fal-image", name: "fal.ai images", ready: false }, error: null, folder: "~/.kiqr/skills/fal-image" },
+];
+const demoSkillText: Record<string, string> = {
+  "product-updates": "---\nname: product-updates\ndescription: When asked for a post about something we shipped.\n---\n\n1. Lead with what changed for the customer, in one sentence.\n2. One concrete example or number.\n3. End with where to try it. No hype words.",
+};
+const demoChannels: Channel[] = [
+  { id: "me-by-email", label: "Me by email", extension: "kiqr-smtp", kind: "email", destination: { to: "you@example.com" }, created_by: "user", created_at: ago(300), asks_first: true, publications: 1, last_published: ago(60), connection_name: "Email (SMTP)", ready: true, destination_text: "you@example.com" },
+];
+const demoExtensions: Extensions = {
+  connections: [
+    { id: "kiqr-render", name: "Built-in renderer", version: "0.1.0", summary: "On-brand images designed by Seemo and rendered here. Free, always available.", transport: "builtin", homepage: "", builtin: true, folder: "make-images", scope: { scope: "global" }, ready: true, missing: [], auth: [], provides: [{ ability: "image", label: "Make images", cost: "free" }], tools: [], channels: [], hosts: [], command: null, env: [], program_found: null },
+    { id: "fal-image", name: "fal.ai images", version: "0.1.0", summary: "Photos and illustrations from a text prompt. About $0.03 per image.", transport: "http", homepage: "https://fal.ai", builtin: true, folder: "fal-image", scope: { scope: "global" }, ready: false, missing: ["FAL_KEY"], auth: [{ env: "FAL_KEY", label: "fal.ai API key", help: "https://fal.ai/dashboard/keys", optional: false, set: false }], provides: [{ ability: "image", label: "Make images", cost: "about $0.03 per image" }], tools: [], channels: [], hosts: ["fal.run", "fal.media"], command: null, env: [], program_found: null },
+    { id: "kiqr-smtp", name: "Email (SMTP)", version: "0.1.0", summary: "Send email from your own mail account. Every send asks you first.", transport: "builtin", homepage: "", builtin: true, folder: "email-smtp", scope: { scope: "global" }, ready: false, missing: ["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"], auth: [{ env: "SMTP_HOST", label: "Mail server", help: "Gmail: smtp.gmail.com", optional: false, set: false }, { env: "SMTP_USER", label: "User name", help: "Usually your email address", optional: false, set: false }, { env: "SMTP_PASSWORD", label: "Password or app password", help: "https://myaccount.google.com/apppasswords", optional: false, set: false }], provides: [{ ability: "email", label: "Send email", cost: "free" }], tools: [], channels: [{ kind: "email", label: "Email" }], hosts: [], command: null, env: [], program_found: null },
+  ],
+  broken: [],
+  abilities: [
+    { id: "image", label: "Make images", tool: "create_image", configured: null, active: { id: "kiqr-render", name: "Built-in renderer" }, connections: [{ id: "kiqr-render", name: "Built-in renderer", ready: true }, { id: "fal-image", name: "fal.ai images", ready: false }] },
+    { id: "video", label: "Make video", tool: "create_video", configured: null, active: null, connections: [] },
+    { id: "music", label: "Make music", tool: "create_music", configured: null, active: null, connections: [] },
+    { id: "email", label: "Send email", tool: "send_email", configured: null, active: null, connections: [{ id: "kiqr-smtp", name: "Email (SMTP)", ready: false }] },
+  ],
+};
 
 const task: Task = {
   id: "write-three-social-posts",
@@ -86,6 +118,18 @@ const messages: Message[] = [
   { id: "m3", at: ago(40), role: "seemo", text: "The task is running. It will write three LinkedIn drafts on flat credit pricing, the MCP server, and the Visual Editor. I'll tell you when they're in the library.", steps: [{ tool: "create_task", label: "Proposing a task", ok: true }] },
   { id: "m4", at: ago(37), role: "note", kind: "followup", text: `Task "Write three social posts" finished: ok. Assets: ${run.assets.join(", ")}.` },
   { id: "m5", at: ago(36), role: "seemo", text: "The three LinkedIn drafts are in the library: flat one-credit pricing, the MCP server giving AI apps a real browser, and the Visual Editor. Nothing was published. Two things to check when you review them: the length of the pricing post, and whether you want the Scout plan named." },
+  { id: "m6", at: ago(20), role: "user", text: "Give the pricing post an image." },
+  {
+    id: "m7",
+    at: ago(19),
+    role: "seemo",
+    text: "Done: a 1600×900 card on the pricing post, dark with the brand's pink accent, reading \"One request. One credit.\" It is on the asset as cover.png. I would try a lighter variant next if the feed it goes into is mostly dark.",
+    steps: [
+      { tool: "brand_kit", label: "Opening the brand kit", ok: true },
+      { tool: "read_skill", label: "Reading a skill: make-images", ok: true },
+      { tool: "create_image", label: "Making an image", ok: true, image: DEMO_IMAGE },
+    ],
+  },
 ];
 
 const chats: Chat[] = [
@@ -164,11 +208,54 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
       groups: [
         { id: "read", label: "Read the profile, brief, brand, assets and tasks", tools: [] },
         { id: "web", label: "Read pages on the web", tools: [] },
+        { id: "images", label: "Make images", tools: [] },
+        { id: "media", label: "Make video and music", tools: [] },
         { id: "write_profile", label: "Edit the business profile and brief", tools: [] },
         { id: "write_assets", label: "Create and edit assets", tools: [] },
         { id: "jobs", label: "Start crawls and profile builds", tools: [] },
       ],
     } as T);
+  if (path.startsWith("/api/extensions")) return Promise.resolve(demoExtensions as T);
+  if (path.endsWith("/channels")) {
+    if (method === "POST") {
+      const c: Channel = { id: `channel-${n++}`, label: body.label || `Email to ${body.destination?.to ?? ""}`, extension: "kiqr-smtp", kind: body.kind, destination: body.destination ?? {}, created_by: "user", created_at: new Date().toISOString(), asks_first: true, publications: 0, connection_name: "Email (SMTP)", ready: true, destination_text: String(body.destination?.to ?? "") };
+      demoChannels.push(c);
+      return Promise.resolve(c as T);
+    }
+    return Promise.resolve({ channels: demoChannels, kinds: [{ kind: "email", label: "Email", connection: "kiqr-smtp", connection_name: "Email (SMTP)", ready: true, destination: { to: { type: "string", label: "To", help: "One address, or several separated by commas" }, subject: { type: "string", label: "Subject", help: "Leave empty to use the asset's title", optional: true } } }] } as T);
+  }
+  const chM = /\/channels\/([^/]+)$/.exec(path);
+  if (chM) {
+    const i = demoChannels.findIndex((c) => c.id === chM[1]);
+    if (method === "DELETE" && i >= 0) demoChannels.splice(i, 1);
+    return Promise.resolve((method === "DELETE" ? undefined : demoChannels[i]) as T);
+  }
+  if (/\/publish$/.test(path)) return Promise.resolve({ published: true, url: null, detail: "sent", channel_label: "Me by email" } as T);
+  if (path.endsWith("/email")) return Promise.resolve({ sent: true, to: body.to, subject: body.subject, connection: "Email (SMTP)" } as T);
+  if (path.startsWith("/api/secrets/")) return Promise.resolve({ name: path.split("/").pop(), set: !!body.value } as T);
+  const skillM = /\/skills(?:\/([^/]+))?$/.exec(path);
+  if (skillM) {
+    const name = skillM[1];
+    if (!name) {
+      if (method === "POST") return Promise.resolve(demoSkills[0] as T);
+      return Promise.resolve(demoSkills as T);
+    }
+    if (method === "PUT") {
+      const text = String(body.text ?? "");
+      const d = /description:\s*(.*)/.exec(text);
+      const existing = demoSkills.find((s) => s.name === name);
+      if (existing) existing.description = d?.[1] ?? existing.description;
+      else demoSkills.unshift({ name, title: name, description: d?.[1] ?? "", abilities: [], channels: [], scope: { scope: "project", project: slug }, builtin: false, has_skill: true, connection: null, error: null, folder: `~/.kiqr/projects/${slug}/skills/${name}` });
+      demoSkillText[name] = text;
+      return Promise.resolve(demoSkills.find((s) => s.name === name) as T);
+    }
+    if (method === "DELETE") {
+      const i = demoSkills.findIndex((s) => s.name === name);
+      if (i >= 0) demoSkills.splice(i, 1);
+      return Promise.resolve(undefined as T);
+    }
+    return Promise.resolve((demoSkillText[name] ?? `---\nname: ${name}\ndescription: ${demoSkills.find((s) => s.name === name)?.description ?? ""}\n---\n\nBuilt-in skill text is not included in the demo.`) as T);
+  }
   if (path.endsWith("/chats") && method === "POST") {
     const c: Chat = { id: `demo-chat-${n++}`, title: body.title || "New chat", created_at: new Date().toISOString(), updated_at: new Date().toISOString(), session_id: null, model: "claude-cli/sonnet", last_message: "", messages: 0 };
     chats.unshift(c);
