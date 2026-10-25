@@ -12,7 +12,7 @@ import { SecretField } from "./SecretField";
 import { Switch } from "./Switch";
 import { InstallPanel } from "./Marketplace";
 import { parseInstructions, TeachForm, type TeachDraft } from "./TeachForm";
-import { Author, iconFor, partsOf, stateOf } from "./abilityBits";
+import { Author, iconFor, needsOf, partsOf, stateOf } from "./abilityBits";
 
 type Tab = "overview" | "instructions" | "connect";
 
@@ -85,7 +85,7 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
           </nav>
         )}
         <div className="ab-body">
-          {tab === "overview" && <Overview slug={slug} a={a} />}
+          {tab === "overview" && <Overview slug={slug} a={a} onConnect={canConnect ? () => setTab("connect") : undefined} />}
           {tab === "instructions" && <Instructions slug={slug} a={a} onChange={onChange} />}
           {tab === "connect" && <Connect slug={slug} a={a} rivals={rivals} onChange={onChange} onPrefer={onPrefer} />}
           <AnimatePresence>
@@ -156,8 +156,9 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
   );
 }
 
-function Overview({ slug, a }: { slug: string; a: Ability }) {
+function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?: () => void }) {
   const parts = partsOf(a, true);
+  const needs = needsOf(a);
   return (
     <div className="ab-ov">
       <p className="ab-sum">{a.summary}</p>
@@ -189,6 +190,29 @@ function Overview({ slug, a }: { slug: string; a: Ability }) {
           </li>
         ))}
       </ul>
+      {needs.length > 0 && (
+        <>
+          <p className="cap">
+            What it needs
+            {a.auth.length > 0 && onConnect && (
+              <button className="lnk ab-cap-act" onClick={onConnect}>
+                Set up under Connect
+              </button>
+            )}
+          </p>
+          <ul className="ab-incl">
+            {needs.map((p) => (
+              <li key={p.label} className={p.tone ?? ""}>
+                <p.icon size={15} />
+                <div>
+                  <span>{p.label}</span>
+                  {p.detail && <small>{p.detail}</small>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <dl className="ab-meta">
         <div>
           <dt>From</dt>

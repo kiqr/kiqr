@@ -17,6 +17,8 @@ import { ChatsPage } from "./pages/Chats";
 import { CalendarPage, TasksPage } from "./pages/Tasks";
 import { TodoPage } from "./pages/Todo";
 import { ChannelsPage } from "./pages/Channels";
+import { PlanPage } from "./pages/Plan";
+import { PerformancePage } from "./pages/Performance";
 
 // Demo mode (previews, the kiqr.dev site) keeps routing in memory so the single
 // file works anywhere, including sandboxed preview frames with no real URL.
@@ -34,6 +36,8 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/new" element={<Onboarding forceNew />} />
           <Route path="/p/:slug" element={<ProjectPage />} />
           <Route path="/p/:slug/crawl" element={<CrawlPage />} />
+          <Route path="/p/:slug/plan" element={<PlanPage />} />
+          <Route path="/p/:slug/performance" element={<PerformancePage />} />
           <Route path="/p/:slug/content" element={<ContentPage />} />
           <Route path="/p/:slug/map" element={<Redirect to="content" />} />
           <Route path="/p/:slug/gaps" element={<Redirect to="content#gaps" />} />

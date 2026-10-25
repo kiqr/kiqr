@@ -200,6 +200,9 @@ pub struct Context {
     pub allowed: Vec<Group>,
     /// Abilities with instructions to read before acting: (id, name, when to use it).
     pub abilities: Vec<(String, String, String)>,
+    /// The marketing plan: its period and one line per active objective. Empty when there is none.
+    pub plan_period: String,
+    pub plan: Vec<String>,
 }
 
 /// Room for the abilities list in the prompt; past it, ids only.
@@ -255,6 +258,14 @@ pub fn system_prompt(persona: &str, guide: &str, ctx: &Context, brief: Option<&B
             block.push_str(&line);
         }
         head.push_str(&block);
+    }
+    if ctx.plan.is_empty() {
+        head.push_str("\n# Marketing plan\n\nNone approved yet. You own it: when strategy, priorities or \"what should we do\" come up, read the Plan the marketing instructions and propose one with `propose_plan`; until then say there is no plan rather than improvising objectives.\n");
+    } else {
+        head.push_str(&format!("\n# Marketing plan ({})\n\nThe objectives you work towards; tie what you make and propose to one of them (`get_plan` has the detail and the campaigns):\n", ctx.plan_period));
+        for line in &ctx.plan {
+            head.push_str(&format!("- {line}\n"));
+        }
     }
     match &ctx.task_run {
         Some(title) => head.push_str(&format!(

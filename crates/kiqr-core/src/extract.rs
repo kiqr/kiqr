@@ -17,6 +17,7 @@ const BUILTIN_EXTRACT: &str = include_str!("../../../abilities/extract-facts/SKI
 const BUILTIN_BUILD: &str = include_str!("../../../abilities/build-profile/SKILL.md");
 const BUILTIN_BRIEF: &str = include_str!("../../../abilities/business-brief/SKILL.md");
 const BUILTIN_POSTS: &str = include_str!("../../../abilities/social-posts/SKILL.md");
+const BUILTIN_PLAN: &str = include_str!("../../../abilities/marketing-plan/SKILL.md");
 
 /// Install the built-in instructions (the pipeline prompts, the posts
 /// recipe, Seemo's guide) into the home so users see and can edit them.
@@ -28,6 +29,7 @@ pub fn install_builtin_instructions(store: &Store) -> Result<bool> {
         ("business-brief", BUILTIN_BRIEF),
         ("crawl-site", include_str!("../../../abilities/crawl-site/SKILL.md")),
         ("social-posts", BUILTIN_POSTS),
+        ("marketing-plan", BUILTIN_PLAN),
         ("seemo-agent", crate::agent::BUILTIN_GUIDE),
     ] {
         let path = store.home().abilities_dir().join(name).join("SKILL.md");
@@ -66,6 +68,7 @@ pub fn builtin_instructions(name: &str) -> Option<&'static str> {
         "business-brief" => Some(BUILTIN_BRIEF),
         "crawl-site" => Some(include_str!("../../../abilities/crawl-site/SKILL.md")),
         "social-posts" => Some(BUILTIN_POSTS),
+        "marketing-plan" => Some(BUILTIN_PLAN),
         "seemo-agent" => Some(crate::agent::BUILTIN_GUIDE),
         _ => None,
     }

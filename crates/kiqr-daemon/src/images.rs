@@ -155,7 +155,7 @@ async fn brand_file(State(app): State<App>, Path((slug, name)): Path<(String, St
 /// Render `source` (SVG or HTML) at the asked size. The built-in connection
 /// behind `create_image`; the caller puts the PNG on an asset.
 pub async fn render_args(app: &App, slug: &str, args: &Value) -> Result<ExecOut> {
-    let source = args.get("source").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("the built-in renderer needs `source`: the SVG (or HTML) to render. For a generated photo or illustration, connect a generator under Settings → Abilities."))?;
+    let source = args.get("source").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("the built-in renderer needs `source`: the SVG (or HTML) to render. For a generated photo or illustration, connect a generator under Setup → Abilities."))?;
     let format = match args.get("format").and_then(|v| v.as_str()).map(|s| s.trim().to_ascii_lowercase()) {
         Some(f) if f == "svg" || f == "html" => f,
         _ => {

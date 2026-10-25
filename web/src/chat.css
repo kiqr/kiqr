@@ -169,6 +169,13 @@
 .ccard .instr.open { display: block; }
 .ccard .allow { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .ccard .allow li { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); } .ccard .allow svg { color: var(--ok); }
+.ccard .objs { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ccard .objs li { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.ccard .objs li > svg { color: var(--accent); flex: none; margin-top: 3px; }
+.ccard .objs li div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ccard .objs li b { font-weight: 600; }
+.ccard .objs li span { color: var(--accent); font-size: 12px; }
+.ccard .objs li small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .ccard .kvs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .ccard .kvs li { display: flex; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; }
 .ccard .kvs code { font: 12px var(--mono); }

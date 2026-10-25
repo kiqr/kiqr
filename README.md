@@ -60,7 +60,7 @@ cargo build --release
 - `~/.kiqr` holds everything as YAML and Markdown in a local git repository. Every change is a commit. KIQR never pushes; add a remote yourself if you want a backup.
 - Secrets live in `~/.kiqr/.env` (mode 0600, ignored by git).
 - The crawler reads up to 200 pages per site. Pages that block crawlers or need JavaScript are retried through [UnblockingAPI](https://unblockingapi.com) if you add a key, and reported as unreadable otherwise.
-- Abilities are folders under `~/.kiqr/abilities/` (or a project's own): `SKILL.md` instructions, `extension.yaml` connections, or both. Edit the shipped ones from Seemo → Abilities, teach new ones there, or install from the marketplace.
+- Abilities are folders under `~/.kiqr/abilities/` (or a project's own): `SKILL.md` instructions, `extension.yaml` connections, or both. Edit the shipped ones from Setup → Abilities, teach new ones there, or install from the marketplace.
 - Seemo runs through Claude Code (`kiqr mcp` is the MCP server) with KIQR's tools only. Anything with a side effect goes through a card you approve: tasks, settings changes, new abilities, channels, publishing, email.
 - Models per task are set in `~/.kiqr/config.yaml` as `provider/model`: `claude-cli/haiku`, `anthropic/claude-sonnet-5-5`, `openai/gpt-5-mini`, `codex-cli/gpt-5`.
 

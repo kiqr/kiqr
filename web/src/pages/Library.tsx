@@ -345,6 +345,14 @@ export function AssetPage() {
               <dd>{new Date(a.created.at).toLocaleString()}</dd>
               <dt>Changed</dt>
               <dd>{ago(a.updated_at)}</dd>
+              {typeof a.source?.campaign === "string" && (
+                <>
+                  <dt>Campaign</dt>
+                  <dd>
+                    <Link to={`/p/${slug}/plan`}>{String(a.source.campaign)}</Link>
+                  </dd>
+                </>
+              )}
               {a.tags.length > 0 && (
                 <>
                   <dt>Tags</dt>

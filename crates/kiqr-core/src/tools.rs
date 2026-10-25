@@ -34,12 +34,14 @@ pub enum Group {
     Config,
     /// Send and publish: email, channels. Always behind an approval.
     Publish,
+    /// Propose and change the marketing plan and campaigns (behind cards).
+    Marketing,
     /// One connection's own tools, by extension id.
     Ext(String),
 }
 
 impl Group {
-    pub const BUILTIN: [Group; 10] = [Group::Read, Group::Web, Group::Images, Group::Media, Group::WriteProfile, Group::WriteAssets, Group::Jobs, Group::Tasks, Group::Config, Group::Publish];
+    pub const BUILTIN: [Group; 11] = [Group::Read, Group::Web, Group::Images, Group::Media, Group::WriteProfile, Group::WriteAssets, Group::Jobs, Group::Tasks, Group::Config, Group::Publish, Group::Marketing];
     /// What a task run may use unless its creator narrowed it: everything but
     /// making more tasks, changing settings and publishing, which need a person.
     pub const TASK_DEFAULT: [Group; 7] = [Group::Read, Group::Web, Group::Images, Group::Media, Group::WriteProfile, Group::WriteAssets, Group::Jobs];
@@ -56,6 +58,7 @@ impl Group {
             Group::Tasks => "tasks".into(),
             Group::Config => "config".into(),
             Group::Publish => "publish".into(),
+            Group::Marketing => "marketing".into(),
             Group::Ext(id) => format!("ext:{id}"),
         }
     }
@@ -82,6 +85,7 @@ impl Group {
             Group::Tasks => "Create and change tasks".into(),
             Group::Config => "Change KIQR settings".into(),
             Group::Publish => "Send and publish (asks first)".into(),
+            Group::Marketing => "Propose plan and campaign changes (asks first)".into(),
             Group::Ext(id) => format!("Use {id}"),
         }
     }
@@ -326,6 +330,38 @@ pub fn catalogue() -> Vec<Tool> {
             schema: || obj(json!({ "task": { "type": "string" } }), &["task"]),
         },
         Tool {
+            name: "get_plan",
+            group: Read,
+            label: "Reading the marketing plan",
+            description: "The marketing plan you own for this project: period, summary, objectives (each with a KPI, a target and a date) and the channels in play, plus the campaigns under it. Empty when none was approved yet; then propose one with `propose_plan` when strategy comes up.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/plan", body: Body::None },
+            schema: no_args,
+        },
+        Tool {
+            name: "list_campaigns",
+            group: Read,
+            label: "Listing the campaigns",
+            description: "The campaigns: id, title, goal, objective, channels, dates, status, and what belongs to each (assets and tasks).",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/campaigns", body: Body::None },
+            schema: no_args,
+        },
+        Tool {
+            name: "get_campaign",
+            group: Read,
+            label: "Reading a campaign",
+            description: "One campaign with its assets and tasks.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/campaigns/{campaign}", body: Body::None },
+            schema: || obj(json!({ "campaign": { "type": "string", "description": "Campaign id" } }), &["campaign"]),
+        },
+        Tool {
+            name: "read_metrics",
+            group: Read,
+            label: "Reading the numbers",
+            description: "The numbers KIQR keeps for this project: per source (traffic, search, conversions, ranks, mentions, and kiqr for what was published) the last 30 days of day totals, the last 7 days against the 7 before, top queries and pages where the source has them, and each plan KPI against its target. From daily snapshots; `refresh: true` reads the sources again first (slow). Say which source each number came from and when it was taken.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/performance", body: Body::Query },
+            schema: || obj(json!({ "source": { "type": "string", "description": "One source only; omit for all" }, "refresh": { "type": "boolean" } }), &[]),
+        },
+        Tool {
             name: "list_runs",
             group: Read,
             label: "Reading a task's runs",
@@ -424,6 +460,7 @@ pub fn catalogue() -> Vec<Tool> {
                     "text": { "type": "string", "description": "The content, exactly as it would be published" },
                     "summary": { "type": "string" },
                     "tags": { "type": "array", "items": { "type": "string" } },
+                    "campaign": { "type": "string", "description": "Campaign id this belongs to, when it is made for one" },
                 }),
                 &["type", "title", "text"],
             ),
@@ -438,6 +475,7 @@ pub fn catalogue() -> Vec<Tool> {
                 let mut p = asset_ref();
                 p["title"] = json!({ "type": "string" });
                 p["archived"] = json!({ "type": "boolean", "description": "true puts it in the archive, false brings it back" });
+                p["campaign"] = json!({ "type": "string", "description": "Move it into a campaign (id); empty takes it out" });
                 p["tags"] = json!({ "type": "array", "items": { "type": "string" } });
                 p["summary"] = json!({ "type": "string" });
                 p["text"] = json!({ "type": "string", "description": "New body text" });
@@ -520,6 +558,7 @@ pub fn catalogue() -> Vec<Tool> {
                     },
                     "allowed": { "type": "array", "items": { "type": "string" }, "description": "Tool groups the runs may use: read, web, images, media, write_profile, write_assets, jobs, or ext:<connection id> for a connection's own tools. Default: all of the first seven." },
                     "follow_up": { "type": "boolean", "description": "Tell this chat when the first run finishes (default true for one-off tasks)" },
+                    "campaign": { "type": "string", "description": "Campaign id this task works for, when it is part of one" },
                 }),
                 &["title", "instruction", "schedule"],
             ),
@@ -626,6 +665,83 @@ pub fn catalogue() -> Vec<Tool> {
                     "reason": { "type": "string", "description": "One sentence on why" },
                 }),
                 &["changes"],
+            ),
+        },
+        Tool {
+            name: "propose_plan",
+            group: Marketing,
+            label: "Proposing the marketing plan",
+            description: "Propose the marketing plan for a period: a short summary, two to four objectives (title, why from the brief, kpi from the fixed list, a target with its unit when a source can measure it, a date), the channels in play. Read the Plan the marketing instructions first. The user sees it on a card and approves, which saves it as the plan you work from; a new proposal replaces the old plan (say what changes). This call waits for the answer.",
+            call: Call::Approval("plan"),
+            schema: || obj(
+                json!({
+                    "period": { "type": "string", "description": "e.g. Q4 2026" },
+                    "summary": { "type": "string" },
+                    "objectives": { "type": "array", "items": { "type": "object", "properties": {
+                        "title": { "type": "string" },
+                        "why": { "type": "string" },
+                        "kpi": { "type": "string", "enum": ["organic_traffic", "qualified_leads", "signups", "conversion_rate", "retention", "brand_mentions", "rank_positions", "revenue", "cac", "published"] },
+                        "target": { "type": "number" },
+                        "unit": { "type": "string" },
+                        "by": { "type": "string", "description": "YYYY-MM-DD" }
+                    }, "required": ["title", "why", "kpi"] } },
+                    "channels": { "type": "array", "items": { "type": "string" } },
+                    "reason": { "type": "string", "description": "When replacing a plan: what changes and why" },
+                }),
+                &["period", "summary", "objectives"],
+            ),
+        },
+        Tool {
+            name: "create_campaign",
+            group: Marketing,
+            label: "Proposing a campaign",
+            description: "Propose a campaign: an initiative towards one objective (a launch, a content series, a community push) with a goal, channels and dates. The user confirms on a card; this call waits. Assets and tasks join it with `campaign: <id>` when made, or with `attach_to_campaign`.",
+            call: Call::Approval("campaign"),
+            schema: || obj(
+                json!({
+                    "title": { "type": "string" },
+                    "goal": { "type": "string" },
+                    "objective": { "type": "string", "description": "Objective id from the plan" },
+                    "channels": { "type": "array", "items": { "type": "string" } },
+                    "start": { "type": "string", "description": "YYYY-MM-DD" },
+                    "end": { "type": "string", "description": "YYYY-MM-DD" },
+                }),
+                &["title", "goal"],
+            ),
+        },
+        Tool {
+            name: "update_campaign",
+            group: Marketing,
+            label: "Proposing a campaign change",
+            description: "Change a campaign's title, goal, objective, channels, dates or status (active, done, dropped). The user confirms on a card; this call waits. Pass only what changes.",
+            call: Call::Approval("campaign"),
+            schema: || obj(
+                json!({
+                    "id": { "type": "string", "description": "Campaign id" },
+                    "title": { "type": "string" },
+                    "goal": { "type": "string" },
+                    "objective": { "type": "string" },
+                    "channels": { "type": "array", "items": { "type": "string" } },
+                    "start": { "type": "string" },
+                    "end": { "type": "string" },
+                    "status": { "type": "string", "enum": ["active", "done", "dropped"] },
+                }),
+                &["id"],
+            ),
+        },
+        Tool {
+            name: "attach_to_campaign",
+            group: WriteAssets,
+            label: "Adding to a campaign",
+            description: "Put an existing asset or task into a campaign (no card). To take one out, set `campaign` to an empty string with update_asset or update_task.",
+            call: Call::Http { method: "POST", path: "/api/projects/{slug}/campaigns/{campaign}/attach", body: Body::Args },
+            schema: || obj(
+                json!({
+                    "campaign": { "type": "string", "description": "Campaign id" },
+                    "asset": { "type": "object", "properties": { "type": { "type": "string" }, "id": { "type": "string" } } },
+                    "task": { "type": "string", "description": "Task id" },
+                }),
+                &["campaign"],
             ),
         },
         Tool {

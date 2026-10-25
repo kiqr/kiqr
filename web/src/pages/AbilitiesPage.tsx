@@ -1,4 +1,4 @@
-// Seemo → Abilities: the one page for everything Seemo can do in this
+// Setup → Abilities: the one page for everything Seemo can do in this
 // project. Core abilities (code, switch off but never leave), what is
 // installed from the marketplace, what you taught it; each opens in its own
 // modal. "Teach Seemo something" adds one in plain words. The marketplace
@@ -74,7 +74,7 @@ export function AbilitiesPage() {
     <div className="prof">
       <div className="cm-head">
         <div>
-          <p className="cap">Seemo</p>
+          <p className="cap">Setup</p>
           <h1 className="d2">Abilities</h1>
           <p className="muted">Everything Seemo can do here. Installed once for this machine; switched on, connected and taught per project. Click one to see what it includes and to set it up.</p>
         </div>
@@ -231,8 +231,9 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
           </p>
         </div>
         <div className="acts" onClick={(e) => e.stopPropagation()}>
-          <span title={a.machine_off ? "Switched off for the whole machine; open it to turn it on everywhere" : a.paused ? "Off for this project" : needs ? "Connect it before it can be on" : "On for this project"}>
-            <Switch on={!a.paused && !a.machine_off && a.ready} disabled={busy || a.machine_off || !a.ready} onChange={(want) => void toggle(want)} />
+          <span title={a.machine_off ? "Switched off for the whole machine; opens it so you can turn it on everywhere" : a.paused ? "Off for this project" : needs ? "Not connected yet; opens it so you can" : "On for this project"}>
+            {/* A switch that cannot flip yet still does something: it opens the ability where the missing step is. */}
+            <Switch on={!a.paused && !a.machine_off && a.ready} disabled={busy} onChange={(want) => (a.machine_off ? onOpen(a) : !a.ready ? onOpen(a, a.auth.length ? "connect" : "overview") : void toggle(want))} />
           </span>
         </div>
       </div>

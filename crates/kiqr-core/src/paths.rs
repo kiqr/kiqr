@@ -130,6 +130,21 @@ impl Home {
     pub fn chat_dir(&self, slug: &str, chat: &str) -> PathBuf {
         self.chats_dir(slug).join(chat)
     }
+    /// Metrics snapshots: `metrics/<source>/<YYYY-MM-DD>.yaml`, one per day and source. Committed.
+    pub fn metrics_dir(&self, slug: &str, source: &str) -> PathBuf {
+        self.project_dir(slug).join("metrics").join(source)
+    }
+    /// The marketing plan Seemo owns: `marketing/plan.yaml`. Committed.
+    pub fn plan_file(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("marketing").join("plan.yaml")
+    }
+    /// Campaigns: `campaigns/<id>/campaign.yaml`. Committed.
+    pub fn campaigns_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("campaigns")
+    }
+    pub fn campaign_dir(&self, slug: &str, id: &str) -> PathBuf {
+        self.campaigns_dir(slug).join(id)
+    }
     /// Scheduled tasks: `tasks/<id>/task.yaml` and their runs in `tasks/<id>/runs/<ts>.yaml`. Committed.
     pub fn tasks_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("tasks")

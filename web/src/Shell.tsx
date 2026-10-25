@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
 import {
+  BarChart3,
   Brain,
   CalendarDays,
   Check,
@@ -19,6 +20,7 @@ import {
   Settings,
   SlidersHorizontal,
   Swords,
+  Target,
   type LucideIcon,
 } from "lucide-react";
 import { api, useAsync, useEvents, type AssetType, type Project, type TypeCount } from "./api";
@@ -29,10 +31,10 @@ import { TODO_EVENTS } from "./pages/Todo";
 type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number; hot?: boolean };
 
 /**
- * Project-scoped navigation. Content is the library plus one item per asset type (types are
- * data, so the group grows when Seemo makes a new kind of thing); what we know about the
- * business; Seemo, which is the automation: chats, the calendar of tasks, abilities, and the channels
- * it publishes through; settings last.
+ * Project-scoped navigation, grouped by what the user is doing: To do (what needs them) on
+ * its own; Marketing (plan, performance, calendar); the Library plus one item per asset type
+ * (types are data, so the group grows when Seemo makes a new kind of thing); Business (what
+ * KIQR knows); Seemo (chats and tasks); Setup (abilities, channels, project settings) last.
  */
 function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting: number): { label: string; items: NavItem[] }[] {
   const n = (id: string) => counts?.find((c) => c.type === id)?.count ?? 0;
@@ -42,6 +44,18 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
   // Until the first asset exists, the library is where you get started.
   const fresh = counts !== undefined && total === 0;
   return [
+    // What needs you, first and on its own.
+    { label: "", items: [{ sub: "todo", label: "To do", icon: Inbox, count: waiting || undefined, hot: true }] },
+    // Direction, results, and when things happen.
+    {
+      label: "Marketing",
+      items: [
+        { sub: "plan", label: "Plan", icon: Target },
+        { sub: "performance", label: "Performance", icon: BarChart3 },
+        { sub: "calendar", label: "Calendar", icon: CalendarDays },
+      ],
+    },
+    // What has been made.
     {
       label: "Library",
       items: [
@@ -49,28 +63,31 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
         ...shown.map((t) => ({ sub: `library/${t.id}`, label: t.plural, icon: assetIcon(t.icon), count: n(t.id) || undefined })),
       ],
     },
+    // What KIQR knows about the business and its site.
     {
-      label: "Your business",
+      label: "Business",
       items: [
         { sub: "", label: "Business profile", icon: Brain },
-        { sub: "channels", label: "Channels", icon: Send },
         { sub: "competitors", label: "Competitors", icon: Swords },
         { sub: "content", label: "Content", icon: Network },
       ],
     },
+    // Talking to Seemo and what it runs on its own.
     {
       label: "Seemo",
       items: [
-        { sub: "todo", label: "To do", icon: Inbox, count: waiting || undefined, hot: true },
-        { sub: "abilities", label: "Abilities", icon: Sparkles },
-        { sub: "calendar", label: "Calendar", icon: CalendarDays },
         { sub: "chats", label: "Chats", icon: MessagesSquare },
         { sub: "tasks", label: "Tasks", icon: ListChecks },
       ],
     },
+    // Installed once, configured per project, rarely visited.
     {
-      label: "Settings",
-      items: [{ sub: "settings", label: "Project settings", icon: SlidersHorizontal }],
+      label: "Setup",
+      items: [
+        { sub: "abilities", label: "Abilities", icon: Sparkles },
+        { sub: "channels", label: "Channels", icon: Send },
+        { sub: "settings", label: "Project settings", icon: SlidersHorizontal },
+      ],
     },
   ];
 }
@@ -110,8 +127,8 @@ export function Shell() {
         {current && (
           <nav className="nav" aria-label="Project">
             {nav.map((g) => (
-              <div className="grp" key={g.label}>
-                <p>{g.label}</p>
+              <div className="grp" key={g.label || g.items[0].sub}>
+                {g.label && <p>{g.label}</p>}
                 {g.items.map((it) => {
                   const to = it.sub ? `/p/${current.slug}/${it.sub}` : `/p/${current.slug}`;
                   return (

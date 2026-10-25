@@ -52,6 +52,7 @@ async fn tick(app: &App, startup: bool) {
     let Ok(projects) = Project::list(&app.store) else { return };
     for p in projects {
         crate::publish::publish_due(app, &p.slug, now).await;
+        crate::performance::pull_due(app, &p.slug, tz).await;
         for mut t in Task::list(&app.store, &p.slug).unwrap_or_default() {
             if t.status != TaskStatus::Active {
                 continue;

@@ -1331,6 +1331,7 @@ dependencies = [
  "libc",
  "mime_guess",
  "reqwest",
+ "ring",
  "rust-embed",
  "serde",
  "serde_json",

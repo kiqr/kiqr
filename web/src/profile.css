@@ -245,3 +245,67 @@ a.stat:hover { text-decoration: none; border-color: color-mix(in oklab, var(--ac
 .cm-sec-ds { font-size: 13px; color: var(--muted); max-width: 640px; margin: -6px 0 14px; }
 
 /* skills or abilities? */
+
+/* Your business → Plan */
+.plan-sec { margin-top: 22px; }
+.plan-sec h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+.plan-sec h2 .n { font: 500 11px/1 var(--mono); color: var(--dim); }
+.plan-sec h2 .btn { margin-left: auto; }
+.plan-sum { font-size: 14px; line-height: 1.6; color: color-mix(in oklab, var(--fg) 88%, transparent); max-width: 760px; margin: 0 0 16px; }
+.plan-objs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.plan-obj { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border-radius: var(--r); border: 1px solid var(--line); background: var(--panel-2); }
+.plan-obj.done, .plan-obj.dropped { opacity: .7; }
+.plan-obj .ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.plan-obj .nm { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.plan-obj .ds { font-size: 13px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+.plan-obj .meta, .plan-camp .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.plan-obj .meta span, .plan-camp .meta span { display: inline-flex; align-items: center; gap: 4px; }
+.plan-camps { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.plan-camp .row { display: flex; align-items: flex-start; gap: 10px; }
+.plan-camp h3 { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 600; margin: 0; flex: 1 1 auto; min-width: 0; }
+.plan-camp .acts { display: flex; gap: 4px; flex: none; }
+.plan-camp .ds { font-size: 13px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+.plan-camp.done, .plan-camp.dropped { opacity: .75; }
+.plan-items { list-style: none; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.plan-items li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.plan-items li svg { color: var(--accent-2); flex: none; }
+.plan-items li a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-items li small { color: var(--dim); margin-left: auto; white-space: nowrap; }
+.plan-form { margin-bottom: 14px; }
+
+/* Your business → Performance */
+.perf-sec { margin-top: 24px; }
+.perf-sec h2 { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+.perf-sec h2 .n { font: 500 11px/1 var(--mono); color: var(--dim); }
+.perf-sec h2 small { font-size: 12px; font-weight: 400; }
+.perf-sec h2 .lnk { margin-left: auto; font-size: 12px; font-weight: 500; }
+.perf-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.perf-tile { padding: 14px 16px; }
+.perf-tile .cap { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.perf-tile .ttl { font-size: 13.5px; font-weight: 600; line-height: 1.35; margin: 0 0 6px; }
+.perf-tile .big { display: flex; align-items: baseline; gap: 10px; font: 600 24px/1.1 var(--sans); letter-spacing: -.02em; margin: 0; }
+.perf-tile .trend { display: inline-flex; align-items: center; gap: 2px; font: 500 12px var(--mono); color: var(--dim); }
+.perf-tile .trend.good { color: var(--ok); }
+.perf-tile .trend.bad { color: var(--bad); }
+.perf-tile .sm { margin-top: 4px; }
+.perf-tile .spark { display: block; margin-top: 10px; width: 100%; height: 36px; }
+.perf-tile .spark polyline { stroke: var(--accent); }
+.perf-tile .spark.bad polyline { stroke: var(--warn); }
+.perf-tile.kpi.dim { opacity: .7; }
+.perf-tile .bar { height: 4px; border-radius: 2px; background: var(--line); margin-top: 8px; overflow: hidden; }
+.perf-tile .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width 400ms; }
+.perf-tops { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 12px; }
+.perf-top table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.perf-top td { padding: 4px 0; border-top: 1px solid var(--line); }
+.perf-top td.k { color: var(--muted); overflow-wrap: anywhere; }
+.perf-top td.v { text-align: right; color: var(--fg); white-space: nowrap; padding-left: 10px; }
+.perf-sources { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.perf-sources li { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; border-radius: var(--r); border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); }
+.perf-sources li b { color: var(--fg); min-width: 110px; }
+.perf-sources li.on b::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 8px; vertical-align: middle; }
+.perf-sources .warn { color: var(--warn); }
+.perf-notes { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.perf-notes li { display: flex; align-items: center; gap: 6px; }
+.perf-notes li.ok { color: var(--ok); }
+.perf-notes li.err { color: var(--bad); }
+.plan-obj .meta .now { color: var(--accent); font-weight: 500; }

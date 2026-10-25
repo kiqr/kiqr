@@ -42,7 +42,7 @@ export function ContentPage() {
     <div className="prof">
       <div className="cm-head">
         <div>
-          <p className="cap">Your business</p>
+          <p className="cap">Business</p>
           <h1 className="d2">Content</h1>
           <p>
             What {b.business_name} has published, in {b.topic_clusters.length} topic clusters over {total} pages, and the {b.content_gaps.length} gaps Seemo would fill next.

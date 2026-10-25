@@ -121,6 +121,15 @@ pub enum EventKind {
     AssetApproved { asset_type: String, id: String, title: String, channel: String, #[serde(default)] at: Option<chrono::DateTime<chrono::Utc>> },
     /// KIQR no longer counts an asset as published; the copy on the channel is not touched.
     AssetUnpublished { asset_type: String, id: String, title: String },
+
+    // The marketing plan and its campaigns.
+    PlanSaved { version: u32, period: String, objectives: usize, by: String },
+    CampaignSaved { campaign: String, title: String, status: String, created: bool },
+    CampaignDeleted { campaign: String },
+
+    // Metrics: a source was read into a snapshot, or could not be.
+    MetricsSnapshot { source: String, provider: String, rows: usize, taken_at: DateTime<Utc> },
+    MetricsFailed { source: String, provider: String, error: String },
 }
 
 impl EventKind {
@@ -156,6 +165,11 @@ impl EventKind {
                 | EventKind::AssetPublished { .. }
                 | EventKind::AssetApproved { .. }
                 | EventKind::AssetUnpublished { .. }
+                | EventKind::PlanSaved { .. }
+                | EventKind::CampaignSaved { .. }
+                | EventKind::CampaignDeleted { .. }
+                | EventKind::MetricsSnapshot { .. }
+                | EventKind::MetricsFailed { .. }
         )
     }
 }

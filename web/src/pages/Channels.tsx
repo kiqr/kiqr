@@ -24,7 +24,7 @@ export function ChannelsPage() {
     <div className="prof">
       <div className="cm-head">
         <div>
-          <p className="cap">Seemo</p>
+          <p className="cap">Setup</p>
           <h1 className="d2">Channels</h1>
           <p className="muted">Where this project publishes: an email address, a blog, an account. The account behind a channel belongs to this project. Seemo can publish to a channel, but every send asks you first.</p>
         </div>

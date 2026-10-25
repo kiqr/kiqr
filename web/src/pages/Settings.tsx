@@ -103,11 +103,11 @@ export function Placeholder({ title, text }: { title: string; text: string }) {
   );
 }
 
-/** Older links to Settings → Abilities: abilities live under each project now. */
+/** Older links to Setup → Abilities: abilities live under each project now. */
 export function FirstProjectAbilities() {
   const projects = useAsync(() => api.projects(), []);
   if (!projects.data) return null;
   const first = projects.data[0];
   if (first) return <Navigate to={`/p/${first.slug}/abilities`} replace />;
-  return <Placeholder title="Abilities" text="Abilities are set up per project. Add a project first; its Seemo → Abilities page lists everything Seemo can do and the marketplace." />;
+  return <Placeholder title="Abilities" text="Abilities are set up per project. Add a project first; its Setup → Abilities page lists everything Seemo can do and the marketplace." />;
 }

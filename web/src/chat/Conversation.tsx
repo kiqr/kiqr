@@ -3,7 +3,7 @@
 // running). Used full-size on the Chats page and compact in the widget.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, X } from "lucide-react";
+import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, Target, X } from "lucide-react";
 import { api, useAsync, useEvents, type Card, type Message, type Step, type Streaming, type Task } from "../api";
 import { Markdown } from "../markdown";
 import { ago } from "../pages/Project";
@@ -155,6 +155,8 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
   if (card.approval_kind === "task") return <Resolved kind="task" status={card.status} title={String(card.payload.title ?? "Task")} />;
   if (card.approval_kind === "ability") return <Resolved kind="ability" status={card.status} title={String(card.payload.name ?? "Ability")} />;
   if (card.approval_kind === "channel") return <Resolved kind="channel" status={card.status} title={String(card.payload.label ?? "Channel")} />;
+  if (card.approval_kind === "plan") return <Resolved kind="plan" status={card.status} title={`${String(card.payload.period ?? "Plan")}${card.status === "approved" && card.result?.version ? ` · v${String(card.result.version)}` : ""}`} />;
+  if (card.approval_kind === "campaign") return <Resolved kind="campaign" status={card.status} title={String(card.payload.title ?? "Campaign")} />;
   if (card.approval_kind === "publish" || card.approval_kind === "email") {
     const p = card.payload as Record<string, unknown>;
     const title = card.approval_kind === "email" ? `“${String(p.subject ?? "")}” to ${String(p.to ?? "")}` : `${String((p.asset as { title?: string })?.title ?? "Asset")} → ${String(p.channel_label ?? p.destination_text ?? "")}`;
@@ -197,10 +199,11 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
 }
 
 function Resolved({ kind, status, title }: { kind: string; status: string; title: string }) {
+  const noun = kind === "task" ? "Task" : kind === "ability" ? "Ability" : kind === "channel" ? "Channel" : kind === "plan" ? "Plan" : kind === "campaign" ? "Campaign" : "Change";
   return (
     <div className={`ccard ${status}`}>
       <p className="cap">
-        {kind === "ability" ? <BookOpen size={13} /> : kind === "channel" ? <Send size={13} /> : <ListChecks size={13} />} {kind === "task" ? "Task" : kind === "ability" ? "Ability" : kind === "channel" ? "Channel" : "Change"} {status === "approved" && (kind === "ability" || kind === "channel") ? "added" : status}
+        {kind === "ability" ? <BookOpen size={13} /> : kind === "channel" ? <Send size={13} /> : kind === "plan" || kind === "campaign" ? <Target size={13} /> : <ListChecks size={13} />} {noun} {status === "approved" && (kind === "ability" || kind === "channel" || kind === "campaign") ? "added" : status}
       </p>
       <p className="ttl">{title}</p>
     </div>
@@ -228,20 +231,67 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
   const isPublish = card.approval_kind === "publish";
   const isEmail = card.approval_kind === "email";
   const isChannel = card.approval_kind === "channel";
+  const isPlan = card.approval_kind === "plan";
+  const isCampaign = card.approval_kind === "campaign";
+  const objectives = (p.objectives as { id: string; title: string; why?: string; kpi_label?: string; kpi?: string; target?: number | null; unit?: string; by?: string | null }[] | undefined) ?? [];
+  const replaces = p.replaces as { version: number; period: string } | null | undefined;
   const next = ((p.next as string[]) ?? []).slice(0, 3);
   const instruction = String(p.instruction ?? "");
   const abilityText = String(p.text ?? "");
   const files = (p.files as { name: string; bytes: number }[] | undefined) ?? [];
   const scheduled = isPublish && typeof p.at === "string" && p.at;
-  const caption = isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a channel" : "Seemo proposes a settings change";
-  const yes = isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isChannel ? "Add the channel" : "Apply";
+  const caption = isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a channel" : isPlan ? (replaces ? "Seemo proposes a revised plan" : "Seemo proposes a marketing plan") : isCampaign ? (p.update ? "Seemo proposes a campaign change" : "Seemo proposes a campaign") : "Seemo proposes a settings change";
+  const yes = isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isChannel ? "Add the channel" : isPlan ? "Approve the plan" : isCampaign ? (p.update ? "Apply" : "Add the campaign") : "Apply";
   const no = "Decline";
   return (
     <div className="ccard pending">
       <p className="cap">
-        {isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : <Settings2 size={13} />} {caption}
+        {isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : isPlan || isCampaign ? <Target size={13} /> : <Settings2 size={13} />} {caption}
       </p>
-      {isPublish || isEmail ? (
+      {isPlan ? (
+        <>
+          <p className="ttl">{String(p.period ?? "")}</p>
+          {!!p.summary && <p className="sched">{String(p.summary)}</p>}
+          <ul className="objs">
+            {objectives.map((o) => (
+              <li key={o.id}>
+                <Target size={12} />
+                <div>
+                  <b>{o.title}</b>
+                  <span>
+                    {o.kpi_label ?? o.kpi}
+                    {o.target != null ? ` · target ${o.target}${o.unit ? ` ${o.unit}` : ""}` : ""}
+                    {o.by ? ` · by ${new Date(o.by).toLocaleDateString([], { day: "numeric", month: "short" })}` : ""}
+                  </span>
+                  {o.why && <small>{o.why}</small>}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {((p.channels as string[]) ?? []).length > 0 && <p className="muted sm">Channels in play: {(p.channels as string[]).join(", ")}</p>}
+          {replaces && <p className="muted sm">Replaces v{replaces.version} ({replaces.period}){p.reason ? `: ${String(p.reason)}` : ""}.</p>}
+        </>
+      ) : isCampaign ? (
+        <>
+          <p className="ttl">{String(p.title ?? "")}</p>
+          {!!p.goal && <p className="sched">{String(p.goal)}</p>}
+          {p.update ? (
+            <ul className="kvs">
+              {((p.changes as { key: string; from: unknown; to: unknown }[]) ?? []).map((c) => (
+                <li key={c.key}>
+                  <code>{c.key}</code> <span className="from">{String(c.from ?? "")}</span> <span className="to">{String(c.to ?? "")}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted sm">
+              {p.objective_title ? `For: ${String(p.objective_title)}` : "No objective"}
+              {((p.channels as string[]) ?? []).length ? ` · ${(p.channels as string[]).join(", ")}` : ""}
+              {p.start || p.end ? ` · ${[p.start, p.end].filter(Boolean).join(" to ")}` : ""}
+            </p>
+          )}
+        </>
+      ) : isPublish || isEmail ? (
         <>
           <p className="ttl">{isEmail ? String(p.subject ?? "") : String((p.asset as { title?: string })?.title ?? "")}</p>
           <p className="sched">

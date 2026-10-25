@@ -51,6 +51,8 @@ pub fn router(app: App) -> Router {
         .merge(crate::market::routes())
         .merge(crate::images::routes())
         .merge(crate::publish::routes())
+        .merge(crate::marketing::routes())
+        .merge(crate::performance::routes())
         .with_state(app)
 }
 
@@ -228,7 +230,7 @@ struct CrawlOpts {
 async fn start_crawl(State(app): State<App>, Path(slug): Path<String>, Query(q): Query<CrawlOpts>) -> ApiResult<serde_json::Value> {
     let mut project = Project::load(&app.store, &slug)?;
     if !app.config.read().await.core_on("business-profile") {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "crawling is switched off under Settings → Abilities (Crawl a website and build its business profile)".into()));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "crawling is switched off under Setup → Abilities (Crawl a website and build its business profile)".into()));
     }
     if q.max_pages.is_some() || q.concurrency.is_some() || q.ai_concurrency.is_some() {
         if let Some(n) = q.max_pages {
@@ -597,7 +599,7 @@ async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(
     }
     let (machine_on, project_on) = crate::market::on_for(&app, &slug, "social-posts").await;
     if !machine_on || !project_on {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("writing social media posts is switched off {} under Seemo → Abilities", if machine_on { "for this project" } else { "on this machine" })));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("writing social media posts is switched off {} under Setup → Abilities", if machine_on { "for this project" } else { "on this machine" })));
     }
     if Brief::load(&app.store, &slug)?.is_none() {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, "there is no business profile yet; crawl the site first".into()));

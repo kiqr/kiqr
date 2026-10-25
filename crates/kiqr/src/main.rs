@@ -154,6 +154,14 @@ enum Command {
     },
     /// What waits for you in a project: approvals open in chats, drafts to approve, publishes coming up
     Todo { slug: String },
+    /// The marketing plan Seemo owns: objectives, targets and the campaigns under them
+    Plan { slug: String },
+    /// The numbers against the plan: each KPI, the last 7 days against the 7 before, per source (`--refresh` reads the sources again first)
+    Performance {
+        slug: String,
+        #[arg(long)]
+        refresh: bool,
+    },
     /// Let Seemo publish through a channel on its own (`--ask` to make it ask again)
     Trust {
         slug: String,
@@ -807,6 +815,66 @@ impl Client {
                     println!("{asset} {}.", if undo { "is back from the archive" } else { "is in the archive" });
                 }
             },
+            Command::Plan { slug } => {
+                let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/plan")).await?;
+                match v["plan"].as_object() {
+                    None => println!("No plan yet. Ask Seemo: \"propose a marketing plan for this quarter\"."),
+                    Some(p) => {
+                        println!("{}  (v{}, by {})", p["period"].as_str().unwrap_or(""), p["version"], p["updated_by"].as_str().unwrap_or(""));
+                        if let Some(s) = p["summary"].as_str().filter(|s| !s.is_empty()) {
+                            println!("{s}\n");
+                        }
+                        for o in p["objectives"].as_array().cloned().unwrap_or_default() {
+                            let target = match (o["target"].as_f64(), o["unit"].as_str().unwrap_or("")) {
+                                (Some(t), "") => format!(" → {t}"),
+                                (Some(t), u) => format!(" → {t} {u}"),
+                                (None, _) => String::new(),
+                            };
+                            println!("{:<8} {:<34} {}{}{}", o["status"].as_str().unwrap_or(""), o["title"].as_str().unwrap_or(""), o["kpi"].as_str().unwrap_or(""), target, o["by"].as_str().map(|d| format!("  by {d}")).unwrap_or_default());
+                        }
+                    }
+                }
+                let campaigns = v["campaigns"].as_array().cloned().unwrap_or_default();
+                if !campaigns.is_empty() {
+                    println!("\nCampaigns");
+                    for c in campaigns {
+                        println!("{:<8} {:<28} {:<34} {} assets, {} tasks{}", c["status"].as_str().unwrap_or(""), c["id"].as_str().unwrap_or(""), c["title"].as_str().unwrap_or(""), c["assets"].as_array().map(|a| a.len()).unwrap_or(0), c["tasks"].as_array().map(|a| a.len()).unwrap_or(0), c["objective_title"].as_str().map(|o| format!("  for: {o}")).unwrap_or_default());
+                    }
+                }
+            }
+            Command::Performance { slug, refresh } => {
+                let v: serde_json::Value = if refresh { self.post(&format!("/api/projects/{slug}/performance/refresh"), &serde_json::json!({})).await? } else { self.get(&format!("/api/projects/{slug}/performance")).await? };
+                let fmt = |x: &serde_json::Value| x.as_f64().map(|f| if f.fract() == 0.0 { format!("{f:.0}") } else { format!("{f:.1}") }).unwrap_or_else(|| "-".into());
+                let kpis = v["kpis"].as_array().cloned().unwrap_or_default();
+                if !kpis.is_empty() {
+                    println!("Plan KPIs, last 30 days{}", v["plan_period"].as_str().map(|p| format!(" ({p})")).unwrap_or_default());
+                    for k in &kpis {
+                        println!("  {:<40} {:<22} {} {}{}", k["title"].as_str().unwrap_or(""), k["label"].as_str().unwrap_or(""), fmt(&k["value"]), k["unit"].as_str().unwrap_or(""), k["target"].as_f64().map(|t| format!("  of {t}")).unwrap_or_default());
+                    }
+                    println!();
+                }
+                let metrics = v["metrics"].as_array().cloned().unwrap_or_default();
+                if metrics.is_empty() {
+                    println!("No numbers yet. Install an analytics ability (Google Analytics, Search Console, Plausible) and connect it, or run with --refresh.");
+                }
+                let mut last = String::new();
+                for m in &metrics {
+                    let src = m["source"].as_str().unwrap_or("");
+                    if src != last {
+                        println!("{src}");
+                        last = src.to_string();
+                    }
+                    println!("  {:<22} last 7 days {:>10}   7 before {:>10}   30 days {:>10}", m["label"].as_str().unwrap_or(""), fmt(&m["last7"]), fmt(&m["prev7"]), fmt(&m["last30"]));
+                }
+                for s in v["sources"].as_array().cloned().unwrap_or_default() {
+                    if let Some(t) = s["taken_at"].as_str() {
+                        println!("{:<12} via {:<18} taken {}", s["id"].as_str().unwrap_or(""), s["provider"].as_str().unwrap_or("-"), &t[..16.min(t.len())]);
+                    }
+                }
+                for r in v["refreshed"].as_array().cloned().unwrap_or_default() {
+                    println!("{} {}", if r["ok"].as_bool() == Some(true) { "ok " } else { "err" }, r["note"].as_str().unwrap_or(""));
+                }
+            }
             Command::Trust { slug, channel, ask } => {
                 let _: serde_json::Value = self.put(&format!("/api/projects/{slug}/channels/{channel}"), &serde_json::json!({ "asks_first": ask })).await?;
                 println!("{}", if ask { format!("Seemo asks before publishing through {channel} again.") } else { format!("Seemo may publish through {channel} on its own; the chat records what went out.") });
@@ -1127,6 +1195,11 @@ fn print_event(ev: &Event) {
             None => format!("approve  {asset_type}/{id} for {channel}"),
         },
         EventKind::AssetUnpublished { asset_type, id, .. } => format!("unpublish {asset_type}/{id}"),
+        EventKind::PlanSaved { version, period, objectives, by } => format!("plan     v{version} {period}: {objectives} objectives ({by})"),
+        EventKind::CampaignSaved { campaign, title, status, created } => format!("campaign {campaign} {} ({status}): {title}", if *created { "added" } else { "changed" }),
+        EventKind::CampaignDeleted { campaign } => format!("campaign {campaign} removed"),
+        EventKind::MetricsSnapshot { source, provider, rows, .. } => format!("metrics  {source}: {rows} rows via {provider}"),
+        EventKind::MetricsFailed { source, provider, error } => format!("metrics  {source} via {provider} failed: {error}"),
     };
     println!("{t}  {line}");
 }

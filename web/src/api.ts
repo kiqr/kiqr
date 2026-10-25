@@ -202,6 +202,31 @@ export type Run = {
   session_id: string | null;
   cost_usd: number | null;
 };
+/** The marketing plan Seemo owns: a period, a few objectives with a KPI and a target each, and the campaigns under them. */
+export type Objective = { id: string; title: string; why: string; kpi: string; target?: number | null; unit: string; by?: string | null; status: "active" | "done" | "dropped" };
+export type Plan = { version: number; period: string; summary: string; objectives: Objective[]; channels: string[]; updated_by: string; updated_at?: string | null };
+export type Campaign = {
+  id: string;
+  title: string;
+  goal: string;
+  objective?: string | null;
+  objective_title?: string | null;
+  channels: string[];
+  start?: string | null;
+  end?: string | null;
+  status: "active" | "done" | "dropped";
+  created_by: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  assets: { type: string; id: string; title: string; status: AssetStatus; updated_at: string }[];
+  tasks: { id: string; title: string; status: string; next_run: string | null; runs: number }[];
+};
+export type PlanView = { plan: Plan | null; kpis: { id: string; label: string }[]; campaigns: Campaign[] };
+/** The numbers against the plan, from daily snapshots. */
+export type PerfSource = { id: string; label: string; provider: string | null; candidates: { id: string; name: string; ready: boolean }[]; taken_at: string | null; from: string | null; to: string | null; rows: number };
+export type PerfMetric = { source: string; metric: string; label: string; lower_is_better: boolean; last7: number | null; prev7: number | null; last30: number | null; series: { date: string; value: number }[] };
+export type PerfKpi = { objective: string; title: string; kpi: string; label: string | null; target: number | null; unit: string; by: string | null; source: string | null; measured: boolean; value: number | null; prev: number | null; window_days: number };
+export type Performance = { sources: PerfSource[]; metrics: PerfMetric[]; tops: Record<string, { key: string; value: number }[]>; kpis: PerfKpi[]; plan_period: string | null; today: string; refreshed?: { note: string; ok: boolean }[] };
 /** A task run coming up, or a publish the daemon will do (`kind: "publish"`, with the asset and channel). */
 export type CalendarItem = { kind?: "task" | "publish"; task?: string; asset?: { type: string; id: string; title: string }; channel?: string | null; channel_label?: string; title: string; at: string; schedule_text: string };
 /** What waits for the user: open approvals from every chat, drafts to approve, what is approved but not sent, publishes coming up, failed publishes. */
@@ -239,6 +264,7 @@ export type Ability = {
   cost: string | null;
   provides: { ability: string; label: string }[];
   channels: string[];
+  sources: string[];
   tools: number;
   trust: "official" | "verified" | "community" | "local" | string;
   transport: "http" | "command" | "mcp" | "builtin" | "instructions" | string;
@@ -357,6 +383,15 @@ export const api = {
   calendar: (slug: string, from?: string, to?: string) =>
     req<CalendarItem[]>(`/api/projects/${slug}/calendar${from ? `?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}` : ""}`),
   todo: (slug: string) => req<Todo>(`/api/projects/${slug}/todo`),
+
+  // The marketing plan and campaigns
+  plan: (slug: string) => req<PlanView>(`/api/projects/${slug}/plan`),
+  savePlan: (slug: string, plan: Plan) => req<PlanView>(`/api/projects/${slug}/plan`, { method: "PUT", body: JSON.stringify(plan) }),
+  createCampaign: (slug: string, c: { title: string; goal: string; objective?: string; channels?: string[]; start?: string; end?: string }) => req<Campaign>(`/api/projects/${slug}/campaigns`, { method: "POST", body: JSON.stringify(c) }),
+  updateCampaign: (slug: string, id: string, c: Partial<{ title: string; goal: string; objective: string; channels: string[]; start: string; end: string; status: "active" | "done" | "dropped" }>) => req<Campaign>(`/api/projects/${slug}/campaigns/${id}`, { method: "PUT", body: JSON.stringify(c) }),
+  deleteCampaign: (slug: string, id: string) => req<void>(`/api/projects/${slug}/campaigns/${id}`, { method: "DELETE" }),
+  performance: (slug: string) => req<Performance>(`/api/projects/${slug}/performance`),
+  refreshPerformance: (slug: string, source?: string) => req<Performance>(`/api/projects/${slug}/performance/refresh`, { method: "POST", body: JSON.stringify({ source }) }),
   tools: () => req<{ groups: ToolGroup[] }>("/api/tools"),
 
   // Abilities
@@ -413,7 +448,7 @@ let demoConfig: Config = {
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (/\/(chats|approvals|tasks|calendar|channels|email|secrets|abilities|todo)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|channels|email|secrets|abilities|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

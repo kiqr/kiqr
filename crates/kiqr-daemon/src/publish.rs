@@ -113,7 +113,7 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
     let matching: Vec<&(Manifest, ChannelKind)> = all.iter().filter(|(m, k)| k.kind == kind && b.connection.as_deref().map(|c| c == m.id).unwrap_or(true)).collect();
     let Some((m, k)) = matching.iter().find(|(m, _)| crate::ext::ready_in(app, Some(slug), m)).or_else(|| matching.first()).map(|x| (&x.0, &x.1)) else {
         let have: Vec<String> = all.iter().map(|(_, k)| k.kind.clone()).collect();
-        return Err(bad(if have.is_empty() { "nothing can publish yet; install Email under Settings → Abilities".to_string() } else { format!("nothing publishes '{kind}'; available: {}", have.join(", ")) }));
+        return Err(bad(if have.is_empty() { "nothing can publish yet; install Email under Setup → Abilities".to_string() } else { format!("nothing publishes '{kind}'; available: {}", have.join(", ")) }));
     };
     let mut destination = serde_json::Map::new();
     for (field, spec) in &k.destination {
@@ -249,7 +249,7 @@ pub struct PublishBody {
 async fn ready_channel(app: &App, slug: &str, id: &str) -> Result<Channel, ApiError> {
     let c = Channel::load(&app.store, slug, id.trim()).map_err(|_| {
         let have: Vec<String> = Channel::list(&app.store, slug).unwrap_or_default().into_iter().map(|c| format!("{} ({})", c.id, c.label)).collect();
-        bad(if have.is_empty() { "there is no channel yet; create one first (create_channel) or ask the user to add one under Seemo → Channels".to_string() } else { format!("no channel '{}'; channels: {}", id.trim(), have.join(", ")) })
+        bad(if have.is_empty() { "there is no channel yet; create one first (create_channel) or ask the user to add one under Setup → Channels".to_string() } else { format!("no channel '{}'; channels: {}", id.trim(), have.join(", ")) })
     })?;
     let cv = channel_view(app, slug, &c).await;
     if cv["ready"].as_bool() != Some(true) {
@@ -326,6 +326,10 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
         }));
     }
     let (body, files) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
+    // Links to the business's own site carry UTM parameters, so analytics can tell what KIQR sent where.
+    let site_host = Project::load(&app.store, slug).ok().and_then(|p| url::Url::parse(&p.url).ok()).and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    let campaign = a.source.get("campaign").and_then(|v| v.as_str()).map(str::to_string);
+    let body = channels::add_utm(&body, &site_host, &c.kind, campaign.as_deref());
     let subject = preview["subject"].as_str().unwrap_or(&a.title).to_string();
     let m = {
         let reg = app.registry.read().await;
@@ -530,7 +534,7 @@ pub async fn email_preview(app: &App, slug: &str, b: &EmailBody) -> Result<Value
         reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), |m| crate::ext::ready_in(app, Some(slug), m)).map(|(_, m)| m.name.clone())
     };
     let Some(provider) = provider else {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "no mail ability is set up for this project; install Email under Settings → Abilities and add an email channel".into()));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "no mail ability is set up for this project; install Email under Setup → Abilities and add an email channel".into()));
     };
     let files: Vec<Value> = match &b.asset {
         Some(r) if !r.id.is_empty() => {

@@ -124,7 +124,7 @@ function General({ h, config }: { h?: Health; config?: Config }) {
   const tiles: { icon: LucideIcon; label: string; value: string; note: string; to: string; tone: "ok" | "warn" | "" }[] = [
     { icon: Cpu, label: "Models", value: `${ready}/${models.length || 3}`, note: ready === models.length ? "Every task has a model it can use" : "A task has no model it can use", to: "/settings/models", tone: ready === models.length ? "ok" : "warn" },
     { icon: Radar, label: "Crawl default", value: config ? `${config.crawl.max_pages}` : "–", note: config ? `pages, ${config.crawl.concurrency} at a time` : "", to: "/settings/crawling", tone: "" },
-    { icon: Sparkles, label: "Abilities", value: `${installed}`, note: abilitiesOn ? `on this machine; set up per project under Seemo → Abilities` : "on this machine; nothing beyond writing and images yet", to: projects.data?.[0] ? `/p/${projects.data[0].slug}/abilities` : "/projects", tone: abilitiesOn ? "ok" : "" },
+    { icon: Sparkles, label: "Abilities", value: `${installed}`, note: abilitiesOn ? `on this machine; set up per project under Setup → Abilities` : "on this machine; nothing beyond writing and images yet", to: projects.data?.[0] ? `/p/${projects.data[0].slug}/abilities` : "/projects", tone: abilitiesOn ? "ok" : "" },
     { icon: FolderGit2, label: "Projects", value: `${projects.data?.length ?? "–"}`, note: "Each in its own folder, every change a commit", to: "/settings/storage", tone: "" },
   ];
   return (

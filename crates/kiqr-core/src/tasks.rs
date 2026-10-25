@@ -28,6 +28,9 @@ pub struct Task {
     /// Tell this chat when a run finishes (one-off tasks made in a chat).
     #[serde(default)]
     pub follow_up_chat: Option<String>,
+    /// The campaign this task works for, by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<String>,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub next_run: Option<DateTime<Utc>>,

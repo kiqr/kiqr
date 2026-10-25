@@ -72,7 +72,7 @@ async fn read_web(State(app): State<App>, Path(slug): Path<String>, Query(q): Qu
     let url = url::Url::parse(q.url.trim()).map_err(|_| bad(format!("'{}' is not a URL", q.url)))?;
     let cfg = app.config.read().await.clone();
     if !cfg.core_on("read-web") {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "reading the web is switched off under Settings → Abilities".into()));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "reading the web is switched off under Setup → Abilities".into()));
     }
     let escalate = cfg.core_on("unblockingapi");
     // The project's own UnblockingAPI account, else the machine's.
@@ -165,6 +165,8 @@ struct AssetPatch {
     title: Option<String>,
     /// Into the archive, or back out of it. The only part of the status anyone sets by hand.
     archived: Option<bool>,
+    /// Campaign id kept as `source.campaign`; empty takes it out.
+    campaign: Option<String>,
     tags: Option<Vec<String>>,
     summary: Option<String>,
     text: Option<String>,
@@ -181,6 +183,13 @@ async fn patch_asset(State(app): State<App>, Path((slug, kind, id)): Path<(Strin
     }
     if let Some(x) = p.archived {
         a.archived = x;
+    }
+    if let Some(c) = p.campaign {
+        if c.trim().is_empty() {
+            a.source.remove("campaign");
+        } else {
+            a.source.insert("campaign".into(), json!(c.trim()));
+        }
     }
     if let Some(t) = p.tags {
         a.tags = t;
@@ -380,6 +389,7 @@ fn task_preview(app_cfg: &Config, payload: &Value, names: &std::collections::Has
         "follow_up": follow_up,
         "next": next,
         "timezone": tz.name(),
+        "campaign": payload["campaign"].as_str().map(str::trim).filter(|s| !s.is_empty()),
     }))
 }
 
@@ -466,6 +476,8 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
         "channel" => crate::publish::channel_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         "publish" => crate::publish::publish_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         "email" => crate::publish::email_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
+        "plan" => crate::marketing::plan_preview(&app, &slug, &b.payload)?,
+        "campaign" => crate::marketing::campaign_preview(&app, &slug, &b.payload)?,
         other => return Err(bad(format!("unknown approval kind '{other}'"))),
     };
     // A channel the user let Seemo publish through on its own: the card is
@@ -618,6 +630,14 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },
+            "plan" => match crate::marketing::approve_plan(&app, &slug, &approval).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(e) => return Err(e),
+            },
+            "campaign" => match crate::marketing::approve_campaign(&app, &slug, &approval).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(e) => return Err(e),
+            },
             _ => match approve_config(&app, &approval).await {
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
@@ -655,6 +675,7 @@ async fn approve_task(app: &App, slug: &str, approval: &Approval, allowed: Optio
         status: TaskStatus::Active,
         created_by: approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into()),
         follow_up_chat: if p["follow_up"].as_bool().unwrap_or(false) { approval.chat.clone() } else { None },
+        campaign: p["campaign"].as_str().map(str::to_string),
         created_at: now,
         next_run: None,
         last_run: None,
@@ -729,7 +750,10 @@ async fn approve_config(app: &App, approval: &Approval) -> Result<Value, ApiErro
 }
 
 async fn finish_approval(app: &App, approval: &Approval, decision: Decision) {
-    let _ = approval.tx.send(Some(decision.clone()));
+    // `send_replace`, not `send`: a plain send is dropped when nobody waits
+    // any more (the turn ended), and the approval would stay pending in the
+    // list and on To do although the card was answered.
+    approval.tx.send_replace(Some(decision.clone()));
     if let (Some(chat_id), Some(mid)) = (&approval.chat, &approval.message_id) {
         if let Ok(mut chat) = Chat::load(&app.store, &approval.slug, chat_id) {
             if let Ok(msgs) = chat.messages(&app.store, &approval.slug) {
@@ -812,10 +836,15 @@ struct TaskPatch {
     instruction: Option<String>,
     schedule: Option<Schedule>,
     allowed: Option<Vec<Group>>,
+    /// Campaign id; empty takes the task out of its campaign.
+    campaign: Option<String>,
 }
 
 async fn patch_task(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(p): Json<TaskPatch>) -> ApiResult<Value> {
     let mut t = Task::load(&app.store, &slug, &id)?;
+    if let Some(c) = &p.campaign {
+        t.campaign = Some(c.trim().to_string()).filter(|c| !c.is_empty());
+    }
     let cfg = app.config.read().await.clone();
     let tz = tasks::local_tz(&cfg.agent.timezone);
     if let Some(x) = p.title.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {

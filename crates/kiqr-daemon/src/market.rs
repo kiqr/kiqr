@@ -1,4 +1,4 @@
-//! Abilities as the user sees them, behind Seemo → Abilities: one list of
+//! Abilities as the user sees them, behind Setup → Abilities: one list of
 //! what Seemo can do here (core abilities that are code, shipped and
 //! installed folders, the ones the user taught), and the marketplace below
 //! it, from an index kiqr.cloud hosts (cached, with the shipped list as the
@@ -87,6 +87,9 @@ pub struct IndexItem {
     pub provides: Vec<String>,
     /// Channel kinds it publishes to.
     pub channels: Vec<String>,
+    /// Metrics sources it reads.
+    #[serde(default)]
+    pub sources: Vec<String>,
     pub auth: Vec<AuthKey>,
     /// `official` (KIQR's own), `verified`, `community`.
     pub trust: String,
@@ -112,7 +115,7 @@ fn author_of(item: &IndexItem) -> String {
     if let Some(a) = item.repo.as_deref().and_then(author_from_repo) {
         return a;
     }
-    if item.shipped { "kiqr".into() } else { "you".into() }
+    if item.shipped { "KIQR".into() } else { "you".into() }
 }
 
 /// A folder name or a few of them, nothing that climbs out.
@@ -147,14 +150,24 @@ fn source_note(repo: &str, path: Option<&str>) -> String {
     }
 }
 
+/// Where the vendor name links: the repository the ability came from (its
+/// folder inside it when the index says), KIQR's own repository for what
+/// ships with it, and only as a last resort the vendor's page.
 fn author_url(item: &IndexItem, author: &str) -> Option<String> {
     if author == "you" {
         return None;
     }
-    match item.repo.as_deref().and_then(|r| url::Url::parse(r).ok()) {
-        Some(u) => Some(format!("{}://{}/{}", u.scheme(), u.host_str().unwrap_or("github.com"), author)),
-        None => Some(format!("https://github.com/{author}")),
+    if let Some(repo) = item.repo.as_deref().filter(|r| url::Url::parse(r).is_ok()) {
+        let root = repo.trim_end_matches('/').trim_end_matches(".git").to_string();
+        return Some(match item.path.as_deref().map(|p| p.trim_matches('/')).filter(|p| !p.is_empty()) {
+            Some(path) => format!("{root}/tree/HEAD/{path}"),
+            None => root,
+        });
     }
+    if item.shipped || author.eq_ignore_ascii_case("kiqr") {
+        return Some("https://github.com/kiqr/kiqr".into());
+    }
+    Some(format!("https://github.com/{author}"))
 }
 
 fn item_from_manifest(m: &Manifest) -> IndexItem {
@@ -172,6 +185,7 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         cost,
         provides: m.provides.keys().cloned().collect(),
         channels: m.channels.iter().map(|c| c.kind.clone()).collect(),
+        sources: m.sources.clone(),
         auth: m.auth.clone(),
         trust: "official".into(),
         transport: serde_json::to_value(m.transport).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
@@ -221,10 +235,11 @@ fn core_item(c: &extensions::CoreAbility) -> IndexItem {
         cost: Some(c.cost.into()),
         provides: vec![],
         channels: vec![],
+        sources: vec![],
         auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false }).collect(),
         trust: "official".into(),
         transport: "builtin".into(),
-        author: "kiqr".into(),
+        author: "KIQR".into(),
         shipped: true,
     }
 }
@@ -347,10 +362,11 @@ fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
         cost: Some("model usage".into()),
         provides: vec![],
         channels: vec![],
+        sources: vec![],
         auth: vec![],
         trust: if e.builtin { "official".into() } else { "local".into() },
         transport: "instructions".into(),
-        author: if !i.author.trim().is_empty() { i.author.clone() } else if e.builtin { "kiqr".into() } else { String::new() },
+        author: if !i.author.trim().is_empty() { i.author.clone() } else if e.builtin { "KIQR".into() } else { String::new() },
         shipped: e.builtin,
     }
 }
@@ -426,7 +442,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
     json!({
         "id": item.id,
         "name": item.name,
-        "author": if source == "yours" { "you".to_string() } else { author.clone() },
+        "author": if source == "yours" { "you".to_string() } else if author.eq_ignore_ascii_case("kiqr") { "KIQR".to_string() } else { author.clone() },
         "author_url": if source == "yours" { None } else { author_url(item, &author) },
         "summary": item.summary,
         "description": description.unwrap_or_default(),
@@ -438,6 +454,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "cost": item.cost,
         "provides": provides,
         "channels": m.map(|m| m.channels.iter().map(|c| c.label.clone()).collect::<Vec<_>>()).unwrap_or_else(|| item.channels.clone()),
+        "sources": m.map(|m| m.sources.clone()).unwrap_or_else(|| item.sources.clone()),
         "tools": m.map(|m| m.tools.len() + if m.transport == Transport::Mcp { m.expose.len() } else { 0 }).unwrap_or(0),
         "trust": item.trust,
         "transport": m.map(|m| serde_json::to_value(m.transport).unwrap_or(Value::Null)).unwrap_or_else(|| json!(item.transport)),
@@ -544,7 +561,7 @@ pub(crate) async fn listing(app: &App, slug: Option<&str>) -> Listing {
         item.name = "Seemo's own guide".into();
         item.summary = "How Seemo works inside KIQR: the tools, when to act and when to make a task, how to ask for a yes, how to report. Read at the start of every chat and run.".into();
         item.icon = "book-open".into();
-        item.author = "kiqr".into();
+        item.author = "KIQR".into();
         let mut v = ability_view(&ctx, &item, None, Some(e), None);
         v["core"] = json!(true);
         v["source"] = json!("core");

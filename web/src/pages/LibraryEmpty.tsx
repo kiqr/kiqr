@@ -242,6 +242,9 @@ export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComple
     }
   };
 
+  const planView = useAsync(() => api.plan(slug).catch(() => null), [slug]);
+  useEvents(slug, (e) => e.type === "plan_saved" && planView.reload(), { demo: false });
+  const hasPlan = !!planView.data?.plan;
   const p = project.data;
   const hasBrief = !!brief.data;
   // A profile means a crawl happened, even when the project record predates crawl summaries.
@@ -259,6 +262,16 @@ export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComple
       action: "Open crawls",
     },
     { id: "profile", icon: Brain, title: "Check your business profile", text: "Fix anything Seemo got wrong. Everything it makes starts here.", state: hasBrief ? "done" : crawled ? "now" : "next", to: `/p/${slug}`, action: "Open profile" },
+    {
+      id: "plan",
+      icon: Target,
+      title: "Let Seemo propose a plan",
+      text: hasPlan ? "The plan is in. Everything Seemo makes is tied to one of its objectives." : "A few objectives for the period, each with a number to reach. Seemo proposes it from the brief; you approve it in the chat.",
+      state: optional("plan", hasPlan ? "done" : hasBrief ? "now" : "next"),
+      optional: true,
+      to: `/p/${slug}/plan`,
+      action: hasPlan ? "See the plan" : "Open the plan page",
+    },
     {
       id: "posts",
       icon: MessageSquareText,

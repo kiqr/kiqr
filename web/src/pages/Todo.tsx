@@ -28,7 +28,7 @@ export function TodoPage() {
     <div className="prof todo">
       <div className="cm-head">
         <div>
-          <p className="cap">Seemo</p>
+          <p className="cap">For you</p>
           <h1 className="d2">To do</h1>
           <p className="muted">What waits for you. Seemo's questions from every chat, drafts to approve, and what is set to go out. Approve a draft for a channel; publish it now or pick a time.</p>
         </div>

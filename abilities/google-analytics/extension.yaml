@@ -1,0 +1,16 @@
+# Google Analytics 4 through the Data API with a service account. The key
+# file stays on this machine; KIQR reads sessions, users, page views, organic
+# sessions and key events for the last 30 days, once a day, into snapshots.
+id: google-analytics
+name: Read Google Analytics
+version: 0.1.0
+summary: "Sessions, users, page views, organic sessions and key events from a GA4 property, once a day into Performance. Needs a service account added as a viewer on the property."
+categories: [analytics]
+icon: chart
+transport: builtin
+homepage: https://developers.google.com/analytics/devguides/reporting/data/v1
+hosts: [analyticsdata.googleapis.com, oauth2.googleapis.com]
+auth:
+  - { env: GA4_PROPERTY_ID, label: GA4 property id, help: "The number under Admin → Property settings, e.g. 123456789" }
+  - { env: GOOGLE_SERVICE_ACCOUNT_FILE, label: Service account key file, help: "Path on this machine to the JSON key of a service account that is a Viewer on the property (Google Cloud → IAM → Service accounts → Keys)" }
+sources: [traffic, conversions]

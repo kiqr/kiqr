@@ -159,6 +159,8 @@ pub struct Manifest {
     pub provides: BTreeMap<String, Provide>,
     pub tools: Vec<ExtraTool>,
     pub channels: Vec<ChannelKind>,
+    /// Metrics sources this connection reads (`traffic`, `search`, `conversions`, `ranks`, `mentions`).
+    pub sources: Vec<String>,
     // MCP transport.
     pub command: String,
     pub args: Vec<String>,
@@ -187,6 +189,7 @@ impl Default for Manifest {
             provides: Default::default(),
             tools: vec![],
             channels: vec![],
+            sources: vec![],
             command: String::new(),
             args: vec![],
             env: vec![],
@@ -270,6 +273,9 @@ pub const BUILTIN_EXTENSIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("email-smtp", None, Some(include_str!("../../../abilities/email-smtp/extension.yaml"))),
     ("fal-image", None, Some(include_str!("../../../abilities/fal-image/extension.yaml"))),
     ("openai-image", None, Some(include_str!("../../../abilities/openai-image/extension.yaml"))),
+    ("google-analytics", None, Some(include_str!("../../../abilities/google-analytics/extension.yaml"))),
+    ("search-console", None, Some(include_str!("../../../abilities/search-console/extension.yaml"))),
+    ("plausible", None, Some(include_str!("../../../abilities/plausible/extension.yaml"))),
 ];
 
 /// On without installing: the built-in renderer (folder `make-images`, id
@@ -305,6 +311,7 @@ pub const CORE_ABILITIES: &[CoreAbility] = &[
     CoreAbility { id: "read-web", name: "Read the web", summary: "Seemo reads one page at a time through KIQR's own fetcher: a competitor, an article you link, a source to quote.", categories: &["web"], icon: "globe", auth: &[], cost: "free", homepage: "", instructions: &[], in_prompt: false },
     CoreAbility { id: "unblockingapi", name: "Read blocked pages with UnblockingAPI", summary: "A real browser and residential proxies for the pages KIQR could not read: crawls and Seemo's web reading. One credit per success; failures are free.", categories: &["web"], icon: "shield-check", auth: &[("UNBLOCKINGAPI_KEY", "UnblockingAPI key", "https://unblockingapi.com")], cost: "about $0.001 per page read this way", homepage: "https://unblockingapi.com", instructions: &[], in_prompt: false },
     CoreAbility { id: "social-posts", name: "Write social media posts", summary: "Ready-to-publish posts in the brand's tone of voice, each with its image, from the business brief.", categories: &["writing", "publishing"], icon: "message-square-text", auth: &[], cost: "model usage", homepage: "", instructions: &[("social-posts", "Writing the posts")], in_prompt: true },
+    CoreAbility { id: "marketing", name: "Plan the marketing", summary: "Seemo owns a marketing plan for the business: a few objectives for the period, each with a KPI and a target, and campaigns under them that group what it makes. It proposes the plan from the brief; you approve it on a card.", categories: &["strategy"], icon: "target", auth: &[], cost: "model usage", homepage: "", instructions: &[("marketing-plan", "Building the plan")], in_prompt: true },
     CoreAbility { id: "tasks", name: "Run tasks on a schedule", summary: "Seemo works later or repeatedly: every Monday a post, each morning a check, a batch for the library. Every task is approved by you first and reports back in its chat.", categories: &["writing"], icon: "list-checks", auth: &[], cost: "model usage", homepage: "", instructions: &[], in_prompt: true },
 ];
 
@@ -531,6 +538,11 @@ pub fn validate(m: &Manifest) -> Result<()> {
             bail!("'{ability}' is not an ability (image, video, music, email)");
         }
         check_provide(m, p, &format!("ability '{ability}'"))?;
+    }
+    for src in &m.sources {
+        if !crate::metrics::SOURCES.iter().any(|(id, _)| id == src) {
+            bail!("'{src}' is not a metrics source ({})", crate::metrics::SOURCES.iter().map(|(id, _)| *id).collect::<Vec<_>>().join(", "));
+        }
     }
     match m.transport {
         Transport::Mcp if m.command.trim().is_empty() => bail!("an mcp connection needs a command"),
@@ -904,7 +916,7 @@ channels:
     #[test]
     fn attached_folders_are_not_abilities() {
         let a = attached_folders();
-        for f in ["crawl-site", "extract-facts", "build-profile", "business-brief", "social-posts", "seemo-agent"] {
+        for f in ["crawl-site", "extract-facts", "build-profile", "business-brief", "social-posts", "marketing-plan", "seemo-agent"] {
             assert!(a.contains(&f), "{f}");
         }
         assert_eq!(core_of_folder("business-brief").map(|c| c.id), Some("business-profile"));

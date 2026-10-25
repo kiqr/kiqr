@@ -342,8 +342,11 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
             (v["id"].as_str().unwrap_or("").to_string(), v["name"].as_str().unwrap_or("").to_string(), kiqr_core::profile::truncate_chars(&desc, 200))
         })
         .collect();
+    let plan = kiqr_core::marketing::Plan::load(&app.store, &project.slug).ok().flatten();
     core_agent::Context {
         abilities,
+        plan_period: plan.as_ref().map(|p| p.period.clone()).unwrap_or_default(),
+        plan: plan.as_ref().map(|p| p.prompt_lines()).unwrap_or_default(),
         project_name: project.name.clone(),
         project_url: project.url.clone(),
         slug: project.slug.clone(),
@@ -466,7 +469,7 @@ pub fn start_followup<'a>(app: &'a App, slug: &'a str, chat_id: &'a str, note: S
 pub async fn start_run(app: &App, slug: &str, task_id: &str, trigger: &str) -> Result<String> {
     let mut task = Task::load(&app.store, slug, task_id)?;
     if !app.config.read().await.core_on("tasks") {
-        return Err(anyhow!("running tasks is switched off under Settings → Abilities"));
+        return Err(anyhow!("running tasks is switched off under Setup → Abilities"));
     }
     let key = format!("task:{task_id}");
     {

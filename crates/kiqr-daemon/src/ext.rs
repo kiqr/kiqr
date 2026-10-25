@@ -1,7 +1,7 @@
 //! Abilities in the daemon: the registry of folders under `abilities/`, the
 //! merged tool list a session gets, the executor that
 //! turns a manifest's `provides` into a request, a command or built-in Rust,
-//! and the routes behind Seemo → Abilities (instructions, secrets).
+//! and the routes behind Setup → Abilities (instructions, secrets).
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
@@ -480,7 +480,7 @@ async fn read_instructions(app: &App, slug: Option<&str>, id: &str, q: &Instruct
         if let Some(s) = slug {
             let (machine, project) = crate::market::on_for(app, s, id).await;
             if !machine || !project {
-                return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("'{id}' is switched off {}; the user can turn it on under Seemo → Abilities", if machine { "for this project" } else { "on this machine" })));
+                return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("'{id}' is switched off {}; the user can turn it on under Setup → Abilities", if machine { "for this project" } else { "on this machine" })));
             }
         }
     }
@@ -773,7 +773,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
 fn no_leftover(s: &str, what: &str) -> Result<()> {
     if let Some(i) = s.find("${") {
         let end = s[i..].find('}').map(|e| i + e + 1).unwrap_or(s.len());
-        bail!("{what} needs {} which is not set; add it under Settings → Abilities, or in the project's Channels for a mail account", &s[i..end]);
+        bail!("{what} needs {} which is not set; add it under Setup → Abilities, or in the project's Channels for a mail account", &s[i..end]);
     }
     Ok(())
 }
@@ -1037,7 +1037,7 @@ async fn run_ability(State(app): State<App>, Path((slug, ability)): Path<(String
         let reg = app.registry.read().await;
         let off = project_off(&app, &slug);
         let Some((_, m)) = reg.provider(&slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(&app, Some(&slug), m)) else {
-            return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("Nothing can \"{}\" yet. Install an ability for it under Settings → Abilities.", a.label.to_lowercase())));
+            return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("Nothing can \"{}\" yet. Install an ability for it under Setup → Abilities.", a.label.to_lowercase())));
         };
         (m.clone(), m.provides.get(a.id).cloned().unwrap_or_default())
     };
@@ -1072,11 +1072,11 @@ async fn run_ext_tool(State(app): State<App>, Path((slug, ext, tool)): Path<(Str
         (m.clone(), t)
     };
     if project_off(&app, &slug).contains(&m.id) {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} is switched off for this project (Seemo → Abilities).", m.name)));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} is switched off for this project (Setup → Abilities).", m.name)));
     }
     if !ready_in(&app, Some(&slug), &m) {
         let missing = missing_in(&app, Some(&slug), &m);
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} is not set up yet (missing {}). Add it under Settings → Abilities.", m.name, missing.join(", "))));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} is not set up yet (missing {}). Add it under Setup → Abilities.", m.name, missing.join(", "))));
     }
     let by = by_of(&headers, &args);
     let out = execute(&app, &slug, &m, &t.provide, None, Some(&t.name), &args).await.map_err(|e| bad(format!("{e:#}")))?;

@@ -238,7 +238,7 @@ export function CalendarPage() {
     <div className="prof">
       <div className="cm-head">
         <div>
-          <p className="cap">Seemo</p>
+          <p className="cap">Marketing</p>
           <h1 className="d2">Calendar</h1>
           <p className="muted">The next 30 days: task runs and the publishes you scheduled. Month and week views follow in a later release.</p>
         </div>

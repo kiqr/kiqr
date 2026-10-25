@@ -217,6 +217,9 @@ pub struct NewAsset {
     /// Shortcut: the body text, saved as `<type>.md` with role `body`.
     #[serde(default)]
     pub text: Option<String>,
+    /// Shortcut: the campaign it belongs to, kept as `source.campaign`.
+    #[serde(default)]
+    pub campaign: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -351,6 +354,10 @@ pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
         bail!("an asset needs a title");
     }
     let now = Utc::now();
+    let mut source = new.source;
+    if let Some(c) = new.campaign.filter(|c| !c.trim().is_empty()) {
+        source.insert("campaign".into(), serde_json::Value::String(c.trim().to_string()));
+    }
     let base = slugify(title);
     let mut id = base.clone();
     let mut n = 2;
@@ -368,7 +375,7 @@ pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
         created: Origin { at: now, by: new.by.unwrap_or_else(|| "user".into()) },
         updated_at: now,
         files: Vec::new(),
-        source: new.source,
+        source,
         channel: None,
         publish_at: None,
         publish_error: None,
