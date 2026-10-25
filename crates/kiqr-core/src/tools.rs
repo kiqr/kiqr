@@ -629,7 +629,7 @@ pub fn catalogue() -> Vec<Tool> {
             schema: || obj(
                 json!({
                     "label": { "type": "string", "description": "What to call it, e.g. 'Newsletter to Jane'" },
-                    "kind": { "type": "string", "description": "A kind from list_channels: email, wordpress…" },
+                    "kind": { "type": "string", "description": "A kind from list_channels (the kinds the project's abilities declare)" },
                     "connection": { "type": "string", "description": "Connection id, when several offer the kind" },
                     "destination": { "type": "object", "description": "The kind's destination fields, e.g. {to: 'jane@example.com'}", "additionalProperties": true },
                 }),

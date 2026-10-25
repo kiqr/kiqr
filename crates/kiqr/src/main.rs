@@ -855,7 +855,7 @@ impl Client {
                 }
                 let metrics = v["metrics"].as_array().cloned().unwrap_or_default();
                 if metrics.is_empty() {
-                    println!("No numbers yet. Install an analytics ability (Google Analytics, Search Console, Plausible) and connect it, or run with --refresh.");
+                    println!("No numbers yet. Install an analytics ability from the marketplace (`kiqr abilities ls`) and connect it, or run with --refresh.");
                 }
                 let mut last = String::new();
                 for m in &metrics {

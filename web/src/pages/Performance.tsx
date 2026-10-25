@@ -62,7 +62,7 @@ export function PerformancePage() {
         <div className="pcard none">
           <BarChart3 size={22} className="ac2" />
           <p className="t">No source connected yet</p>
-          <p className="muted">Install Google Analytics, Search Console or Plausible from the marketplace and connect it with this project's keys. What KIQR publishes is counted either way.</p>
+          <p className="muted">Install an analytics ability from the marketplace (Setup → Abilities, under Analytics) and connect it with this project's keys. What KIQR publishes is counted either way.</p>
           <Link className="btn g" to={`/p/${slug}/abilities#marketplace`}>
             <Sparkles size={14} /> Open the marketplace
           </Link>

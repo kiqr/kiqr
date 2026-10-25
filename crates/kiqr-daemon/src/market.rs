@@ -277,9 +277,6 @@ fn default_categories(m: &Manifest) -> Vec<String> {
     if !m.channels.is_empty() {
         out.push("publishing".into());
     }
-    if m.transport == Transport::Mcp && m.command.contains("playwright") {
-        out.push("browser".into());
-    }
     if !m.tools.is_empty() || (m.transport == Transport::Mcp && !m.expose.is_empty()) {
         out.push("tools".into());
     }
