@@ -154,6 +154,13 @@ enum Command {
     },
     /// What waits for you in a project: approvals open in chats, drafts to approve, publishes coming up
     Todo { slug: String },
+    /// Let Seemo publish through a channel on its own (`--ask` to make it ask again)
+    Trust {
+        slug: String,
+        channel: String,
+        #[arg(long)]
+        ask: bool,
+    },
     /// List the asset types (built-in and your own)
     Types,
     /// Show what changed, newest first
@@ -567,7 +574,7 @@ impl Client {
                 }
                 for c in list {
                     let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
-                    println!("{:<24} {:<10} {:<28} {:<22} {} published{}", s("id"), s("kind"), s("destination_text"), s("connection_name"), c["publications"], if c["ready"].as_bool() == Some(true) { "" } else { "  (connection not set up)" });
+                    println!("{:<24} {:<10} {:<28} {:<22} {} published{}{}", s("id"), s("kind"), s("destination_text"), s("connection_name"), c["publications"], if c["asks_first"].as_bool() == Some(false) { "  (Seemo publishes on its own)" } else { "" }, if c["ready"].as_bool() == Some(true) { "" } else { "  (connection not set up)" });
                 }
                 let kinds = v["kinds"].as_array().cloned().unwrap_or_default();
                 if !kinds.is_empty() {
@@ -800,6 +807,10 @@ impl Client {
                     println!("{asset} {}.", if undo { "is back from the archive" } else { "is in the archive" });
                 }
             },
+            Command::Trust { slug, channel, ask } => {
+                let _: serde_json::Value = self.put(&format!("/api/projects/{slug}/channels/{channel}"), &serde_json::json!({ "asks_first": ask })).await?;
+                println!("{}", if ask { format!("Seemo asks before publishing through {channel} again.") } else { format!("Seemo may publish through {channel} on its own; the chat records what went out.") });
+            }
             Command::Todo { slug } => {
                 let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/todo")).await?;
                 let arr = |k: &str| v[k].as_array().cloned().unwrap_or_default();

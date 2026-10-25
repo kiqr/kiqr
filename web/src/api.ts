@@ -390,6 +390,8 @@ export const api = {
   channels: (slug: string) => req<{ channels: Channel[]; kinds: ChannelKindInfo[] }>(`/api/projects/${slug}/channels`),
   createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string> }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
   deleteChannel: (slug: string, id: string) => req<void>(`/api/projects/${slug}/channels/${id}`, { method: "DELETE" }),
+  /** `asks_first: false` lets Seemo publish through the channel on its own. */
+  updateChannel: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean }) => req<Channel>(`/api/projects/${slug}/channels/${id}`, { method: "PUT", body: JSON.stringify(p) }),
   /** Publish an asset now, through the channel it was approved for or the one given. From the UI the click is the yes. */
   publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel = "", note = "") =>
     req<{ published: boolean; url: string | null; detail: string; channel_label: string }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel, note, by: "user" }) }),

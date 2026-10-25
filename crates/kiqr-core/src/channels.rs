@@ -26,7 +26,9 @@ pub struct Channel {
     /// `user`, or `chat:<id>`.
     pub created_by: String,
     pub created_at: DateTime<Utc>,
-    /// Every publish asks the user first. Always true today; kept so it can be loosened per channel later.
+    /// A publish Seemo proposes shows a card and waits for a yes. Off, Seemo
+    /// publishes here on its own and the card only records what went out.
+    /// The user turns it off per channel, once they trust what Seemo makes.
     pub asks_first: bool,
     pub publications: u32,
     #[serde(skip_serializing_if = "Option::is_none")]

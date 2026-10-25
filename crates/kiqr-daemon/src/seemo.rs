@@ -468,14 +468,31 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
         "email" => crate::publish::email_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         other => return Err(bad(format!("unknown approval kind '{other}'"))),
     };
-    let (id, preview) = open_approval(&app, &slug, &b.kind, preview, b.chat, b.task).await?;
+    // A channel the user let Seemo publish through on its own: the card is
+    // put in the chat as a record and answered at once with the outcome.
+    let auto = b.kind == "publish" && preview["asks_first"].as_bool() == Some(false);
+    let mut preview = preview;
+    if auto {
+        preview["auto"] = json!(true);
+    }
+    let by = b.chat.as_ref().filter(|c| !c.is_empty()).map(|c| format!("chat:{c}")).or_else(|| b.task.as_ref().filter(|t| !t.is_empty()).map(|t| format!("task:{t}"))).unwrap_or_else(|| "seemo".into());
+    let (id, preview) = open_approval(&app, &slug, &b.kind, preview, b.chat, b.task, !auto).await?;
+    if auto {
+        let approval = app.approvals.read().await.get(&id).cloned().ok_or_else(|| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "the approval vanished".into()))?;
+        let decision = match crate::publish::do_publish(&app, &slug, &preview, &by).await {
+            Ok(v) => Decision { status: "approved".into(), result: v },
+            Err(ApiError(_, msg)) => Decision { status: "failed".into(), result: json!({ "failed": true, "error": msg, "note": "The publish failed. Say so in one line; do not retry unless asked." }) },
+        };
+        finish_approval(&app, &approval, decision.clone()).await;
+        return Ok((StatusCode::CREATED, Json(json!({ "id": id, "status": decision.status, "result": decision.result, "preview": preview }))));
+    }
     Ok((StatusCode::CREATED, Json(json!({ "id": id, "status": "pending", "preview": preview }))))
 }
 
 /// Put a card in the chat (or the task's chat) and remember the approval;
 /// whoever asked polls `GET` for the decision. Also used by the daemon
 /// itself, for media that waits for a yes.
-pub(crate) async fn open_approval(app: &App, slug: &str, kind: &str, preview: Value, chat: Option<String>, task: Option<String>) -> Result<(String, Value), ApiError> {
+pub(crate) async fn open_approval(app: &App, slug: &str, kind: &str, preview: Value, chat: Option<String>, task: Option<String>, ask: bool) -> Result<(String, Value), ApiError> {
     let cfg = app.config.read().await.clone();
     let from_task = task.clone().filter(|t| !t.is_empty());
     let chat_id = match chat.filter(|c| !c.is_empty()) {
@@ -502,7 +519,7 @@ pub(crate) async fn open_approval(app: &App, slug: &str, kind: &str, preview: Va
     if from_task.is_none() && !app.turns.read().await.contains_key(&chat_id) {
         return Err(conflict("the chat is not in a turn; approvals can only be asked while answering"));
     }
-    if from_task.is_some() {
+    if from_task.is_some() && ask {
         app.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("A task is waiting for your yes in the chat \"{}\".", chat.title) });
     }
     let id = chat::message_id();

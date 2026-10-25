@@ -601,7 +601,7 @@ pub fn catalogue() -> Vec<Tool> {
             name: "publish_asset",
             group: Publish,
             label: "Proposing to publish",
-            description: "Send an asset out through a channel (by id from list_channels), now or at a time (`at`). The user sees what goes where and confirms; this call waits for that answer. Now: the asset becomes `published` with a record of where it went. With `at`: the asset is approved for the channel and `scheduled`; the daemon publishes it at that time.",
+            description: "Send an asset out through a channel (by id from list_channels), now or at a time (`at`). The user sees what goes where and confirms; this call waits for that answer. On a channel where the user let you publish on your own (`asks_first: false` in list_channels) it goes out at once and the card records it. Now: the asset becomes `published` with a record of where it went. With `at`: the asset is approved for the channel and `scheduled`; the daemon publishes it at that time.",
             call: Call::Approval("publish"),
             schema: || obj(
                 json!({

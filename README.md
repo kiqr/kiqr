@@ -5,7 +5,7 @@
 ## Why developers pick it
 
 - **It knows your business, with receipts.** The profile is not a prompt you wrote; it is extracted from your site, fact by fact, each one linked to its source page and kept current when the site changes. Everything Seemo makes starts from that.
-- **Drafts you approve, not a feed you babysit.** Every post lands in the chat as it will look, image included. One click approves it for a channel; publish now or pick a time, and the daemon sends it on schedule. Seemo never publishes on its own.
+- **Drafts you approve, not a feed you babysit.** Every post lands in the chat as it will look, image included. One click approves it for a channel; publish now or pick a time, and the daemon sends it on schedule. Seemo asks before publishing until you flip a switch on a channel; then it publishes there on its own and the chat records what went out.
 - **Tasks on a schedule.** "Every weekday at 10:00, write one LinkedIn post about a different offering." Seemo proposes the task on a card, you say yes once, and every run is kept with its steps and cost. A To do page collects what waits for you.
 - **Images from day one.** No image API needed: Seemo designs on-brand cards and renders them locally (SVG, or HTML through a browser on the machine), from your site's own colours, fonts and logo. Plug in fal.ai or OpenAI when you want photos.
 - **Teach it in plain words.** How you write a product update, how to publish to your blog, what the Monday report contains: write it once as an ability and Seemo follows it every time. Abilities are folders of Markdown and YAML, shareable through a marketplace.

@@ -310,6 +310,12 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
     }
     return Promise.resolve({ ...c, messages: transcripts[id] ?? [], streaming: null } as ChatView as T);
   }
+  const chPut = /\/channels\/([^/?]+)$/.exec(path);
+  if (chPut && method === "PUT") {
+    const c = demoChannels.find((x) => x.id === chPut[1]);
+    if (c && typeof body.asks_first === "boolean") c.asks_first = body.asks_first;
+    return Promise.resolve(c as T);
+  }
   if (/\/approvals\//.test(path)) return Promise.resolve({ id: "a", status: body.decision === "approve" ? "approved" : "declined", result: {} } as T);
   if (path.endsWith("/tasks")) return Promise.resolve([weekly, task] as T);
   const runsM = /\/tasks\/([^/]+)\/runs$/.exec(path);

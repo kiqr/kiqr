@@ -162,7 +162,7 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
     return (
       <div className={`ccard ${card.status}`}>
         <p className="cap">
-          <Send size={13} /> {card.status === "approved" ? (card.approval_kind === "email" ? "Sent" : card.result?.scheduled ? "Scheduled" : "Published") : `${card.approval_kind === "email" ? "Email" : "Publish"} ${card.status}`}
+          <Send size={13} /> {card.status === "approved" ? (card.approval_kind === "email" ? "Sent" : card.result?.scheduled ? "Scheduled" : p.auto ? "Published by Seemo" : "Published") : card.status === "failed" ? `Publish failed: ${String(card.result?.error ?? "")}` : `${card.approval_kind === "email" ? "Email" : "Publish"} ${card.status}`}
         </p>
         <p className="ttl">{title}</p>
         {url && (

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Check, Loader2, Mail, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
+import { Switch } from "./Switch";
 import { api, useAsync, useEvents, type ChannelKindInfo } from "../api";
 import { ago } from "./Project";
 import "../profile.css";
@@ -77,6 +78,16 @@ export function ChannelsPage() {
 function ChannelRow({ slug, c, onChange }: { slug: string; c: import("../api").Channel; onChange: () => void }) {
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [trustBusy, setTrustBusy] = useState(false);
+  const setTrust = async (own: boolean) => {
+    setTrustBusy(true);
+    try {
+      await api.updateChannel(slug, c.id, { asks_first: !own });
+      onChange();
+    } finally {
+      setTrustBusy(false);
+    }
+  };
   const remove = async () => {
     setBusy(true);
     try {
@@ -108,6 +119,10 @@ function ChannelRow({ slug, c, onChange }: { slug: string; c: import("../api").C
               {c.publications} published{c.last_published ? `, last ${ago(c.last_published)}` : ""}
             </span>
           </p>
+          <label className="trust" title={c.asks_first ? "Every publish Seemo proposes shows a card and waits for your yes" : "Seemo publishes here when it decides to; the chat records what went out"}>
+            <Switch on={!c.asks_first} disabled={trustBusy || !c.ready} onChange={(v) => void setTrust(v)} />
+            <span>Seemo may publish here on its own</span>
+          </label>
         </div>
         <div className="acts">
           {confirm ? (

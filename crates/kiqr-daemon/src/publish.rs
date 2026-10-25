@@ -184,6 +184,8 @@ async fn get_channel(State(app): State<App>, Path((slug, id)): Path<(String, Str
 struct ChannelPatch {
     label: Option<String>,
     destination: Option<serde_json::Map<String, Value>>,
+    /// false lets Seemo publish through this channel without a card.
+    asks_first: Option<bool>,
 }
 
 async fn put_channel(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(p): Json<ChannelPatch>) -> ApiResult<Value> {
@@ -194,6 +196,9 @@ async fn put_channel(State(app): State<App>, Path((slug, id)): Path<(String, Str
     if let Some(d) = p.destination {
         let checked = channel_preview(&app, &slug, &NewChannel { label: c.label.clone(), kind: c.kind.clone(), connection: Some(c.extension.clone()), destination: d }).await?;
         c.destination = checked["destination"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+    }
+    if let Some(a) = p.asks_first {
+        c.asks_first = a;
     }
     c.save(&app.store, &slug)?;
     app.store.commit(&format!("channel({slug}): {}", c.label)).await?;
@@ -297,6 +302,7 @@ pub async fn publish_preview(app: &App, slug: &str, b: &PublishBody) -> Result<V
         "files": files.iter().map(|(n, b, m)| json!({ "name": n, "bytes": b.len(), "mime": m })).collect::<Vec<_>>(),
         "at": b.at,
         "note": b.note,
+        "asks_first": c.asks_first,
     }))
 }
 
