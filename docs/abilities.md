@@ -103,7 +103,7 @@ Every URL's host must be in `hosts` (or come from a `${VAR}` host). Variables in
 ### Placeholders
 
 - `{{arg}}` and `{{arg|default}}`: the tool's arguments. A string that is exactly one placeholder takes the argument's own JSON value (numbers stay numbers).
-- `${NAME}`: a variable from `.env`, filled by the daemon at call time. The model never sees values.
+- `${NAME}`: a variable from `.env`, filled by the daemon at call time. The model never sees values. `${NAME|default}` uses the default when the variable is not set; `${NAME|urlencode}` encodes the value for a place in a URL path.
 - `map`: replace an argument before templating: `map: { orientation: { landscape: 1536x1024, portrait: 1024x1536, "*": 1024x1024 } }`.
 
 ### Providing an ability
@@ -119,6 +119,30 @@ provides:
 The ability's arguments are KIQR's (`prompt`, `size`, `width`, `height`, `orientation`, `aspect`, `asset`, `name`, `title`); `size` presets become `width`/`height`. A `result` with `file_url` or `file_b64` makes the daemon fetch or decode the file and put it on the asset. A non-JSON response body is taken as the file itself.
 
 When a publish goes through a channel, the publish tool receives `title`, `text` (Markdown), `html`, `summary`, `tags`, `asset` and the channel's destination fields. Its `result.text` or a `url` in the answer becomes the publication's link.
+
+### Reading numbers
+
+A connection that reads analytics declares the sources it serves (`traffic`, `search`, `conversions`, `ranks`, `mentions`), each with its requests and where in the answers the rows are. The daemon makes the requests once a day (and on Refresh) through the same executor as any call, with `{{from}}`, `{{to}}` (YYYY-MM-DD) and `{{days}}` for the last 30 days, and keeps the rows as a snapshot.
+
+```yaml
+sources:
+  traffic:
+    requests:
+      - request: { method: POST, url: "https://…/runReport", headers: { Authorization: "Bearer ${TOKEN}" }, json: { from: "{{from}}", to: "{{to}}" } }
+        rows: /rows                        # the array of rows in the answer
+        date: /dimensionValues/0/value     # a pointer into a row, or a template ("{{to}}") for a list over the window
+        dims: { channel: /dimensionValues/1/value }
+        metrics: { sessions: /metricValues/0/value, key_events: /metricValues/1/value }
+        totals: [sessions, key_events]     # summed per day as the day's totals (default: every metric)
+        breakdown: [sessions]              # kept per dimension (default: every metric, when there are dims)
+        skip_zero: true                    # leave out breakdown rows that are 0
+        scale: { ctr: 100 }
+    derive:
+      - { metric: organic_sessions, sum: sessions, where: { channel: Organic Search } }
+      - { metric: conversion_rate, ratio: [key_events, sessions], scale: 100 }
+```
+
+Numbers may be numbers or numeric strings; days `YYYYMMDD` or `YYYY-MM-DD`. Use KIQR's metric names so the plan and the Performance page understand them: `sessions`, `users`, `pageviews`, `organic_sessions`, `key_events`, `conversion_rate`, `clicks`, `impressions`, `ctr`, `average_position`. The marketplace's Google Analytics, Search Console and Plausible manifests are worked examples.
 
 ### Transports
 

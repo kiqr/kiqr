@@ -161,8 +161,10 @@ pub struct Manifest {
     pub provides: BTreeMap<String, Provide>,
     pub tools: Vec<ExtraTool>,
     pub channels: Vec<ChannelKind>,
-    /// Metrics sources this connection reads (`traffic`, `search`, `conversions`, `ranks`, `mentions`).
-    pub sources: Vec<String>,
+    /// Metrics sources this connection reads (`traffic`, `search`, `conversions`, `ranks`, `mentions`),
+    /// each with the requests and the mapping that read it (`crate::sources`).
+    #[serde(deserialize_with = "crate::sources::deserialize")]
+    pub sources: BTreeMap<String, crate::sources::SourceSpec>,
     // MCP transport.
     pub command: String,
     pub args: Vec<String>,
@@ -194,7 +196,7 @@ impl Default for Manifest {
             provides: Default::default(),
             tools: vec![],
             channels: vec![],
-            sources: vec![],
+            sources: BTreeMap::new(),
             command: String::new(),
             args: vec![],
             env: vec![],
@@ -543,9 +545,13 @@ pub fn validate(m: &Manifest) -> Result<()> {
         }
         check_provide(m, p, &format!("ability '{ability}'"))?;
     }
-    for src in &m.sources {
+    for (src, spec) in &m.sources {
         if !crate::metrics::SOURCES.iter().any(|(id, _)| id == src) {
             bail!("'{src}' is not a metrics source ({})", crate::metrics::SOURCES.iter().map(|(id, _)| *id).collect::<Vec<_>>().join(", "));
+        }
+        crate::sources::validate(src, spec)?;
+        for (i, r) in spec.requests.iter().enumerate() {
+            check_provide(m, &Provide { request: Some(r.request.clone()), ..Default::default() }, &format!("source '{src}' request {}", i + 1))?;
         }
     }
     match m.transport {
@@ -677,9 +683,13 @@ pub fn fill(template: &str, args: &Value, env: impl Fn(&str) -> Option<String>) 
                 out.push_str(rest);
                 return out;
             };
-            let name = &rest[2..end];
-            match env(name) {
-                Some(v) if valid_env_name(name) => out.push_str(&v),
+            // `${NAME}`, `${NAME|urlencode}` (for a value inside a URL path), `${NAME|default}`.
+            let inner = &rest[2..end];
+            let (name, filter) = inner.split_once('|').map(|(n, f)| (n, Some(f))).unwrap_or((inner, None));
+            match (valid_env_name(name).then(|| env(name)).flatten().filter(|v| !v.is_empty()), filter) {
+                (Some(v), Some("urlencode")) => out.extend(url::form_urlencoded::byte_serialize(v.trim().as_bytes())),
+                (Some(v), _) => out.push_str(&v),
+                (None, Some(default)) if default != "urlencode" && valid_env_name(name) => out.push_str(default),
                 _ => out.push_str(&rest[..=end]),
             }
             rest = &rest[end + 1..];
@@ -804,6 +814,20 @@ pub fn install_builtin_text(store: &crate::Store, path: &std::path::Path, body: 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn env_defaults_and_urlencode() {
+        let env = |k: &str| match k {
+            "SITE" => Some("sc-domain:example.com".to_string()),
+            "EMPTY" => Some(String::new()),
+            _ => None,
+        };
+        assert_eq!(fill("${HOST|https://plausible.io}/api", &Value::Null, env), "https://plausible.io/api");
+        assert_eq!(fill("${EMPTY|https://a.test}", &Value::Null, env), "https://a.test");
+        assert_eq!(fill("/sites/${SITE|urlencode}/q", &Value::Null, env), "/sites/sc-domain%3Aexample.com/q");
+        assert_eq!(fill("${NOPE|urlencode}", &Value::Null, env), "${NOPE|urlencode}");
+        assert_eq!(fill("${NOPE}", &Value::Null, env), "${NOPE}");
+    }
 
     #[test]
     fn builtin_text_follows_releases_but_keeps_edits() {
