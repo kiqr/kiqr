@@ -733,15 +733,17 @@ pub struct ExecOut {
 /// Run one `provides` entry or extra tool of an installed ability. Secrets
 /// come from the project's `.env`, then the machine's.
 pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value) -> Result<ExecOut> {
-    let args = provide.mapped_args(args);
+    let mut args = provide.mapped_args(args);
+    let files = call_files(app, slug, provide, &mut args)?;
     let stored = kiqr_core::secrets::env_fn(app.store.home(), Some(slug));
     // Tokens a sign-in flow mints or refreshes for this call come first.
     let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, m).await?);
     let env = move |k: &str| minted.get(k).cloned().or_else(|| stored(k));
     match m.transport {
+        Transport::Http if !provide.steps.is_empty() => steps_exec(m, &provide.steps, &args, &provide.result, &env, &files).await,
         Transport::Http => {
             let req = provide.request.as_ref().ok_or_else(|| anyhow!("{} has no request for this", m.name))?;
-            http_exec(m, req, &args, &provide.result, &env).await
+            http_exec(m, req, &args, &provide.result, &env, &files).await
         }
         Transport::Command => {
             let cmd = provide.command.as_ref().ok_or_else(|| anyhow!("{} has no command for this", m.name))?;
@@ -775,6 +777,39 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
     }
 }
 
+/// The asset's files, when the call names any (`{{file…}}`): their bytes for
+/// the executor, and `files` in the arguments as `[{name, mime, size}]`
+/// (with `base64` when the manifest asks for it, for APIs that take JSON only).
+fn call_files(app: &App, slug: &str, provide: &Provide, args: &mut Value) -> Result<Files> {
+    let text = serde_json::to_string(provide).unwrap_or_default();
+    if !text.contains("{{file") {
+        return Ok(vec![]);
+    }
+    let (Some(kind), Some(id)) = (args["asset"]["type"].as_str(), args["asset"]["id"].as_str()) else { return Ok(vec![]) };
+    if id.is_empty() {
+        return Ok(vec![]);
+    }
+    let a = assets::load(&app.store, slug, kind, id)?;
+    let files = crate::publish::asset_parts(app, slug, &a)?.1;
+    let b64 = text.contains("base64");
+    if let Some(o) = args.as_object_mut() {
+        o.insert(
+            "files".into(),
+            json!(files
+                .iter()
+                .map(|(n, b, mime)| {
+                    let mut f = json!({ "name": n, "mime": mime, "size": b.len() });
+                    if b64 {
+                        f["base64"] = json!(base64::engine::general_purpose::STANDARD.encode(b));
+                    }
+                    f
+                })
+                .collect::<Vec<_>>()),
+        );
+    }
+    Ok(files)
+}
+
 fn no_leftover(s: &str, what: &str) -> Result<()> {
     if let Some(i) = s.find("${") {
         let end = s[i..].find('}').map(|e| i + e + 1).unwrap_or(s.len());
@@ -783,10 +818,35 @@ fn no_leftover(s: &str, what: &str) -> Result<()> {
     Ok(())
 }
 
-async fn http_exec(m: &Manifest, req: &HttpRequest, args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone)) -> Result<ExecOut> {
+/// The asset's files a call may send: (name, bytes, type).
+pub type Files = Vec<(String, Vec<u8>, String)>;
+
+/// What a server answered, after a success status.
+struct Answer {
+    client: reqwest::Client,
+    ctype: String,
+    bytes: Vec<u8>,
+}
+
+impl Answer {
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.bytes).unwrap_or_else(|_| json!({ "text": String::from_utf8_lossy(&self.bytes) }))
+    }
+}
+
+/// A file a template names: `{{file}}`, `{{files.0}}`, or a file name.
+fn file_ref<'a>(template: &str, args: &Value, env: &(impl Fn(&str) -> Option<String> + Clone), files: &'a Files) -> Result<&'a (String, Vec<u8>, String)> {
+    let v = extensions::fill_value(&Value::String(template.to_string()), args, env);
+    let name = v.get("name").and_then(|n| n.as_str()).map(str::to_string).or_else(|| v.as_str().map(str::to_string)).unwrap_or_default();
+    files.iter().find(|(n, _, _)| *n == name).ok_or_else(|| if files.is_empty() { anyhow!("the asset has no files to send") } else { anyhow!("{template} is not one of the asset's files") })
+}
+
+/// Make one request: URL and hosts, query, headers, auth, and the body
+/// (`json`, `form`, `multipart` or `body_file`). A failure status is an error.
+async fn send(m: &Manifest, req: &HttpRequest, args: &Value, env: &(impl Fn(&str) -> Option<String> + Clone), files: &Files) -> Result<Answer> {
     let url_s = extensions::fill(&req.url, args, env.clone());
     no_leftover(&url_s, "the request URL")?;
-    let mut url = url::Url::parse(&url_s).with_context(|| format!("{url_s} is not a URL"))?;
+    let mut url = url::Url::parse(url_s.trim()).with_context(|| format!("{url_s} is not a URL"))?;
     if !extensions::host_allowed(&url, &extensions::hosts_for(m, env)) {
         bail!("{} may not call {}", m.name, url.host_str().unwrap_or(""));
     }
@@ -799,9 +859,11 @@ async fn http_exec(m: &Manifest, req: &HttpRequest, args: &Value, map: &ResultMa
     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(req.timeout_s.unwrap_or(120).clamp(5, 900))).user_agent(kiqr_core::fetch::USER_AGENT).build()?;
     let method = reqwest::Method::from_bytes(req.method.to_ascii_uppercase().as_bytes())?;
     let mut r = client.request(method, url.clone());
+    let mut has_ctype = false;
     for (k, v) in &req.headers {
         let v = extensions::fill(v, args, env.clone());
         no_leftover(&v, &format!("the header {k}"))?;
+        has_ctype |= k.eq_ignore_ascii_case("content-type");
         r = r.header(k, v);
     }
     if let Some(pair) = &req.basic_auth {
@@ -817,21 +879,128 @@ async fn http_exec(m: &Manifest, req: &HttpRequest, args: &Value, map: &ResultMa
         let b = extensions::fill_value(body, args, env);
         no_leftover(&b.to_string(), "the request body")?;
         r = r.json(&b);
+    } else if !req.form.is_empty() {
+        let mut pairs = Vec::new();
+        for (k, v) in &req.form {
+            let v = extensions::fill(v, args, env.clone());
+            no_leftover(&v, &format!("the form field {k}"))?;
+            pairs.push((k.clone(), v));
+        }
+        r = r.form(&pairs);
+    } else if !req.multipart.is_empty() {
+        let mut form = reqwest::multipart::Form::new();
+        for part in &req.multipart {
+            if let Some(v) = &part.value {
+                let v = extensions::fill(v, args, env.clone());
+                no_leftover(&v, &format!("the part {}", part.name))?;
+                form = form.text(part.name.clone(), v);
+            } else if let Some(f) = &part.file {
+                let (name, bytes, mime) = file_ref(f, args, env, files)?;
+                let file_name = part.filename.as_ref().map(|t| extensions::fill(t, args, env.clone())).filter(|t| !t.is_empty()).unwrap_or_else(|| name.clone());
+                let mime = part.mime.as_ref().map(|t| extensions::fill(t, args, env.clone())).filter(|t| !t.is_empty()).unwrap_or_else(|| mime.clone());
+                form = form.part(part.name.clone(), reqwest::multipart::Part::bytes(bytes.clone()).file_name(file_name).mime_str(&mime)?);
+            }
+        }
+        r = r.multipart(form);
+    } else if let Some(f) = &req.body_file {
+        let (_, bytes, mime) = file_ref(f, args, env, files)?;
+        if !has_ctype {
+            r = r.header(reqwest::header::CONTENT_TYPE, mime.as_str());
+        }
+        r = r.body(bytes.clone());
     }
     let resp = r.send().await.with_context(|| format!("calling {}", url.host_str().unwrap_or("")))?;
     let status = resp.status();
     let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let bytes = resp.bytes().await?;
+    let bytes = resp.bytes().await?.to_vec();
     if !status.is_success() {
         let text = String::from_utf8_lossy(&bytes);
         bail!("{} answered {}: {}", m.name, status.as_u16(), kiqr_core::profile::truncate_chars(text.trim(), 300));
     }
+    Ok(Answer { client, ctype, bytes })
+}
+
+async fn http_exec(m: &Manifest, req: &HttpRequest, args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone), files: &Files) -> Result<ExecOut> {
+    let a = send(m, req, args, env, files).await?;
     // A file straight back.
-    if !ctype.starts_with("application/json") && !ctype.starts_with("text/") && !bytes.is_empty() && map.file_url.is_none() && map.file_b64.is_none() {
-        return Ok(ExecOut { json: json!({ "bytes": bytes.len(), "mime": ctype }), text: None, file: Some((bytes.to_vec(), map.mime.clone().unwrap_or(ctype))) });
+    if !a.ctype.starts_with("application/json") && !a.ctype.starts_with("text/") && !a.bytes.is_empty() && map.file_url.is_none() && map.file_b64.is_none() {
+        return Ok(ExecOut { json: json!({ "bytes": a.bytes.len(), "mime": a.ctype }), text: None, file: Some((a.bytes.clone(), map.mime.clone().unwrap_or(a.ctype.clone()))) });
     }
-    let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({ "text": String::from_utf8_lossy(&bytes) }));
-    read_result(m, &client, body, map).await
+    read_result(m, &a.client, a.json(), map).await
+}
+
+/// Several requests in order. Each step sees the arguments and what earlier
+/// steps saved (`{{name.var}}`); `when` skips one, `for_each: files` runs one
+/// per file and saves a list. The result reads the last answer, or, for a
+/// `text` that is a template, anything saved.
+async fn steps_exec(m: &Manifest, steps: &[extensions::Step], args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone), files: &Files) -> Result<ExecOut> {
+    let mut ctx = if args.is_object() { args.clone() } else { json!({}) };
+    let mut saved = serde_json::Map::new();
+    let mut last: Option<Answer> = None;
+    for st in steps {
+        let label = |i: Option<usize>| match i {
+            Some(i) => format!("step '{}' (file {})", st.name, i + 1),
+            None => format!("step '{}'", st.name),
+        };
+        if let Some(w) = &st.when {
+            if !extensions::truthy(&extensions::fill_value(&Value::String(w.clone()), &ctx, env)) {
+                let skipped = if st.for_each.is_some() { json!([]) } else { Value::Null };
+                ctx[&st.name] = skipped.clone();
+                saved.insert(st.name.clone(), skipped);
+                continue;
+            }
+        }
+        let runs: Vec<Option<(usize, Value)>> = match st.for_each.as_deref() {
+            Some(list) => {
+                let items = extensions::lookup(&ctx, list).and_then(|v| v.as_array().cloned()).unwrap_or_default();
+                if items.len() > extensions::MAX_EACH {
+                    bail!("{}: {} files, at most {}", label(None), items.len(), extensions::MAX_EACH);
+                }
+                items.into_iter().enumerate().map(Some).collect()
+            }
+            None => vec![None],
+        };
+        let mut kept = Vec::new();
+        for run in runs {
+            let mut c = ctx.clone();
+            let i = run.as_ref().map(|(i, _)| *i);
+            if let Some((i, item)) = run {
+                c["file"] = ctx["files"].get(i).cloned().unwrap_or(Value::Null);
+                c["item"] = item;
+                c["index"] = json!(i);
+            }
+            let a = send(m, &st.request, &c, env, files).await.with_context(|| label(i))?;
+            let body = a.json();
+            let value = if st.save.is_empty() {
+                summarize(&body)
+            } else {
+                let mut o = serde_json::Map::new();
+                for (var, p) in &st.save {
+                    let v = extensions::pointer(&body, p).cloned().ok_or_else(|| anyhow!("{}: the answer has nothing at {p}", label(i)))?;
+                    o.insert(var.clone(), v);
+                }
+                Value::Object(o)
+            };
+            kept.push(value);
+            last = Some(a);
+        }
+        let value = if st.for_each.is_some() { Value::Array(kept) } else { kept.pop().unwrap_or(Value::Null) };
+        ctx[&st.name] = value.clone();
+        saved.insert(st.name.clone(), value);
+    }
+    let text = match &map.text {
+        Some(t) if t.contains("{{") => Some(extensions::fill(t, &ctx, env.clone())).filter(|t| !t.trim().is_empty()),
+        Some(p) => last.as_ref().and_then(|a| extensions::pointer(&a.json(), p).and_then(|v| v.as_str().map(str::to_string))),
+        None => None,
+    };
+    match last {
+        Some(a) if map.file_url.is_some() || map.file_b64.is_some() => {
+            let mut out = read_result(m, &a.client, a.json(), map).await?;
+            out.text = text.or(out.text);
+            Ok(out)
+        }
+        _ => Ok(ExecOut { json: Value::Object(saved), text, file: None }),
+    }
 }
 
 /// Apply a result map: fetch or decode the file, pick the text, and leave a

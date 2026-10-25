@@ -142,6 +142,51 @@ The ability's arguments are KIQR's (`prompt`, `size`, `width`, `height`, `orient
 
 When a publish goes through a channel, the publish tool receives `title`, `text` (Markdown), `html`, `summary`, `tags`, `asset` and the channel's destination fields. Its `result.text` or a `url` in the answer becomes the publication's link.
 
+### Uploading files
+
+A call about an asset can send the asset's files (its image, video or attachments; not its text). Name them in a template and the daemon reads them from disk when it sends:
+
+- `{{files}}`: the list, `[{name, mime, size}]` (with `base64` added when the manifest mentions `base64`, for APIs that take JSON only); `{{files.0}}` the first.
+- `{{file}}`: the current file inside a `for_each` (see Steps).
+
+A request's body is one of:
+
+```yaml
+json: { title: "{{title}}" }                         # JSON (as before)
+form: { status: "{{text}}" }                          # URL-encoded form
+multipart:                                            # parts with a value or a file
+  - { name: caption, value: "{{text}}" }
+  - { name: media, file: "{{files.0}}", filename: "{{files.0.name}}", mime: image/png }
+body_file: "{{files.0}}"                              # one file's bytes; its type is the Content-Type unless a header sets one
+```
+
+### Steps
+
+When one call is not enough (register an upload, send the bytes, then create the post with the id), a tool or a provided ability lists `steps` instead of `request`:
+
+```yaml
+steps:
+  - name: register                     # lowercase letters, digits, _
+    for_each: files                    # once per file: {{file}}, {{index}}
+    request: { method: POST, url: "https://api.example.com/uploads", json: { size: "{{file.size}}" } }
+    save: { upload: /uploadUrl, id: /id }        # pointers into the answer; empty: the whole answer
+  - name: put
+    for_each: register                 # once per entry of an earlier step: {{item}}, and {{file}} at the same position
+    request: { method: PUT, url: "{{item.upload}}", body_file: "{{file}}" }
+  - name: post
+    when: "{{text}}"                   # skipped when it fills to nothing
+    request: { method: POST, url: "https://api.example.com/posts", json: { text: "{{text}}", media_ids: "{{register.*.id}}" } }
+    save: { url: /url }
+result: { text: "{{post.url}}" }
+```
+
+- What a step saves is `{{name.var}}` for the steps after it; after a `for_each` it is a list (`{{register.0.id}}`), and `*` takes one field from every entry (`{{register.*.id}}` → `["a", "b"]`). A placeholder that is a whole JSON value keeps its type, so lists and numbers go into JSON bodies as they are; a missing one leaves the field out.
+- Every step's URL is checked against `hosts` when it is called, also a URL taken from an earlier answer, so list the upload host too. Redirects are not followed.
+- `result.text` may be a template over everything saved; a pointer reads the last answer. A failing step says which: `step 'put' (file 2): … answered 413`.
+- Saved values last for the one call. At most 10 steps and 20 runs of one `for_each`. There is no branching beyond `when`; a service that needs more is a `command` ability.
+
+The marketplace's WordPress manifest is the worked example: the asset's image goes into the media library first and becomes the post's featured image.
+
 ### Reading numbers
 
 A connection that reads analytics declares the sources it serves (`traffic`, `search`, `conversions`, `ranks`, `mentions`), each with its requests and where in the answers the rows are. The daemon makes the requests once a day (and on Refresh) through the same executor as any call, with `{{from}}`, `{{to}}` (YYYY-MM-DD) and `{{days}}` for the last 30 days, and keeps the rows as a snapshot.
@@ -208,4 +253,4 @@ projects/<slug>/channels/<id>/channel.yaml
 
 Create one on the Channels page, with `kiqr channels <slug>` to list, or let Seemo propose one (`create_channel`, confirmed on a card). Publish with the asset page's Publish button, `kiqr publish <slug> <type>/<id> <channel>`, or Seemo's `publish_asset`, which always opens a card first. A task run that reaches a publish gets the card in the task's chat and waits.
 
-Email is a channel kind like any other, declared by whichever ability sends mail: the marketplace's "Send email from your mail account" (`transport: smtp`, keys `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` (a Gmail app password), optional `SMTP_PORT`, `SMTP_FROM`, `SMTP_SECURITY`), or an HTTP sender with `provides.email`. A request that names `{{files}}` receives the asset's files as `[{name, mime, base64}]`.
+Email is a channel kind like any other, declared by whichever ability sends mail: the marketplace's "Send email from your mail account" (`transport: smtp`, keys `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` (a Gmail app password), optional `SMTP_PORT`, `SMTP_FROM`, `SMTP_SECURITY`), or an HTTP sender with `provides.email`.

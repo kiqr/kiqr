@@ -52,6 +52,13 @@ pub struct HttpRequest {
     pub headers: BTreeMap<String, String>,
     /// JSON body; strings may hold `{{arg}}` and `${ENV}` placeholders.
     pub json: Option<Value>,
+    /// A URL-encoded form body: field → template.
+    pub form: BTreeMap<String, String>,
+    /// A multipart body: parts with a value or a file.
+    pub multipart: Vec<Part>,
+    /// One file's bytes as the whole body (`{{file}}`, `{{files.0}}`); its
+    /// type becomes the Content-Type unless a header says otherwise.
+    pub body_file: Option<String>,
     pub query: BTreeMap<String, String>,
     /// HTTP basic auth: `["${USER}", "${PASSWORD}"]`, filled at call time.
     pub basic_auth: Option<Vec<String>>,
@@ -80,6 +87,47 @@ pub struct SmtpSpec {
     pub from: String,
     /// `starttls` (default), `tls`, or `none` for a relay on this machine only.
     pub security: String,
+}
+
+/// One request of a tool that takes several: upload a file, then create the
+/// post with what the upload answered. What a step `save`s is there for the
+/// next ones as `{{name.var}}` (a list, `{{name.0.var}}`, after `for_each`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Step {
+    pub name: String,
+    pub request: HttpRequest,
+    /// var → pointer into this step's answer. Empty: the whole answer.
+    pub save: BTreeMap<String, String>,
+    /// Run only when this fills to something (not empty, not `[]`, not false).
+    pub when: Option<String>,
+    /// `files`: once per file of the asset; or an earlier step's name: once
+    /// per entry of its list. Each run has `{{item}}` (the entry), `{{file}}`
+    /// (the file at the same position) and `{{index}}`.
+    pub for_each: Option<String>,
+}
+
+/// At most this many steps, and this many runs of one `for_each`.
+pub const MAX_STEPS: usize = 10;
+pub const MAX_EACH: usize = 20;
+
+/// One part of a multipart body: `value` (a template) or `file` (a file
+/// reference such as `{{file}}`), with an optional file name and type.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Part {
+    pub name: String,
+    pub value: Option<String>,
+    pub file: Option<String>,
+    pub filename: Option<String>,
+    pub mime: Option<String>,
+}
+
+impl HttpRequest {
+    /// How many body kinds it sets; more than one is refused.
+    pub fn body_kinds(&self) -> usize {
+        [self.json.is_some(), !self.form.is_empty(), !self.multipart.is_empty(), self.body_file.is_some()].iter().filter(|b| **b).count()
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -115,6 +163,8 @@ pub struct ResultMap {
 pub struct Provide {
     pub cost: Option<String>,
     pub request: Option<HttpRequest>,
+    /// Several requests in order, instead of one `request` (http only).
+    pub steps: Vec<Step>,
     pub command: Option<CommandSpec>,
     /// MCP: the server's tool to call, with an argument template.
     pub tool: Option<String>,
@@ -657,18 +707,33 @@ pub fn validate(m: &Manifest) -> Result<()> {
 
 fn check_provide(m: &Manifest, p: &Provide, what: &str) -> Result<()> {
     match m.transport {
-        Transport::Http => {
-            let r = p.request.as_ref().with_context(|| format!("{what} needs a request"))?;
-            // `${VAR}` in the URL stands for a site the project names; the host is checked at call time then.
-            let url = url::Url::parse(&fill(&r.url, &Value::Null, |_| Some("https://placeholder.invalid".into()))).with_context(|| format!("{what}: the request url does not parse"))?;
-            let per_project = m.hosts.iter().any(|h| h.starts_with("${"));
-            if !per_project && !host_allowed(&url, &m.hosts) {
-                bail!("{what} calls {}, which is not in hosts", url.host_str().unwrap_or(""));
+        Transport::Http => match (&p.request, p.steps.is_empty()) {
+            (Some(_), false) => bail!("{what} has both a request and steps; use one"),
+            (None, true) => bail!("{what} needs a request"),
+            (Some(r), true) => check_request(m, r, what)?,
+            (None, false) => {
+                if p.steps.len() > MAX_STEPS {
+                    bail!("{what} has {} steps; at most {MAX_STEPS}", p.steps.len());
+                }
+                let mut seen: Vec<&str> = vec![];
+                for st in &p.steps {
+                    let ok = !st.name.is_empty() && st.name.len() <= 40 && st.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') && !st.name.starts_with(|c: char| c.is_ascii_digit());
+                    if !ok || seen.contains(&st.name.as_str()) {
+                        bail!("{what}: every step needs its own name, lowercase letters, digits and _ (got '{}')", st.name);
+                    }
+                    if matches!(st.name.as_str(), "file" | "files" | "index" | "item") {
+                        bail!("{what}: '{}' is taken, name the step something else", st.name);
+                    }
+                    if let Some(f) = &st.for_each {
+                        if f != "files" && !seen.contains(&f.as_str()) {
+                            bail!("{what}: step '{}' repeats for each of `files` or of an earlier step, not '{f}'", st.name);
+                        }
+                    }
+                    seen.push(&st.name);
+                    check_request(m, &st.request, &format!("{what}, step '{}'", st.name))?;
+                }
             }
-            if !matches!(r.method.to_ascii_uppercase().as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
-                bail!("{what}: method '{}' is not one of GET, POST, PUT, PATCH, DELETE", r.method);
-            }
-        }
+        },
         Transport::Command => {
             if p.command.as_ref().map(|c| c.command.trim().is_empty()).unwrap_or(true) {
                 bail!("{what} needs a command");
@@ -680,6 +745,30 @@ fn check_provide(m: &Manifest, p: &Provide, what: &str) -> Result<()> {
             }
         }
         Transport::Smtp | Transport::Builtin => {}
+    }
+    Ok(())
+}
+
+fn check_request(m: &Manifest, r: &HttpRequest, what: &str) -> Result<()> {
+    // A URL from an earlier step's answer is checked against hosts when it is called.
+    if !r.url.trim().starts_with("{{") {
+        // `${VAR}` in the URL stands for a site the project names; the host is checked at call time then.
+        let url = url::Url::parse(&fill(&r.url, &Value::Null, |_| Some("https://placeholder.invalid".into()))).with_context(|| format!("{what}: the request url does not parse"))?;
+        let per_project = m.hosts.iter().any(|h| h.starts_with("${"));
+        if !per_project && !host_allowed(&url, &m.hosts) {
+            bail!("{what} calls {}, which is not in hosts", url.host_str().unwrap_or(""));
+        }
+    }
+    if !matches!(r.method.to_ascii_uppercase().as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+        bail!("{what}: method '{}' is not one of GET, POST, PUT, PATCH, DELETE", r.method);
+    }
+    if r.body_kinds() > 1 {
+        bail!("{what} has more than one body; use one of json, form, multipart and body_file");
+    }
+    for part in &r.multipart {
+        if part.name.trim().is_empty() || (part.value.is_some() == part.file.is_some()) {
+            bail!("{what}: a multipart part needs a name and either a value or a file");
+        }
     }
     Ok(())
 }
@@ -751,8 +840,8 @@ pub fn fill(template: &str, args: &Value, env: impl Fn(&str) -> Option<String>) 
             };
             let inner = &rest[2..end];
             let (key, default) = inner.split_once('|').map(|(k, d)| (k.trim(), Some(d.trim()))).unwrap_or((inner.trim(), None));
-            let v = args.get(key).filter(|v| !v.is_null());
-            match v {
+            let v = lookup(args, key).filter(|v| !v.is_null());
+            match v.as_ref() {
                 Some(Value::String(s)) if !s.is_empty() => out.push_str(s),
                 Some(Value::String(_)) | None => out.push_str(default.unwrap_or("")),
                 Some(other) => out.push_str(&other.to_string()),
@@ -786,8 +875,8 @@ pub fn fill_value(v: &Value, args: &Value, env: &impl Fn(&str) -> Option<String>
             if t.starts_with("{{") && t.ends_with("}}") && t.matches("{{").count() == 1 {
                 let inner = &t[2..t.len() - 2];
                 let (key, default) = inner.split_once('|').map(|(k, d)| (k.trim(), Some(d.trim()))).unwrap_or((inner.trim(), None));
-                return match args.get(key) {
-                    Some(x) if !x.is_null() && !(x.is_string() && x.as_str() == Some("")) => x.clone(),
+                return match lookup(args, key) {
+                    Some(x) if !x.is_null() && !(x.is_string() && x.as_str() == Some("")) => x,
                     _ => default.map(|d| d.parse::<i64>().map(Value::from).or_else(|_| d.parse::<f64>().map(Value::from)).unwrap_or_else(|_| Value::String(d.to_string()))).unwrap_or(Value::Null),
                 };
             }
@@ -796,6 +885,37 @@ pub fn fill_value(v: &Value, args: &Value, env: &impl Fn(&str) -> Option<String>
         Value::Array(a) => Value::Array(a.iter().map(|x| fill_value(x, args, env)).collect()),
         Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), fill_value(x, args, env))).filter(|(_, x)| !x.is_null()).collect()),
         other => other.clone(),
+    }
+}
+
+/// An argument by name, or by a dotted path into one (`cover.0.id`,
+/// `file.name`); `*` takes that field from every entry of a list
+/// (`register.*.id` → `["1", "2"]`).
+pub fn lookup(args: &Value, key: &str) -> Option<Value> {
+    if let Some(v) = args.get(key) {
+        return Some(v.clone());
+    }
+    fn walk(cur: &Value, parts: &[&str]) -> Option<Value> {
+        let Some((first, rest)) = parts.split_first() else { return Some(cur.clone()) };
+        match (cur, *first) {
+            (Value::Array(a), "*") => Some(Value::Array(a.iter().filter_map(|x| walk(x, rest)).collect())),
+            (Value::Object(o), k) => walk(o.get(k)?, rest),
+            (Value::Array(a), k) => walk(a.get(k.parse::<usize>().ok()?)?, rest),
+            _ => None,
+        }
+    }
+    walk(args, &key.split('.').collect::<Vec<_>>())
+}
+
+/// Is a filled value something (for `when`): not null, false, empty or 0 items.
+pub fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::String(s) => !s.trim().is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+        Value::Number(_) => true,
     }
 }
 
@@ -894,6 +1014,63 @@ pub fn install_builtin_text(store: &crate::Store, path: &std::path::Path, body: 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const STEPS: &str = r#"
+id: blog
+name: Publish to a blog
+transport: http
+hosts: [blog.test, uploads.test]
+tools:
+  - name: publish
+    steps:
+      - name: cover
+        when: "{{files}}"
+        for_each: files
+        request: { method: POST, url: "https://blog.test/media", body_file: "{{file}}" }
+        save: { id: /id, upload: /upload_url }
+      - name: put
+        when: "{{cover}}"
+        request: { method: PUT, url: "{{cover.0.upload}}", body_file: "{{files.0}}" }
+      - name: post
+        request: { method: POST, url: "https://blog.test/posts", json: { title: "{{title}}", media: "{{cover.0.id}}" } }
+        save: { link: /link }
+    result: { text: "{{post.link}}" }
+"#;
+
+    #[test]
+    fn steps_parse_and_validate() {
+        let m = parse_manifest(STEPS).unwrap();
+        assert_eq!(m.tools[0].provide.steps.len(), 3);
+        // A URL from an earlier answer is checked when it is called, not here.
+        assert!(parse_manifest(&STEPS.replace("https://blog.test/posts", "https://elsewhere.test/posts")).unwrap_err().to_string().contains("elsewhere.test"));
+        assert!(parse_manifest(&STEPS.replace("name: put", "name: cover")).unwrap_err().to_string().contains("its own name"));
+        assert!(parse_manifest(&STEPS.replace("name: put", "name: files")).unwrap_err().to_string().contains("taken"));
+        assert!(parse_manifest(&STEPS.replace("for_each: files", "for_each: tags")).unwrap_err().to_string().contains("not 'tags'"));
+        assert!(parse_manifest(&STEPS.replace("when: \"{{cover}}\"", "for_each: post")).unwrap_err().to_string().contains("not 'post'"));
+        parse_manifest(&STEPS.replace("when: \"{{cover}}\"", "for_each: cover")).unwrap();
+        let two = STEPS.replace(r#"body_file: "{{file}}" }"#, r#"body_file: "{{file}}", json: { a: 1 } }"#);
+        assert!(parse_manifest(&two).unwrap_err().to_string().contains("more than one body"));
+        let both = STEPS.replace("    steps:", "    request: { method: GET, url: \"https://blog.test/x\" }\n    steps:");
+        assert!(parse_manifest(&both).unwrap_err().to_string().contains("both a request and steps"));
+        let part = STEPS.replace(r#"body_file: "{{file}}" }"#, r#"multipart: [{ name: file }] }"#);
+        assert!(parse_manifest(&part).unwrap_err().to_string().contains("either a value or a file"));
+    }
+
+    #[test]
+    fn dotted_lookups_and_when() {
+        let ctx = json!({ "title": "Hi", "cover": [{ "id": 42, "upload": "https://uploads.test/x" }], "files": [{ "name": "card.png" }], "empty": [] });
+        assert_eq!(lookup(&ctx, "cover.0.id"), Some(json!(42)));
+        assert_eq!(lookup(&ctx, "files.0.name"), Some(json!("card.png")));
+        assert_eq!(lookup(&ctx, "cover.*.id"), Some(json!([42])));
+        assert_eq!(fill_value(&json!({ "media_ids": "{{cover.*.id}}" }), &ctx, &|_| None), json!({ "media_ids": [42] }));
+        assert_eq!(lookup(&ctx, "cover.1.id"), None);
+        // A lone placeholder keeps its type: numbers and lists go into JSON bodies as they are.
+        assert_eq!(fill_value(&json!({ "media": "{{cover.0.id}}", "all": "{{cover}}" }), &ctx, &|_| None), json!({ "media": 42, "all": [{ "id": 42, "upload": "https://uploads.test/x" }] }));
+        assert_eq!(fill("{{cover.0.upload}}?n={{title}}", &ctx, |_| None), "https://uploads.test/x?n=Hi");
+        assert!(truthy(&fill_value(&json!("{{files}}"), &ctx, &|_| None)));
+        assert!(!truthy(&fill_value(&json!("{{empty}}"), &ctx, &|_| None)));
+        assert!(!truthy(&fill_value(&json!("{{missing}}"), &ctx, &|_| None)));
+    }
 
     #[test]
     fn env_defaults_and_urlencode() {

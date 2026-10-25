@@ -328,7 +328,7 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
             "note": "Scheduled. The daemon publishes it at that time; the asset is marked scheduled until then.",
         }));
     }
-    let (body, files) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
+    let (body, _) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
     // Links to the business's own site carry UTM parameters, so analytics can tell what KIQR sent where.
     let site_host = Project::load(&app.store, slug).ok().and_then(|p| url::Url::parse(&p.url).ok()).and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
     let campaign = a.source.get("campaign").and_then(|v| v.as_str()).map(str::to_string);
@@ -354,7 +354,6 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     for (dk, dv) in &c.destination {
         args[dk] = dv.clone();
     }
-    with_files(&provide, &mut args, &files);
     let out = crate::ext::execute(app, slug, &m, &provide, None, Some(&k.publish), &args).await.map_err(|e| bad(format!("{e:#}")))?;
     let url = out.text.clone().filter(|t| t.starts_with("http")).or_else(|| out.json.get("url").and_then(|u| u.as_str()).map(str::to_string)).or_else(|| out.json.get("link").and_then(|u| u.as_str()).map(str::to_string));
     let account = out.json.get("from").and_then(|f| f.as_str()).map(str::to_string);
@@ -559,21 +558,14 @@ pub async fn do_email(app: &App, slug: &str, preview: &Value) -> Result<Value, A
     let to = preview["to"].as_str().unwrap_or("").to_string();
     let subject = preview["subject"].as_str().unwrap_or("").to_string();
     let text = preview["text"].as_str().unwrap_or("").to_string();
-    let files = match (preview["asset"]["type"].as_str(), preview["asset"]["id"].as_str()) {
-        (Some(k), Some(i)) => {
-            let a = assets::load(&app.store, slug, k, i)?;
-            asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?.1
-        }
-        _ => vec![],
-    };
     let m = {
         let cfg = app.config.read().await.clone();
         let reg = app.registry.read().await;
         reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), |m| crate::ext::ready_in(app, Some(slug), m)).map(|(_, m)| m.clone()).ok_or_else(|| bad("no mail ability is set up for this project; add an email channel under Channels"))?
     };
     let provide = m.provides.get("email").cloned().unwrap_or_default();
-    let mut args = json!({ "to": to, "subject": subject, "text": text, "html": channels::markdown_to_html(&text), "asset": preview["asset"] });
-    with_files(&provide, &mut args, &files);
+    // The asset's files go along; the executor reads them when the connection sends any.
+    let args = json!({ "to": to, "subject": subject, "text": text, "html": channels::markdown_to_html(&text), "asset": preview["asset"] });
     let out = crate::ext::execute(app, slug, &m, &provide, kiqr_core::abilities::find("email").as_ref(), None, &args).await.map_err(|e| bad(format!("{e:#}")))?;
     let result = json!({ "sent": true, "to": to, "from": out.json.get("from"), "subject": subject, "connection": m.name, "response": out.json });
     app.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("I sent \"{subject}\" to {to}.") });
@@ -587,10 +579,3 @@ async fn email_route(State(app): State<App>, Path(slug): Path<String>, Json(b): 
     Ok(Json(do_email(&app, &slug, &preview).await?))
 }
 
-/// A request that names `{{files}}` gets the asset's files, as
-/// `[{name, mime, base64}]`; nothing else carries them (they can be large).
-fn with_files(provide: &kiqr_core::extensions::Provide, args: &mut Value, files: &[(String, Vec<u8>, String)]) {
-    if serde_json::to_string(provide).is_ok_and(|t| t.contains("{{files")) {
-        args["files"] = json!(files.iter().map(|(n, b, m)| json!({ "name": n, "mime": m, "base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b) })).collect::<Vec<_>>());
-    }
-}

@@ -19,7 +19,7 @@ dotenvy = "0.15"
 futures = "0.3"
 htmd = "0.1"
 mime_guess = "2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "stream", "multipart"] }
 rust-embed = { version = "8", features = ["include-exclude"] }
 scraper = "0.23"
 serde = { version = "1", features = ["derive"] }
