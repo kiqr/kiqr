@@ -6,6 +6,7 @@ mod api;
 mod builtin;
 mod ext;
 mod images;
+mod market;
 mod mcp_host;
 mod publish;
 mod scheduler;
@@ -40,7 +41,7 @@ pub struct App {
     /// This binary, resolved once: after an upgrade or rebuild the running
     /// process would otherwise see its own path as deleted.
     pub exe: std::path::PathBuf,
-    /// Skills and connections: every folder under `skills/`, reloaded on change.
+    /// Abilities: every folder under `abilities/`, reloaded on change.
     pub registry: Arc<RwLock<kiqr_core::extensions::Registry>>,
     /// The built-in image renderer: fonts loaded once, browser found once.
     pub renderer: Arc<kiqr_core::render::Renderer>,
@@ -58,14 +59,26 @@ pub async fn run(home: Home) -> Result<()> {
     let store = Store::open(home.clone())?;
     let _ = dotenvy::from_path(home.env_file());
     let config = Config::load(&store)?;
-    if kiqr_core::extract::install_builtin_skills(&store)? {
-        store.commit("skills: install built-in skills").await?;
+    // Homes from before the rename keep their folders, under the new name.
+    let moved = home.move_ability_folders()?;
+    if moved > 0 {
+        tracing::info!(folders = moved, "ability folders moved from skills/ to abilities/");
+        store.commit("[auto] abilities: folders moved from skills/").await?;
+    }
+    if kiqr_core::extract::install_builtin_instructions(&store)? {
+        store.commit("abilities: install the built-in instructions").await?;
     }
     if kiqr_core::assets::install_builtin_types(&store)? {
         store.commit("asset types: install built-in types").await?;
     }
     if kiqr_core::extensions::install_builtin(&store)? {
-        store.commit("skills: install built-in connections").await?;
+        store.commit("abilities: install the built-in abilities").await?;
+    }
+    // Older versions installed every shipped ability; now the marketplace leaves that to the user.
+    let retired = kiqr_core::extensions::retire_auto_installed(&store, kiqr_core::provider::has_env)?;
+    if !retired.is_empty() {
+        tracing::info!(folders = ?retired, "abilities that were never set up now wait in the marketplace");
+        store.commit(&format!("abilities: {} wait in the marketplace until installed", retired.join(", "))).await?;
     }
     seed_persona(&store).await?;
 
@@ -86,7 +99,7 @@ pub async fn run(home: Home) -> Result<()> {
         queued: Default::default(),
         daemon_url: format!("http://{loopback}:{port}"),
         exe: own_exe(),
-        registry: Arc::new(RwLock::new(kiqr_core::extensions::Registry::load(&home))),
+        registry: Arc::new(RwLock::new(kiqr_core::extensions::Registry::load(&home, &config.core_off))),
         renderer: Arc::new(kiqr_core::render::Renderer::new(home.render_dir())),
         mcp: Arc::new(mcp_host::McpHost::default()),
     };

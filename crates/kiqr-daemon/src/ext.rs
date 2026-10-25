@@ -1,7 +1,7 @@
-//! Connections, abilities and skills in the daemon: the registry of folders
-//! under `skills/`, the merged tool list a session gets, the executor that
+//! Abilities in the daemon: the registry of folders under `abilities/`, the
+//! merged tool list a session gets, the executor that
 //! turns a manifest's `provides` into a request, a command or built-in Rust,
-//! and the routes behind Settings → Connections and Seemo → Skills.
+//! and the routes behind Seemo → Abilities (instructions, secrets).
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
@@ -31,10 +31,9 @@ pub fn routes() -> Router<App> {
         .route("/api/extensions/reload", post(reload_extensions))
         .route("/api/extensions/{id}", get(get_extension).delete(delete_extension))
         .route("/api/secrets/{name}", put(put_secret))
-        .route("/api/skills", get(list_skills).post(install_skill))
-        .route("/api/skills/{name}", get(get_skill).put(put_skill).delete(delete_skill))
-        .route("/api/projects/{slug}/skills", get(list_project_skills).post(install_project_skill))
-        .route("/api/projects/{slug}/skills/{name}", get(get_project_skill).put(put_project_skill).delete(delete_project_skill))
+        .route("/api/projects/{slug}/secrets/{name}", put(put_project_secret))
+        .route("/api/abilities/{id}/instructions", get(get_instructions).put(put_instructions).delete(delete_instructions))
+        .route("/api/projects/{slug}/abilities/{id}/instructions", get(get_project_instructions).put(put_project_instructions).delete(delete_project_instructions))
         .route("/api/projects/{slug}/abilities/{ability}", post(run_ability))
         .route("/api/projects/{slug}/ext/{ext}/tools/{tool}", post(run_ext_tool))
 }
@@ -49,12 +48,21 @@ fn not_found(msg: impl Into<String>) -> ApiError {
 // ---------------------------------------------------------------- registry
 
 pub async fn reload(app: &App) {
-    *app.registry.write().await = Registry::load(app.store.home());
+    let core_off = app.config.read().await.core_off.clone();
+    *app.registry.write().await = Registry::load(app.store.home(), &core_off);
 }
 
-/// Is a connection usable right now: keys present, program found.
-pub fn ready(m: &Manifest) -> bool {
-    extensions::missing_keys(m, provider::has_env).is_empty() && (m.transport != Transport::Mcp || on_path(&m.command))
+/// Is an installed ability usable for a project right now: keys present
+/// (the project's, else the machine's), program found.
+pub fn ready_in(app: &App, slug: Option<&str>, m: &Manifest) -> bool {
+    let home = app.store.home();
+    extensions::missing_keys(m, |k| kiqr_core::secrets::has(home, slug, k)).is_empty() && (m.transport != Transport::Mcp || on_path(&m.command))
+}
+
+/// Keys an ability still needs for a project.
+pub fn missing_in(app: &App, slug: Option<&str>, m: &Manifest) -> Vec<String> {
+    let home = app.store.home();
+    extensions::missing_keys(m, |k| kiqr_core::secrets::has(home, slug, k))
 }
 
 /// Is a program there: a path that exists, or a name found on PATH.
@@ -73,13 +81,34 @@ pub fn on_path(cmd: &str) -> bool {
 /// connections' own.
 pub async fn chat_groups(app: &App, slug: &str) -> Vec<Group> {
     let reg = app.registry.read().await;
-    let mut out: Vec<Group> = Group::BUILTIN.to_vec();
+    let cfg = app.config.read().await.clone();
+    let off = project_off(app, slug);
+    let mut out: Vec<Group> = Group::BUILTIN.iter().filter(|g| core_allows(&cfg, g) && core_allows_in(&off, g)).cloned().collect();
     for (_, m) in reg.connections(slug) {
+        if off.contains(&m.id) {
+            continue;
+        }
         if !m.tools.is_empty() || (m.transport == Transport::Mcp && !m.expose.is_empty()) {
             out.push(Group::Ext(m.id.clone()));
         }
     }
     out
+}
+
+/// What this project switched off for itself (ids of installed and core abilities).
+pub(crate) fn project_off(app: &App, slug: &str) -> Vec<String> {
+    Project::load(&app.store, slug).map(|p| p.abilities_off).unwrap_or_default()
+}
+
+/// The project's own switches for the built-in groups.
+pub fn core_allows_in(off: &[String], g: &Group) -> bool {
+    let id = match g {
+        Group::WriteAssets => "write",
+        Group::Web => "read-web",
+        Group::Tasks => "tasks",
+        _ => return true,
+    };
+    !off.iter().any(|x| x == id)
 }
 
 /// Connection id → name, for labelling `ext:` groups in plain words.
@@ -96,17 +125,31 @@ pub fn group_label(g: &Group, names: &std::collections::HashMap<String, String>)
     }
 }
 
+/// Which built-in ability a tool group belongs to, so a switched-off one
+/// takes its tools with it: writing, reading the web, scheduling tasks.
+pub fn core_allows(cfg: &kiqr_core::Config, g: &Group) -> bool {
+    match g {
+        Group::WriteAssets => cfg.core_on("write"),
+        Group::Web => cfg.core_on("read-web"),
+        Group::Tasks => cfg.core_on("tasks"),
+        _ => true,
+    }
+}
+
 /// The tools a session gets: built-ins in `allowed`, the abilities that have a
 /// ready connection, and the connections' own tools.
 pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpec> {
     let reg = app.registry.read().await;
     let cfg = app.config.read().await.clone();
+    let off = project_off(app, slug);
+    let allowed: Vec<Group> = allowed.iter().filter(|g| core_allows(&cfg, g) && core_allows_in(&off, g) && !matches!(g, Group::Ext(id) if off.contains(id))).cloned().collect();
+    let allowed = &allowed[..];
     let mut out = tools::builtin_specs(allowed);
     for a in abilities::all() {
         if !allowed.contains(&a.group) {
             continue;
         }
-        if let Some((_, m)) = reg.provider(slug, a.id, cfg.abilities.get(a.id).map(String::as_str), ready) {
+        if let Some((_, m)) = reg.provider(slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(app, Some(slug), m)) {
             let cost = m.provides.get(a.id).and_then(|p| p.cost.as_deref());
             out.push(a.spec(&m.name, cost));
         }
@@ -116,7 +159,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         if !allowed.contains(&g) {
             continue;
         }
-        if m.transport == Transport::Mcp && !m.expose.is_empty() && ready(m) {
+        if m.transport == Transport::Mcp && !m.expose.is_empty() && ready_in(app, Some(slug), m) {
             // The server's own tools, raw, under the connection's group.
             match app.mcp.tools(app.store.home().root(), m).await {
                 Ok(list) => {
@@ -200,8 +243,8 @@ async fn get_tools(State(app): State<App>, Query(q): Query<ToolsQuery>) -> ApiRe
 
 // ------------------------------------------------------------- connections
 
-fn connection_view(e: &Entry, m: &Manifest) -> Value {
-    let missing = extensions::missing_keys(m, provider::has_env);
+fn connection_view(app: &App, e: &Entry, m: &Manifest) -> Value {
+    let missing = missing_in(app, None, m);
     json!({
         "id": m.id,
         "name": m.name,
@@ -212,8 +255,13 @@ fn connection_view(e: &Entry, m: &Manifest) -> Value {
         "builtin": e.builtin,
         "folder": e.name,
         "scope": e.scope,
-        "ready": ready(m),
+        "ready": ready_in(app, None, m),
         "missing": missing,
+        "paused": e.paused,
+        "git": e.git,
+        "core": e.is_core(),
+        "categories": m.categories,
+        "icon": m.icon,
         "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": provider::has_env(&a.env) })).collect::<Vec<_>>(),
         "provides": m.provides.iter().map(|(id, p)| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or(""), "cost": p.cost })).collect::<Vec<_>>(),
         "tools": m.tools.iter().map(|t| json!({ "name": t.name, "label": t.label, "cost": t.provide.cost })).collect::<Vec<_>>(),
@@ -233,7 +281,7 @@ async fn list_extensions(State(app): State<App>) -> ApiResult<Value> {
     let mut broken: Vec<Value> = Vec::new();
     for e in &reg.entries {
         match (&e.manifest, &e.error) {
-            (Some(m), None) => list.push(connection_view(e, m)),
+            (Some(m), None) => list.push(connection_view(&app, e, m)),
             (_, Some(err)) => broken.push(json!({ "folder": e.name, "scope": e.scope, "error": err })),
             _ => {}
         }
@@ -242,8 +290,8 @@ async fn list_extensions(State(app): State<App>) -> ApiResult<Value> {
         .into_iter()
         .map(|a| {
             let configured = cfg.abilities.get(a.id).cloned();
-            let candidates: Vec<Value> = reg.entries.iter().filter_map(|e| e.manifest.as_ref().filter(|m| m.provides.contains_key(a.id) && e.error.is_none())).map(|m| json!({ "id": m.id, "name": m.name, "ready": ready(m) })).collect();
-            let active = reg.provider("", a.id, configured.as_deref(), ready).map(|(_, m)| json!({ "id": m.id, "name": m.name }));
+            let candidates: Vec<Value> = reg.entries.iter().filter(|e| !e.paused).filter_map(|e| e.manifest.as_ref().filter(|m| m.provides.contains_key(a.id) && e.error.is_none())).map(|m| json!({ "id": m.id, "name": m.name, "ready": ready_in(&app, None, m) })).collect();
+            let active = reg.provider("", a.id, configured.as_deref(), |m| ready_in(&app, None, m)).map(|(_, m)| json!({ "id": m.id, "name": m.name }));
             json!({ "id": a.id, "label": a.label, "tool": a.tool, "configured": configured, "active": active, "connections": candidates })
         })
         .collect();
@@ -252,7 +300,7 @@ async fn list_extensions(State(app): State<App>) -> ApiResult<Value> {
 
 async fn get_extension(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Value> {
     let reg = app.registry.read().await;
-    let found = reg.entries.iter().find_map(|e| e.manifest.as_ref().filter(|m| m.id == id && e.error.is_none()).map(|m| connection_view(e, m)));
+    let found = reg.entries.iter().find_map(|e| e.manifest.as_ref().filter(|m| m.id == id && e.error.is_none()).map(|m| connection_view(&app, e, m)));
     found.map(Json).ok_or_else(|| not_found(format!("no connection '{id}'")))
 }
 
@@ -268,36 +316,36 @@ struct ScopeQuery {
     project: Option<String>,
 }
 
-/// Remove a user-installed connection (its folder, skill included).
+/// Remove a user-installed ability's folder (instructions included).
 async fn delete_extension(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ScopeQuery>) -> Result<StatusCode, ApiError> {
     let (dir, name, scope) = {
         let reg = app.registry.read().await;
         let scope = q.project.clone().map(Scope::Project).unwrap_or(Scope::Global);
-        let e = reg.entries.iter().find(|e| e.scope == scope && e.manifest.as_ref().is_some_and(|m| m.id == id)).ok_or_else(|| not_found(format!("no connection '{id}'")))?;
-        if e.builtin {
-            return Err(bad("built-in connections cannot be removed; leave their keys empty to keep them off"));
+        let e = reg.entries.iter().find(|e| e.scope == scope && e.manifest.as_ref().is_some_and(|m| m.id == id)).ok_or_else(|| not_found(format!("no ability '{id}'")))?;
+        if e.is_core() {
+            return Err(bad("this is one of KIQR's core abilities: it can be switched off, not removed"));
         }
-        (e.dir.clone(), e.name.clone(), e.scope.clone())
+        (e.dir.clone(), e.id().to_string(), e.scope.clone())
     };
     remove_folder(&app, &dir, &name, &scope).await?;
     app.mcp.stop(&id).await;
-    app.bus.emit(None, EventKind::ExtensionRemoved { id });
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn remove_folder(app: &App, dir: &std::path::Path, name: &str, scope: &Scope) -> Result<(), ApiError> {
+/// Remove an ability's folder and say so (`ExtensionRemoved`). `id` is the ability id.
+pub(crate) async fn remove_folder(app: &App, dir: &std::path::Path, id: &str, scope: &Scope) -> Result<(), ApiError> {
     std::fs::remove_dir_all(dir).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("could not remove {}: {e}", dir.display())))?;
     let label = match scope {
-        Scope::Global => "skills".to_string(),
-        Scope::Project(s) => format!("skills({s})"),
+        Scope::Global => "abilities".to_string(),
+        Scope::Project(s) => format!("abilities({s})"),
     };
-    app.store.commit(&format!("{label}: remove {name}")).await?;
-    app.bus.emit(None, EventKind::SkillDeleted { name: name.to_string(), scope: scope_id(scope) });
+    app.store.commit(&format!("{label}: remove {id}")).await?;
     reload(app).await;
+    app.bus.emit(None, EventKind::ExtensionRemoved { id: id.to_string() });
     Ok(())
 }
 
-fn scope_id(s: &Scope) -> String {
+pub(crate) fn scope_id(s: &Scope) -> String {
     match s {
         Scope::Global => "global".into(),
         Scope::Project(p) => p.clone(),
@@ -312,168 +360,179 @@ struct SecretBody {
     value: String,
 }
 
-/// Set (or, with an empty value, clear) one secret in `.env`. Only names a
-/// connection or provider declares; the value is never read back.
-async fn put_secret(State(app): State<App>, Path(name): Path<String>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
-    if !extensions::valid_env_name(&name) {
+/// Is this a name some installed or shipped ability, or a provider, declares?
+/// Secrets are set by name only, so an unknown name is refused.
+pub(crate) async fn known_secret(app: &App, name: &str) -> bool {
+    if crate::api::SECRETS.contains(&name) {
+        return true;
+    }
+    let uses = |m: &Manifest| m.auth.iter().any(|a| a.env == name) || m.env.contains(&name.to_string()) || m.tools.iter().any(|t| t.provide.command.as_ref().is_some_and(|c| c.env.contains(&name.to_string())));
+    let reg = app.registry.read().await;
+    reg.entries.iter().filter_map(|e| e.manifest.as_ref()).any(uses) || extensions::shipped_all().iter().any(|(_, m)| uses(m))
+}
+
+/// Set (or, with an empty value, clear) one secret. `slug` picks the
+/// project's `.env`; none means the machine's. The value is never read back.
+pub(crate) async fn set_secret(app: &App, slug: Option<&str>, name: &str, value: &str) -> Result<bool, ApiError> {
+    if !extensions::valid_env_name(name) {
         return Err(bad("a secret name is upper-case letters, digits and underscores"));
     }
-    let known = {
-        let reg = app.registry.read().await;
-        crate::api::SECRETS.contains(&name.as_str())
-            || reg.entries.iter().filter_map(|e| e.manifest.as_ref()).any(|m| m.auth.iter().any(|a| a.env == name) || m.env.contains(&name) || m.tools.iter().any(|t| t.provide.command.as_ref().is_some_and(|c| c.env.contains(&name))))
-    };
-    if !known {
-        return Err(bad(format!("no connection or provider uses {name}")));
+    if !known_secret(app, name).await {
+        return Err(bad(format!("no ability or provider uses {name}")));
     }
-    let value = b.value.trim().to_string();
+    let value = value.trim().to_string();
     if value.contains('\n') {
         return Err(bad("a secret is one line"));
     }
-    write_env(&app.store.home().env_file(), &name, &value).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    if value.is_empty() {
-        std::env::remove_var(&name);
-    } else {
-        std::env::set_var(&name, &value);
-    }
-    app.bus.emit(None, EventKind::SecretSet { name: name.clone(), set: !value.is_empty() });
-    Ok(Json(json!({ "name": name, "set": !value.is_empty() })))
-}
-
-/// Replace or append `NAME=value` in the env file, keeping everything else and mode 0600.
-fn write_env(path: &std::path::Path, name: &str, value: &str) -> Result<()> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let mut lines: Vec<String> = Vec::new();
-    let mut done = false;
-    for l in existing.lines() {
-        let t = l.trim_start();
-        let is_ours = t.strip_prefix(name).is_some_and(|r| r.starts_with('=')) || t.strip_prefix("export ").and_then(|r| r.trim_start().strip_prefix(name)).is_some_and(|r| r.starts_with('='));
-        let is_commented = t.strip_prefix('#').map(|r| r.trim_start()).and_then(|r| r.strip_prefix(name)).is_some_and(|r| r.starts_with('='));
-        if is_ours || (is_commented && !done && !value.is_empty()) {
-            if !done && !value.is_empty() {
-                lines.push(format!("{name}={value}"));
-                done = true;
-            }
-            continue;
+    let path = match slug {
+        Some(s) => {
+            Project::load(&app.store, s)?;
+            app.store.home().project_env_file(s)
         }
-        lines.push(l.to_string());
-    }
-    if !done && !value.is_empty() {
-        lines.push(format!("{name}={value}"));
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, text)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
-// ------------------------------------------------------------------ skills
-
-fn skill_view(e: &Entry) -> Value {
-    let meta = e.skill.clone().unwrap_or_default();
-    json!({
-        "name": e.name,
-        "title": meta.name,
-        "description": meta.description,
-        "abilities": meta.abilities,
-        "channels": meta.channels,
-        "scope": e.scope,
-        "builtin": e.builtin,
-        "has_skill": e.skill.is_some(),
-        "pipeline": crate::agent::PIPELINE_SKILLS.contains(&e.name.as_str()),
-        "connection": e.manifest.as_ref().map(|m| json!({ "id": m.id, "name": m.name, "ready": ready(m) })),
-        "error": e.error,
-        "folder": e.dir.display().to_string(),
-    })
-}
-
-/// Every skill folder, global and per project. `?project=` lists what that project sees.
-async fn list_skills(State(app): State<App>, Query(q): Query<ScopeQuery>) -> ApiResult<Vec<Value>> {
-    let reg = app.registry.read().await;
-    let entries: Vec<&Entry> = match &q.project {
-        Some(slug) => reg.visible(slug),
-        None => reg.entries.iter().collect(),
+        None => app.store.home().env_file(),
     };
-    Ok(Json(entries.into_iter().map(skill_view).collect()))
+    kiqr_core::secrets::write_env(&path, name, &value).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if slug.is_none() {
+        if value.is_empty() {
+            std::env::remove_var(name);
+        } else {
+            std::env::set_var(name, &value);
+        }
+    }
+    app.bus.emit(slug, EventKind::SecretSet { name: name.to_string(), set: !value.is_empty(), project: slug.map(str::to_string) });
+    Ok(!value.is_empty())
 }
 
-async fn list_project_skills(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Vec<Value>> {
-    let _ = Project::load(&app.store, &slug)?;
-    let reg = app.registry.read().await;
-    Ok(Json(reg.visible(&slug).into_iter().map(skill_view).collect()))
+async fn put_secret(State(app): State<App>, Path(name): Path<String>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
+    let set = set_secret(&app, None, &name, &b.value).await?;
+    Ok(Json(json!({ "name": name, "set": set })))
 }
 
-fn valid_skill_name(name: &str) -> bool {
+async fn put_project_secret(State(app): State<App>, Path((slug, name)): Path<(String, String)>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
+    let set = set_secret(&app, Some(&slug), &name, &b.value).await?;
+    Ok(Json(json!({ "name": name, "set": set, "project": slug })))
+}
+
+// ------------------------------------------------------------ instructions
+
+fn valid_ability_id(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !name.starts_with(['-', '.'])
 }
 
-/// A skill's text: the project's copy, then the user's, then the built-in one.
-fn skill_text(app: &App, slug: Option<&str>, name: &str) -> Result<String, ApiError> {
-    if !valid_skill_name(name) {
-        return Err(bad("a skill name is letters, digits and dashes"));
+/// The instruction folder an (ability, file) pair names: a core ability's
+/// shipped file, an installed folder's own SKILL.md, or a folder named
+/// directly. `None` when the ability is unknown (a PUT then creates it).
+async fn instruction_folder(app: &App, slug: Option<&str>, id: &str, file: Option<&str>) -> Result<Option<String>, ApiError> {
+    if !valid_ability_id(id) {
+        return Err(bad("an ability id is letters, digits and dashes"));
     }
+    if let Some(c) = extensions::core_ability(id) {
+        let files: Vec<&str> = c.instructions.iter().map(|(f, _)| *f).collect();
+        return match file {
+            Some(f) if files.contains(&f) => Ok(Some(f.to_string())),
+            Some(f) => Err(not_found(format!("{} has no instructions file '{f}'", c.name))),
+            None => files.first().map(|f| Some(f.to_string())).ok_or_else(|| not_found(format!("{} has no instructions to read; it is code", c.name))),
+        };
+    }
+    let reg = app.registry.read().await;
+    if let Some(e) = reg.entry(slug, id) {
+        if let Some(f) = file {
+            if f != e.name {
+                return Err(not_found(format!("'{id}' has no instructions file '{f}'")));
+            }
+        }
+        return Ok(Some(e.name.clone()));
+    }
+    if reg.entries.iter().any(|e| e.name == id && e.instructions.is_some()) || kiqr_core::extract::builtin_instructions(id).is_some() {
+        return Ok(Some(id.to_string()));
+    }
+    Ok(None)
+}
+
+/// The text as it applies: the project's copy, then the machine's, then the shipped one.
+fn instructions_text(app: &App, slug: Option<&str>, folder: &str) -> Result<String, ApiError> {
     if let Some(s) = slug {
-        if let Ok(t) = std::fs::read_to_string(app.store.home().project_skills_dir(s).join(name).join("SKILL.md")) {
+        if let Ok(t) = std::fs::read_to_string(app.store.home().project_abilities_dir(s).join(folder).join("SKILL.md")) {
             return Ok(t);
         }
     }
-    if let Ok(t) = std::fs::read_to_string(app.store.home().skills_dir().join(name).join("SKILL.md")) {
+    if let Ok(t) = std::fs::read_to_string(app.store.home().abilities_dir().join(folder).join("SKILL.md")) {
         return Ok(t);
     }
-    kiqr_core::extract::builtin_skill(name)
-        .map(str::to_string)
-        .or_else(|| extensions::BUILTIN_EXTENSIONS.iter().find(|(n, _, _)| *n == name).and_then(|(_, s, _)| s.map(str::to_string)))
-        .ok_or_else(|| not_found(format!("no skill '{name}'")))
+    shipped_text(folder).map(str::to_string).ok_or_else(|| not_found(format!("'{folder}' has no instructions")))
 }
 
-async fn get_skill(State(app): State<App>, Path(name): Path<String>) -> Result<String, ApiError> {
-    skill_text(&app, None, &name)
+fn shipped_text(folder: &str) -> Option<&'static str> {
+    kiqr_core::extract::builtin_instructions(folder).or_else(|| extensions::BUILTIN_EXTENSIONS.iter().find(|(n, _, _)| *n == folder).and_then(|(_, s, _)| *s))
 }
 
-async fn get_project_skill(State(app): State<App>, Path((slug, name)): Path<(String, String)>) -> Result<String, ApiError> {
-    skill_text(&app, Some(&slug), &name)
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct InstructionsQuery {
+    file: Option<String>,
+    /// Set by the UI: read it even when the ability is switched off here.
+    all: Option<String>,
+}
+
+async fn read_instructions(app: &App, slug: Option<&str>, id: &str, q: &InstructionsQuery) -> Result<String, ApiError> {
+    let folder = instruction_folder(app, slug, id, q.file.as_deref()).await?.ok_or_else(|| not_found(format!("no ability '{id}'")))?;
+    if q.all.is_none() {
+        if let Some(s) = slug {
+            let (machine, project) = crate::market::on_for(app, s, id).await;
+            if !machine || !project {
+                return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("'{id}' is switched off {}; the user can turn it on under Seemo → Abilities", if machine { "for this project" } else { "on this machine" })));
+            }
+        }
+    }
+    instructions_text(app, slug, &folder)
+}
+
+async fn get_instructions(State(app): State<App>, Path(id): Path<String>, Query(q): Query<InstructionsQuery>) -> Result<String, ApiError> {
+    read_instructions(&app, None, &id, &q).await
+}
+
+async fn get_project_instructions(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Query(q): Query<InstructionsQuery>) -> Result<String, ApiError> {
+    Project::load(&app.store, &slug)?;
+    read_instructions(&app, Some(&slug), &id, &q).await
 }
 
 #[derive(Deserialize)]
-struct SkillBody {
+struct InstructionsBody {
     text: String,
+    #[serde(default)]
+    file: Option<String>,
 }
 
-pub(crate) async fn save_skill(app: &App, scope: Scope, name: &str, text: &str) -> ApiResult<Value> {
-    if !valid_skill_name(name) {
-        return Err(bad("a skill name is letters, digits and dashes"));
-    }
+/// Write an ability's instructions at a scope: a new ability (taught here),
+/// the user's edit of their own, or a copy of shipped text. Frontmatter is
+/// added when the text has none.
+pub(crate) async fn save_instructions(app: &App, scope: Scope, id: &str, file: Option<&str>, text: &str) -> ApiResult<Value> {
+    let slug = match &scope {
+        Scope::Global => None,
+        Scope::Project(s) => Some(s.as_str()),
+    };
+    let folder = instruction_folder(app, slug, id, file).await?.unwrap_or_else(|| id.to_string());
     let text = text.trim();
     if text.is_empty() {
-        return Err(bad("a skill needs some text"));
+        return Err(bad("instructions need some text"));
     }
     let dir = match &scope {
-        Scope::Global => app.store.home().skills_dir(),
+        Scope::Global => app.store.home().abilities_dir(),
         Scope::Project(s) => {
             Project::load(&app.store, s)?;
-            app.store.home().project_skills_dir(s)
+            app.store.home().project_abilities_dir(s)
         }
     };
-    let body = if text.starts_with("---") { format!("{text}\n") } else { format!("---\nname: {name}\ndescription: {}\n---\n\n{text}\n", first_line(text)) };
-    app.store.write_text(&dir.join(name).join("SKILL.md"), &body)?;
+    let body = if text.starts_with("---") { format!("{text}\n") } else { format!("---\nname: {id}\ndescription: {}\n---\n\n{text}\n", first_line(text)) };
+    app.store.write_text(&dir.join(&folder).join("SKILL.md"), &body)?;
     let label = match &scope {
-        Scope::Global => "skills".to_string(),
-        Scope::Project(s) => format!("skills({s})"),
+        Scope::Global => "abilities".to_string(),
+        Scope::Project(s) => format!("abilities({s})"),
     };
-    app.store.commit(&format!("{label}: {name}")).await?;
+    app.store.commit(&format!("{label}: {id}")).await?;
     reload(app).await;
-    app.bus.emit(None, EventKind::SkillSaved { name: name.to_string(), scope: scope_id(&scope) });
-    let reg = app.registry.read().await;
-    let view = reg.entries.iter().find(|e| e.name == name && e.scope == scope).map(skill_view).unwrap_or(Value::Null);
-    Ok(Json(view))
+    app.bus.emit(None, EventKind::AbilitySaved { id: id.to_string(), scope: scope_id(&scope) });
+    Ok(Json(crate::market::one(app, slug, id).await.unwrap_or(Value::Null)))
 }
 
 fn first_line(text: &str) -> String {
@@ -481,46 +540,82 @@ fn first_line(text: &str) -> String {
     kiqr_core::profile::truncate_chars(l, 140)
 }
 
-async fn put_skill(State(app): State<App>, Path(name): Path<String>, Json(b): Json<SkillBody>) -> ApiResult<Value> {
-    save_skill(&app, Scope::Global, &name, &b.text).await
+async fn put_instructions(State(app): State<App>, Path(id): Path<String>, Json(b): Json<InstructionsBody>) -> ApiResult<Value> {
+    save_instructions(&app, Scope::Global, &id, b.file.as_deref(), &b.text).await
 }
 
-async fn put_project_skill(State(app): State<App>, Path((slug, name)): Path<(String, String)>, Json(b): Json<SkillBody>) -> ApiResult<Value> {
-    save_skill(&app, Scope::Project(slug), &name, &b.text).await
+async fn put_project_instructions(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(b): Json<InstructionsBody>) -> ApiResult<Value> {
+    save_instructions(&app, Scope::Project(slug), &id, b.file.as_deref(), &b.text).await
 }
 
-async fn delete_skill_in(app: &App, scope: Scope, name: &str) -> Result<StatusCode, ApiError> {
-    let (dir, builtin) = {
-        let reg = app.registry.read().await;
-        let e = reg.entries.iter().find(|e| e.name == name && e.scope == scope).ok_or_else(|| not_found(format!("no skill '{name}'")))?;
-        (e.dir.clone(), e.builtin)
+/// Drop the copy at a scope: a project's copy goes, the machine's edit of a
+/// shipped file goes back to the shipped text, and a folder with nothing
+/// else in it is removed.
+async fn delete_instructions_in(app: &App, scope: Scope, id: &str, file: Option<&str>) -> Result<StatusCode, ApiError> {
+    let slug = match &scope {
+        Scope::Global => None,
+        Scope::Project(s) => Some(s.as_str()),
     };
-    if builtin && scope == Scope::Global {
-        return Err(bad("built-in skills cannot be removed; edit the copy instead"));
+    let folder = instruction_folder(app, slug, id, file).await?.ok_or_else(|| not_found(format!("no ability '{id}'")))?;
+    let root = match &scope {
+        Scope::Global => app.store.home().abilities_dir(),
+        Scope::Project(s) => app.store.home().project_abilities_dir(s),
+    };
+    let dir = root.join(&folder);
+    let path = dir.join("SKILL.md");
+    if !path.exists() {
+        return Err(not_found(format!("there is no copy of '{folder}' {}", if slug.is_some() { "for this project" } else { "on this machine" })));
     }
-    remove_folder(app, &dir, name, &scope).await?;
+    let label = match &scope {
+        Scope::Global => "abilities".to_string(),
+        Scope::Project(s) => format!("abilities({s})"),
+    };
+    if scope == Scope::Global {
+        if let Some(shipped) = shipped_text(&folder) {
+            app.store.write_text(&path, shipped)?;
+            let _ = std::fs::write(dir.join(".builtin"), shipped);
+            app.store.commit(&format!("{label}: {id} back to the shipped text")).await?;
+            reload(app).await;
+            app.bus.emit(None, EventKind::AbilitySaved { id: id.to_string(), scope: scope_id(&scope) });
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    }
+    if extensions::is_core_id(id) && scope == Scope::Global {
+        return Err(bad("a core ability's instructions can be edited, not removed"));
+    }
+    std::fs::remove_file(&path).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = std::fs::remove_file(dir.join(".builtin"));
+    let _ = std::fs::remove_file(dir.join("SKILL.previous.md"));
+    let empty = std::fs::read_dir(&dir).map(|rd| rd.flatten().all(|e| e.file_name().to_str().is_some_and(|n| n.starts_with('.')))).unwrap_or(true);
+    if empty && !dir.join("extension.yaml").exists() {
+        remove_folder(app, &dir, id, &scope).await?;
+    } else {
+        app.store.commit(&format!("{label}: remove the instructions of {id}")).await?;
+        reload(app).await;
+        app.bus.emit(None, EventKind::AbilitySaved { id: id.to_string(), scope: scope_id(&scope) });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_skill(State(app): State<App>, Path(name): Path<String>) -> Result<StatusCode, ApiError> {
-    delete_skill_in(&app, Scope::Global, &name).await
+async fn delete_instructions(State(app): State<App>, Path(id): Path<String>, Query(q): Query<InstructionsQuery>) -> Result<StatusCode, ApiError> {
+    delete_instructions_in(&app, Scope::Global, &id, q.file.as_deref()).await
 }
 
-async fn delete_project_skill(State(app): State<App>, Path((slug, name)): Path<(String, String)>) -> Result<StatusCode, ApiError> {
-    delete_skill_in(&app, Scope::Project(slug), &name).await
+async fn delete_project_instructions(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Query(q): Query<InstructionsQuery>) -> Result<StatusCode, ApiError> {
+    delete_instructions_in(&app, Scope::Project(slug), &id, q.file.as_deref()).await
 }
 
 #[derive(Deserialize)]
-struct Install {
+pub(crate) struct Install {
     /// A folder on this machine, or a git URL.
-    source: String,
+    pub source: String,
     /// Folder name to install under; default: the manifest id, else the source's last path part.
     #[serde(default)]
-    name: Option<String>,
+    pub name: Option<String>,
 }
 
-/// Copy a skill folder (SKILL.md and/or extension.yaml, templates) into `skills/`.
-async fn install_into(app: &App, scope: Scope, b: Install) -> Result<(StatusCode, Json<Value>), ApiError> {
+/// Copy an ability folder (SKILL.md and/or extension.yaml, templates) into `abilities/`.
+pub(crate) async fn install_into(app: &App, scope: Scope, b: Install) -> Result<(StatusCode, Json<Value>), ApiError> {
     let source = b.source.trim().to_string();
     if source.is_empty() {
         return Err(bad("source is a folder path or a git URL"));
@@ -541,9 +636,9 @@ async fn install_into(app: &App, scope: Scope, b: Install) -> Result<(StatusCode
         }
         p
     };
-    let has_skill = from.join("SKILL.md").exists();
+    let has_instructions = from.join("SKILL.md").exists();
     let manifest_text = std::fs::read_to_string(from.join("extension.yaml")).ok();
-    if !has_skill && manifest_text.is_none() {
+    if !has_instructions && manifest_text.is_none() {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(bad("the folder has neither SKILL.md nor extension.yaml"));
     }
@@ -552,41 +647,48 @@ async fn install_into(app: &App, scope: Scope, b: Install) -> Result<(StatusCode
         None => None,
     };
     let name = b.name.clone().filter(|n| !n.trim().is_empty()).or_else(|| manifest.as_ref().map(|m| m.id.clone())).or_else(|| from.file_name().map(|n| n.to_string_lossy().trim_end_matches(".git").to_string())).unwrap_or_default();
-    if !valid_skill_name(&name) {
+    if !valid_ability_id(&name) {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(bad(format!("'{name}' is not a usable folder name")));
     }
     let dest_root = match &scope {
-        Scope::Global => app.store.home().skills_dir(),
+        Scope::Global => app.store.home().abilities_dir(),
         Scope::Project(s) => {
             Project::load(&app.store, s)?;
-            app.store.home().project_skills_dir(s)
+            app.store.home().project_abilities_dir(s)
         }
     };
     let dest = dest_root.join(&name);
     if dest.exists() {
         let _ = std::fs::remove_dir_all(&tmp);
-        return Err(ApiError(StatusCode::CONFLICT, format!("a skill named '{name}' is already installed; remove it first")));
+        return Err(ApiError(StatusCode::CONFLICT, format!("an ability named '{name}' is already installed; remove it first")));
     }
     copy_dir(&from, &dest).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("could not copy: {e}")))?;
     let _ = std::fs::remove_dir_all(&tmp);
     let label = match &scope {
-        Scope::Global => "skills".to_string(),
-        Scope::Project(s) => format!("skills({s})"),
+        Scope::Global => "abilities".to_string(),
+        Scope::Project(s) => format!("abilities({s})"),
     };
     app.store.commit(&format!("{label}: install {name}")).await?;
     reload(app).await;
-    app.bus.emit(None, EventKind::SkillSaved { name: name.clone(), scope: scope_id(&scope) });
-    if let Some(m) = &manifest {
-        app.bus.emit(None, EventKind::ExtensionInstalled { id: m.id.clone(), name: m.name.clone() });
+    let id = manifest.as_ref().map(|m| m.id.clone()).unwrap_or_else(|| name.clone());
+    if has_instructions {
+        app.bus.emit(None, EventKind::AbilitySaved { id: id.clone(), scope: scope_id(&scope) });
     }
-    let reg = app.registry.read().await;
-    let view = reg.entries.iter().find(|e| e.name == name && e.scope == scope).map(skill_view).unwrap_or(Value::Null);
+    app.bus.emit(None, EventKind::ExtensionInstalled { id: id.clone(), name: manifest.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| name.clone()) });
+    let slug = match &scope {
+        Scope::Global => None,
+        Scope::Project(s) => Some(s.as_str()),
+    };
+    let mut view = crate::market::one(app, slug, &id).await.unwrap_or(Value::Null);
+    if view.is_object() {
+        view["name_on_disk"] = json!(name);
+    }
     Ok((StatusCode::CREATED, Json(view)))
 }
 
 /// Copy files (not symlinks, not `.git`), at most 20 MB in all.
-fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
+pub(crate) fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
     let mut total: u64 = 0;
     fn walk(from: &std::path::Path, to: &std::path::Path, total: &mut u64) -> Result<()> {
         std::fs::create_dir_all(to)?;
@@ -615,13 +717,6 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
     walk(from, to, &mut total)
 }
 
-async fn install_skill(State(app): State<App>, Json(b): Json<Install>) -> Result<(StatusCode, Json<Value>), ApiError> {
-    install_into(&app, Scope::Global, b).await
-}
-
-async fn install_project_skill(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<Install>) -> Result<(StatusCode, Json<Value>), ApiError> {
-    install_into(&app, Scope::Project(slug), b).await
-}
 
 // ---------------------------------------------------------------- executor
 
@@ -634,26 +729,24 @@ pub struct ExecOut {
     pub file: Option<(Vec<u8>, String)>,
 }
 
-fn env_value(k: &str) -> Option<String> {
-    std::env::var(k).ok().filter(|v| !v.trim().is_empty())
-}
-
-/// Run one `provides` entry or extra tool of a connection.
+/// Run one `provides` entry or extra tool of an installed ability. Secrets
+/// come from the project's `.env`, then the machine's.
 pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value) -> Result<ExecOut> {
     let args = provide.mapped_args(args);
+    let env = kiqr_core::secrets::env_fn(app.store.home(), Some(slug));
     match m.transport {
         Transport::Http => {
-            let req = provide.request.as_ref().ok_or_else(|| anyhow!("the connection {} has no request for this", m.name))?;
-            http_exec(m, req, &args, &provide.result).await
+            let req = provide.request.as_ref().ok_or_else(|| anyhow!("{} has no request for this", m.name))?;
+            http_exec(m, req, &args, &provide.result, &env).await
         }
         Transport::Command => {
-            let cmd = provide.command.as_ref().ok_or_else(|| anyhow!("the connection {} has no command for this", m.name))?;
-            command_exec(cmd, &args, &provide.result).await
+            let cmd = provide.command.as_ref().ok_or_else(|| anyhow!("{} has no command for this", m.name))?;
+            command_exec(cmd, &args, &provide.result, &env).await
         }
         Transport::Mcp => {
-            let server_tool = provide.tool.clone().or_else(|| tool.map(str::to_string)).ok_or_else(|| anyhow!("the connection {} does not say which of its tools to call", m.name))?;
+            let server_tool = provide.tool.clone().or_else(|| tool.map(str::to_string)).ok_or_else(|| anyhow!("{} does not say which of its tools to call", m.name))?;
             let call_args = match &provide.args {
-                Some(t) => extensions::fill_value(t, &args, &env_value),
+                Some(t) => extensions::fill_value(t, &args, &env),
                 None => args.clone(),
             };
             let r = app.mcp.call(app.store.home().root(), m, &server_tool, &call_args).await?;
@@ -680,20 +773,20 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
 fn no_leftover(s: &str, what: &str) -> Result<()> {
     if let Some(i) = s.find("${") {
         let end = s[i..].find('}').map(|e| i + e + 1).unwrap_or(s.len());
-        bail!("{what} needs {} which is not set; add it under Settings → Connections", &s[i..end]);
+        bail!("{what} needs {} which is not set; add it under Settings → Abilities, or in the project's Channels for a mail account", &s[i..end]);
     }
     Ok(())
 }
 
-async fn http_exec(m: &Manifest, req: &HttpRequest, args: &Value, map: &ResultMap) -> Result<ExecOut> {
-    let url_s = extensions::fill(&req.url, args, env_value);
+async fn http_exec(m: &Manifest, req: &HttpRequest, args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone)) -> Result<ExecOut> {
+    let url_s = extensions::fill(&req.url, args, env.clone());
     no_leftover(&url_s, "the request URL")?;
     let mut url = url::Url::parse(&url_s).with_context(|| format!("{url_s} is not a URL"))?;
-    if !extensions::host_allowed(&url, &m.hosts) {
+    if !extensions::host_allowed(&url, &extensions::hosts_for(m, env)) {
         bail!("{} may not call {}", m.name, url.host_str().unwrap_or(""));
     }
     for (k, v) in &req.query {
-        let v = extensions::fill(v, args, env_value);
+        let v = extensions::fill(v, args, env.clone());
         if !v.is_empty() {
             url.query_pairs_mut().append_pair(k, &v);
         }
@@ -702,12 +795,21 @@ async fn http_exec(m: &Manifest, req: &HttpRequest, args: &Value, map: &ResultMa
     let method = reqwest::Method::from_bytes(req.method.to_ascii_uppercase().as_bytes())?;
     let mut r = client.request(method, url.clone());
     for (k, v) in &req.headers {
-        let v = extensions::fill(v, args, env_value);
+        let v = extensions::fill(v, args, env.clone());
         no_leftover(&v, &format!("the header {k}"))?;
         r = r.header(k, v);
     }
+    if let Some(pair) = &req.basic_auth {
+        let user = extensions::fill(pair.first().map(String::as_str).unwrap_or(""), args, env.clone());
+        let pass = pair.get(1).map(|p| extensions::fill(p, args, env.clone()));
+        no_leftover(&user, "the user name")?;
+        if let Some(p) = &pass {
+            no_leftover(p, "the password")?;
+        }
+        r = r.basic_auth(user, pass);
+    }
     if let Some(body) = &req.json {
-        let b = extensions::fill_value(body, args, &env_value);
+        let b = extensions::fill_value(body, args, env);
         no_leftover(&b.to_string(), "the request body")?;
         r = r.json(&b);
     }
@@ -814,14 +916,14 @@ pub fn extension_for(mime: &str) -> &'static str {
     }
 }
 
-async fn command_exec(spec: &CommandSpec, args: &Value, map: &ResultMap) -> Result<ExecOut> {
-    let program = extensions::fill(&spec.command, args, env_value);
+async fn command_exec(spec: &CommandSpec, args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone)) -> Result<ExecOut> {
+    let program = extensions::fill(&spec.command, args, env.clone());
     if !on_path(&program) {
         bail!("the program {program} is not installed on this computer");
     }
     let mut cmd = tokio::process::Command::new(&program);
     for a in &spec.args {
-        cmd.arg(extensions::fill(a, args, env_value));
+        cmd.arg(extensions::fill(a, args, env.clone()));
     }
     cmd.env_clear();
     for k in ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER"] {
@@ -830,7 +932,7 @@ async fn command_exec(spec: &CommandSpec, args: &Value, map: &ResultMap) -> Resu
         }
     }
     for k in &spec.env {
-        if let Some(v) = env_value(k) {
+        if let Some(v) = env(k) {
             cmd.env(k, v);
         }
     }
@@ -880,13 +982,16 @@ pub(crate) async fn attach(app: &App, slug: &str, kind_default: &str, args: &Val
             (a.kind, a.id)
         }
     };
-    let a = assets::write_file(&app.store, slug, &kind, &id, "media", &file, &bytes)?;
+    // The role the type names for an image: a cover on an article, media on a post.
+    let role = assets::find_type(&app.store, &kind).map(|t| t.role_for(ext)).unwrap_or_else(|| "media".into());
+    let a = assets::write_file(&app.store, slug, &kind, &id, &role, &file, &bytes)?;
     crate::api::emit_saved(app, slug, &a, false);
     app.bus.emit(Some(slug), EventKind::MediaCreated { ability: ability.to_string(), asset_type: kind.clone(), id: id.clone(), file: file.clone(), provider: connection.to_string() });
     Ok(json!({
         "ok": true,
         "asset": { "type": kind, "id": id, "title": a.title },
         "file": file,
+        "role": role,
         "url": format!("/api/projects/{slug}/assets/{kind}/{id}/files/{file}"),
         "bytes": bytes.len(),
         "mime": mime,
@@ -930,14 +1035,18 @@ async fn run_ability(State(app): State<App>, Path((slug, ability)): Path<(String
     let cfg = app.config.read().await.clone();
     let (m, provide) = {
         let reg = app.registry.read().await;
-        let Some((_, m)) = reg.provider(&slug, a.id, cfg.abilities.get(a.id).map(String::as_str), ready) else {
-            return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("Nothing provides \"{}\" yet. Add a connection under Settings → Connections.", a.label)));
+        let off = project_off(&app, &slug);
+        let Some((_, m)) = reg.provider(&slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(&app, Some(&slug), m)) else {
+            return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("Nothing can \"{}\" yet. Install an ability for it under Settings → Abilities.", a.label.to_lowercase())));
         };
         (m.clone(), m.provides.get(a.id).cloned().unwrap_or_default())
     };
     let by = by_of(&headers, &args);
     let args = normalize_media_args(args);
     let out = execute(&app, &slug, &m, &provide, Some(&a), None, &args).await.map_err(|e| bad(format!("{e:#}")))?;
+    // A file lands on the asset at once. The asset is what the user approves,
+    // in the chat (where it shows as it will look) or in the library; an image
+    // is never approved on its own.
     let mut v = match out.file {
         Some((bytes, mime)) if a.attach => attach(&app, &slug, a.asset_type, &args, &by, bytes, mime, &m.name, a.id).await?,
         Some((bytes, mime)) => json!({ "ok": true, "bytes": bytes.len(), "mime": mime, "connection": m.name }),
@@ -962,9 +1071,12 @@ async fn run_ext_tool(State(app): State<App>, Path((slug, ext, tool)): Path<(Str
         };
         (m.clone(), t)
     };
-    if !ready(&m) {
-        let missing = extensions::missing_keys(&m, provider::has_env);
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} is not connected yet (missing {}). Add it under Settings → Connections.", m.name, missing.join(", "))));
+    if project_off(&app, &slug).contains(&m.id) {
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} is switched off for this project (Seemo → Abilities).", m.name)));
+    }
+    if !ready_in(&app, Some(&slug), &m) {
+        let missing = missing_in(&app, Some(&slug), &m);
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} is not set up yet (missing {}). Add it under Settings → Abilities.", m.name, missing.join(", "))));
     }
     let by = by_of(&headers, &args);
     let out = execute(&app, &slug, &m, &t.provide, None, Some(&t.name), &args).await.map_err(|e| bad(format!("{e:#}")))?;

@@ -1,5 +1,5 @@
 //! Seemo's API: chats, approvals, tasks, the calendar, and the small routes
-//! the tools need (skills, one profile section or field, brief and asset
+//! the tools need (instructions, one profile section or field, brief and asset
 //! patches). Mounted next to `api.rs`.
 
 use crate::agent::{self, Turn};
@@ -45,6 +45,7 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/tasks/{id}/runs", get(list_runs))
         .route("/api/projects/{slug}/tasks/{id}/runs/{run}", get(get_run))
         .route("/api/projects/{slug}/calendar", get(calendar))
+        .route("/api/projects/{slug}/todo", get(todo))
 }
 
 fn conflict(msg: impl Into<String>) -> ApiError {
@@ -69,9 +70,15 @@ struct ReadWeb {
 async fn read_web(State(app): State<App>, Path(slug): Path<String>, Query(q): Query<ReadWeb>) -> ApiResult<kiqr_core::fetch::ReadPage> {
     Project::load(&app.store, &slug)?;
     let url = url::Url::parse(q.url.trim()).map_err(|_| bad(format!("'{}' is not a URL", q.url)))?;
-    let escalate = app.config.read().await.crawl.escalate_to_unblockingapi;
+    let cfg = app.config.read().await.clone();
+    if !cfg.core_on("read-web") {
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "reading the web is switched off under Settings → Abilities".into()));
+    }
+    let escalate = cfg.core_on("unblockingapi");
+    // The project's own UnblockingAPI account, else the machine's.
+    let key = if escalate { kiqr_core::secrets::lookup(app.store.home(), Some(&slug), "UNBLOCKINGAPI_KEY") } else { None };
     let max = q.max_chars.unwrap_or(20_000).min(100_000);
-    let page = kiqr_core::fetch::read_page(&url, escalate, max).await.map_err(|e| bad(e.to_string()))?;
+    let page = kiqr_core::fetch::read_page(&url, key, max).await.map_err(|e| bad(e.to_string()))?;
     Ok(Json(page))
 }
 
@@ -156,7 +163,8 @@ async fn patch_brief(State(app): State<App>, Path(slug): Path<String>, Json(p): 
 #[serde(default)]
 struct AssetPatch {
     title: Option<String>,
-    status: Option<assets::Status>,
+    /// Into the archive, or back out of it. The only part of the status anyone sets by hand.
+    archived: Option<bool>,
     tags: Option<Vec<String>>,
     summary: Option<String>,
     text: Option<String>,
@@ -171,8 +179,8 @@ async fn patch_asset(State(app): State<App>, Path((slug, kind, id)): Path<(Strin
         }
         a.title = t.trim().to_string();
     }
-    if let Some(s) = p.status {
-        a.status = s;
+    if let Some(x) = p.archived {
+        a.archived = x;
     }
     if let Some(t) = p.tags {
         a.tags = t;
@@ -417,18 +425,22 @@ pub fn apply_changes(cfg: &Config, changes: &serde_json::Map<String, Value>) -> 
     Ok((new_cfg, list, restart))
 }
 
-/// What a skill approval holds once checked.
-fn skill_preview(slug: &str, payload: &Value) -> Result<Value, ApiError> {
-    let raw = payload["name"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("a skill needs a name"))?;
-    let name = assets::slugify(raw);
-    if name.is_empty() {
-        return Err(bad("the skill name needs some letters"));
+/// What an ability approval (`save_ability`) holds once checked.
+fn ability_preview(slug: &str, payload: &Value) -> Result<Value, ApiError> {
+    let raw = payload["name"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("an ability needs a name"))?;
+    let id = assets::slugify(raw);
+    if id.is_empty() {
+        return Err(bad("the ability's name needs some letters"));
     }
-    let description = payload["description"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("say in one line when the skill applies"))?;
-    let text = payload["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("a skill needs its instructions"))?;
+    if kiqr_core::extensions::is_core_id(&id) {
+        return Err(bad(format!("'{id}' is one of KIQR's core abilities; pick another name")));
+    }
+    let description = payload["description"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("say in one line when the ability applies"))?;
+    let text = payload["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| bad("an ability needs its instructions"))?;
     let everywhere = payload["scope"].as_str() == Some("everywhere");
     Ok(json!({
-        "name": name,
+        "id": id,
+        "name": raw,
         "description": description,
         "text": text,
         "scope": if everywhere { "everywhere" } else { "this_project" },
@@ -450,26 +462,35 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
     let preview = match b.kind.as_str() {
         "task" => task_preview(&cfg, &b.payload, &names)?,
         "config" => config_preview(&cfg, &b.payload)?,
-        "skill" => skill_preview(&slug, &b.payload)?,
+        "ability" => ability_preview(&slug, &b.payload)?,
         "channel" => crate::publish::channel_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         "publish" => crate::publish::publish_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         "email" => crate::publish::email_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         other => return Err(bad(format!("unknown approval kind '{other}'"))),
     };
-    let from_task = b.task.clone().filter(|t| !t.is_empty());
-    let chat_id = match b.chat.filter(|c| !c.is_empty()) {
+    let (id, preview) = open_approval(&app, &slug, &b.kind, preview, b.chat, b.task).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "id": id, "status": "pending", "preview": preview }))))
+}
+
+/// Put a card in the chat (or the task's chat) and remember the approval;
+/// whoever asked polls `GET` for the decision. Also used by the daemon
+/// itself, for media that waits for a yes.
+pub(crate) async fn open_approval(app: &App, slug: &str, kind: &str, preview: Value, chat: Option<String>, task: Option<String>) -> Result<(String, Value), ApiError> {
+    let cfg = app.config.read().await.clone();
+    let from_task = task.clone().filter(|t| !t.is_empty());
+    let chat_id = match chat.filter(|c| !c.is_empty()) {
         Some(c) => c,
         None => match &from_task {
             // A run asked: the card waits in the task's chat, made now if it has none.
             Some(task_id) => {
-                let mut task = Task::load(&app.store, &slug, task_id)?;
-                match task.follow_up_chat.clone().filter(|c| Chat::load(&app.store, &slug, c).is_ok()) {
+                let mut task = Task::load(&app.store, slug, task_id)?;
+                match task.follow_up_chat.clone().filter(|c| Chat::load(&app.store, slug, c).is_ok()) {
                     Some(c) => c,
                     None => {
-                        let c = Chat::create(&app.store, &slug, &format!("Task: {}", task.title), &cfg.models.chat)?;
-                        app.bus.emit(Some(&slug), EventKind::ChatCreated { chat: c.id.clone(), title: c.title.clone() });
+                        let c = Chat::create(&app.store, slug, &format!("Task: {}", task.title), &cfg.models.chat)?;
+                        app.bus.emit(Some(slug), EventKind::ChatCreated { chat: c.id.clone(), title: c.title.clone() });
                         task.follow_up_chat = Some(c.id.clone());
-                        task.save(&app.store, &slug)?;
+                        task.save(&app.store, slug)?;
                         c.id
                     }
                 }
@@ -477,12 +498,12 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
             None => return Err(ApiError(StatusCode::PRECONDITION_FAILED, "this needs a person: it can only be asked from a chat or a task run".into())),
         },
     };
-    let mut chat = Chat::load(&app.store, &slug, &chat_id)?;
+    let mut chat = Chat::load(&app.store, slug, &chat_id)?;
     if from_task.is_none() && !app.turns.read().await.contains_key(&chat_id) {
         return Err(conflict("the chat is not in a turn; approvals can only be asked while answering"));
     }
     if from_task.is_some() {
-        app.bus.emit(Some(&slug), EventKind::SeemoSays { text: format!("A task is waiting for your yes in the chat \"{}\".", chat.title) });
+        app.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("A task is waiting for your yes in the chat \"{}\".", chat.title) });
     }
     let id = chat::message_id();
     let card = Message {
@@ -491,21 +512,21 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
         role: Role::Card,
         text: String::new(),
         steps: vec![],
-        card: Some(Card { kind: "approval".into(), approval: Some(id.clone()), approval_kind: Some(b.kind.clone()), status: "pending".into(), task: None, payload: preview.clone(), result: None }),
+        card: Some(Card { kind: "approval".into(), approval: Some(id.clone()), approval_kind: Some(kind.to_string()), status: "pending".into(), task: None, payload: preview.clone(), result: None }),
         kind: None,
         error: None,
     };
-    chat.append(&app.store, &slug, &card)?;
-    app.bus.emit(Some(&slug), EventKind::ChatMessage { chat: chat.id.clone(), message: card.clone() });
+    chat.append(&app.store, slug, &card)?;
+    app.bus.emit(Some(slug), EventKind::ChatMessage { chat: chat.id.clone(), message: card.clone() });
     let (tx, _) = watch::channel(None);
-    let approval = Arc::new(Approval { id: id.clone(), slug: slug.clone(), chat: Some(chat_id.clone()), kind: b.kind.clone(), payload: preview.clone(), message_id: Some(card.id.clone()), created: Utc::now(), tx });
+    let approval = Arc::new(Approval { id: id.clone(), slug: slug.to_string(), chat: Some(chat_id.clone()), kind: kind.to_string(), payload: preview.clone(), message_id: Some(card.id.clone()), created: Utc::now(), tx });
     {
         let mut all = app.approvals.write().await;
         all.retain(|_, a| Utc::now() - a.created < chrono::Duration::hours(2));
         all.insert(id.clone(), approval);
     }
-    app.bus.emit(Some(&slug), EventKind::ApprovalRequested { chat: chat_id, approval: id.clone(), kind: b.kind });
-    Ok((StatusCode::CREATED, Json(json!({ "id": id, "status": "pending", "preview": preview }))))
+    app.bus.emit(Some(slug), EventKind::ApprovalRequested { chat: chat_id, approval: id.clone(), kind: kind.to_string() });
+    Ok((id, preview))
 }
 
 #[derive(Deserialize, Default)]
@@ -564,7 +585,7 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },
-            "skill" => match approve_skill(&app, &slug, &approval).await {
+            "ability" => match approve_ability(&app, &slug, &approval).await {
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },
@@ -649,18 +670,30 @@ async fn approve_task(app: &App, slug: &str, approval: &Approval, allowed: Optio
     }))
 }
 
-async fn approve_skill(app: &App, slug: &str, approval: &Approval) -> Result<Value, ApiError> {
+async fn approve_ability(app: &App, slug: &str, approval: &Approval) -> Result<Value, ApiError> {
     let p = &approval.payload;
-    let name = p["name"].as_str().unwrap_or("").to_string();
+    let id = p["id"].as_str().unwrap_or("").to_string();
+    let name = p["name"].as_str().unwrap_or(&id).replace('\n', " ");
     let scope = if p["scope"].as_str() == Some("everywhere") { kiqr_core::extensions::Scope::Global } else { kiqr_core::extensions::Scope::Project(slug.to_string()) };
-    let body = format!("---\nname: {name}\ndescription: {}\n---\n\n{}\n", p["description"].as_str().unwrap_or("").replace('\n', " "), p["text"].as_str().unwrap_or("").trim());
-    let view = crate::ext::save_skill(app, scope.clone(), &name, &body).await?;
+    let body = format!("---\nname: {}\ndescription: {}\n---\n\n{}\n", yaml_str(&name), yaml_str(p["description"].as_str().unwrap_or("")), p["text"].as_str().unwrap_or("").trim());
+    let view = crate::ext::save_instructions(app, scope.clone(), &id, None, &body).await?;
     Ok(json!({
+        "id": id,
         "name": name,
         "scope": p["scope"],
-        "skill": view.0,
-        "note": "Saved. From now on it is listed among the skills and read before matching requests.",
+        "ability": view.0,
+        "note": "Saved. From now on it is one of your abilities here and its instructions are read before matching requests.",
     }))
+}
+
+/// A one-line string safe in YAML frontmatter.
+fn yaml_str(s: &str) -> String {
+    let s = s.replace('\n', " ");
+    if s.contains(':') || s.contains('#') || s.starts_with(['"', '\'', '[', '{', '&', '*', '!', '|', '>', '%', '@', '`']) {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        s
+    }
 }
 
 async fn approve_config(app: &App, approval: &Approval) -> Result<Value, ApiError> {
@@ -856,9 +889,46 @@ async fn calendar(State(app): State<App>, Path(slug): Path<String>, Query(r): Qu
     for t in Task::list(&app.store, &slug)?.into_iter().filter(|t| t.status == TaskStatus::Active) {
         let when = t.schedule.upcoming(from - chrono::Duration::seconds(1), t.created_at, 200, tz).unwrap_or_default();
         for at in when.into_iter().filter(|a| *a <= to) {
-            items.push(json!({ "task": t.id, "title": t.title, "at": at, "schedule_text": t.schedule.describe(tz) }));
+            items.push(json!({ "kind": "task", "task": t.id, "title": t.title, "at": at, "schedule_text": t.schedule.describe(tz) }));
         }
+    }
+    // Publishes the daemon will do: scheduled assets, with the channel they go to.
+    for a in assets::list(&app.store, &slug)?.into_iter().filter(|a| a.status == assets::Status::Scheduled) {
+        let Some(at) = a.publish_at.filter(|t| *t >= from - chrono::Duration::seconds(1) && *t <= to) else { continue };
+        let label = a.channel.as_deref().and_then(|c| kiqr_core::channels::Channel::load(&app.store, &slug, c).ok()).map(|c| c.label).unwrap_or_else(|| a.channel.clone().unwrap_or_default());
+        items.push(json!({ "kind": "publish", "asset": { "type": a.kind, "id": a.id, "title": a.title }, "title": a.title, "at": at, "channel": a.channel, "channel_label": label, "schedule_text": format!("to {label}") }));
     }
     items.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
     Ok(Json(items))
+}
+
+/// `GET /api/projects/{slug}/todo`: what waits for the user, in one place.
+/// Approvals open in any chat (answered through `POST …/approvals/{id}`),
+/// drafts to approve, what is approved but not sent, publishes coming up,
+/// and scheduled publishes that failed. `count` is what needs a hand:
+/// approvals, drafts and failures.
+async fn todo(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Value> {
+    let _ = Project::load(&app.store, &slug)?;
+    let mut approvals: Vec<Value> = app
+        .approvals
+        .read()
+        .await
+        .values()
+        .filter(|a| a.slug == slug && a.tx.borrow().is_none())
+        .map(|a| json!({ "id": a.id, "kind": a.kind, "chat": a.chat, "message": a.message_id, "created": a.created, "payload": a.payload }))
+        .collect();
+    approvals.sort_by(|a, b| a["created"].as_str().cmp(&b["created"].as_str()));
+    for a in approvals.iter_mut() {
+        if let Some(title) = a["chat"].as_str().and_then(|c| Chat::load(&app.store, &slug, c).ok()).map(|c| c.title) {
+            a["chat_title"] = json!(title);
+        }
+    }
+    let all = assets::list(&app.store, &slug)?;
+    let drafts: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Draft).collect();
+    let ready: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Ready && a.publish_error.is_none()).collect();
+    let mut scheduled: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Scheduled).collect();
+    scheduled.sort_by_key(|a| a.publish_at);
+    let attention: Vec<&assets::Asset> = all.iter().filter(|a| a.publish_error.is_some() && !a.archived && a.publications.is_empty()).collect();
+    let count = approvals.len() + drafts.len() + attention.len();
+    Ok(Json(json!({ "approvals": approvals, "drafts": drafts, "ready": ready, "scheduled": scheduled, "attention": attention, "count": count })))
 }

@@ -77,7 +77,7 @@ pub enum EventKind {
     ChatDelta { chat: String, text: String },
     /// Seemo used a tool. `status` is `started`, `done` or `failed`; `label`
     /// is the human wording ("Reading the business brief").
-    ChatTool { chat: String, tool: String, label: String, status: String, #[serde(default)] note: String, #[serde(default)] image: Option<String> },
+    ChatTool { chat: String, tool: String, label: String, status: String, #[serde(default)] note: String, #[serde(default)] image: Option<String>, #[serde(default)] asset: Option<crate::chat::StepAsset> },
     /// A message was added to the transcript, or (same id) changed: a card
     /// whose status moved on.
     ChatMessage { chat: String, message: crate::chat::Message },
@@ -98,15 +98,16 @@ pub enum EventKind {
     /// `restart` says whether a change (host, port) only applies after a restart.
     ConfigChanged { by: String, #[serde(default)] restart: bool },
 
-    // Skills, connections and secrets (global, no project).
-    /// A skill was written or installed. `scope` is `global` or a project slug.
-    SkillSaved { name: String, scope: String },
-    SkillDeleted { name: String, scope: String },
-    /// A connection (extension manifest) was installed or removed.
+    // Abilities and secrets (global, no project).
+    /// An ability's instructions were written (taught, edited, or installed). `scope` is `global` or a project slug.
+    AbilitySaved { id: String, scope: String },
+    /// An ability (a folder) was installed or removed.
     ExtensionInstalled { id: String, name: String },
     ExtensionRemoved { id: String },
+    /// Switched off or on again without removing it.
+    ExtensionPaused { id: String, paused: bool },
     /// A secret was set or cleared in `.env`. Name only, never the value.
-    SecretSet { name: String, set: bool },
+    SecretSet { name: String, set: bool, #[serde(default)] project: Option<String> },
 
     // Abilities and channels.
     /// An ability made a file into an asset: `ability` is image, video or music.
@@ -115,6 +116,11 @@ pub enum EventKind {
     ChannelDeleted { channel: String },
     /// An asset went out through a channel.
     AssetPublished { asset_type: String, id: String, channel: String, #[serde(default)] url: Option<String> },
+    /// The user approved an asset for a channel (it is Ready), or set when the
+    /// daemon publishes it (`at` set: Scheduled).
+    AssetApproved { asset_type: String, id: String, title: String, channel: String, #[serde(default)] at: Option<chrono::DateTime<chrono::Utc>> },
+    /// KIQR no longer counts an asset as published; the copy on the channel is not touched.
+    AssetUnpublished { asset_type: String, id: String, title: String },
 }
 
 impl EventKind {
@@ -139,15 +145,17 @@ impl EventKind {
                 | EventKind::TaskRunStep { .. }
                 | EventKind::TaskRunFinished { .. }
                 | EventKind::ConfigChanged { .. }
-                | EventKind::SkillSaved { .. }
-                | EventKind::SkillDeleted { .. }
+                | EventKind::AbilitySaved { .. }
                 | EventKind::ExtensionInstalled { .. }
                 | EventKind::ExtensionRemoved { .. }
+                | EventKind::ExtensionPaused { .. }
                 | EventKind::SecretSet { .. }
                 | EventKind::MediaCreated { .. }
                 | EventKind::ChannelSaved { .. }
                 | EventKind::ChannelDeleted { .. }
                 | EventKind::AssetPublished { .. }
+                | EventKind::AssetApproved { .. }
+                | EventKind::AssetUnpublished { .. }
         )
     }
 }

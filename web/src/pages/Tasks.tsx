@@ -2,7 +2,7 @@
 // The calendar is the same tasks as an agenda; month and week views come later.
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { CalendarDays, Check, ChevronDown, ChevronRight, ListChecks, Loader2, MessagesSquare, Pause, Play, Trash2, X } from "lucide-react";
+import { CalendarDays, Check, ChevronDown, ChevronRight, ListChecks, Loader2, MessagesSquare, Pause, Play, Send, Trash2, X } from "lucide-react";
 import { api, useAsync, useDemoSeemo, useEvents, type CalendarItem, type Run, type Task } from "../api";
 import { when } from "../chat/Conversation";
 import { ago } from "./Project";
@@ -226,6 +226,8 @@ export function CalendarPage() {
       items.reload();
       tasks.reload();
     }
+    // A publish was scheduled, moved, done or dropped.
+    if (e.type === "asset_approved" || e.type === "asset_saved" || e.type === "asset_published") items.reload();
   };
   useEvents(slug, onEvent, { demo: false });
   useDemoSeemo(onEvent);
@@ -238,7 +240,7 @@ export function CalendarPage() {
         <div>
           <p className="cap">Seemo</p>
           <h1 className="d2">Calendar</h1>
-          <p className="muted">The next 30 days of scheduled runs. Month and week views follow in a later release.</p>
+          <p className="muted">The next 30 days: task runs and the publishes you scheduled. Month and week views follow in a later release.</p>
         </div>
       </div>
       {items.data && items.data.length === 0 && (
@@ -264,13 +266,22 @@ export function CalendarPage() {
                       <b>{d.date.getDate()}</b>
                     </div>
                     <div className="items">
-                      {d.items.map((it, i) => (
-                        <Link className="item" key={i} to={`/p/${slug}/tasks#${it.task}`}>
-                          <time>{new Date(it.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
-                          <span>{it.title}</span>
-                          <small>{it.schedule_text}</small>
-                        </Link>
-                      ))}
+                      {d.items.map((it, i) =>
+                        it.kind === "publish" && it.asset ? (
+                          <Link className="item publish" key={i} to={`/p/${slug}/library/${it.asset.type}/${it.asset.id}`}>
+                            <time>{new Date(it.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+                            <Send size={12} />
+                            <span>{it.title}</span>
+                            <small>publish {it.schedule_text}</small>
+                          </Link>
+                        ) : (
+                          <Link className="item" key={i} to={`/p/${slug}/tasks#${it.task}`}>
+                            <time>{new Date(it.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+                            <span>{it.title}</span>
+                            <small>{it.schedule_text}</small>
+                          </Link>
+                        ),
+                      )}
                     </div>
                   </div>
                 ))}

@@ -13,7 +13,7 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::path::Path;
 
-pub const BUILTIN_GUIDE: &str = include_str!("../../../skills/seemo-agent/SKILL.md");
+pub const BUILTIN_GUIDE: &str = include_str!("../../../abilities/seemo-agent/SKILL.md");
 
 /// Linux caps one argument at 128 KiB; the system prompt travels in argv.
 pub const MAX_SYSTEM: usize = 100_000;
@@ -198,12 +198,12 @@ pub struct Context {
     /// Set for a task run: the task's title. Chats leave it empty.
     pub task_run: Option<String>,
     pub allowed: Vec<Group>,
-    /// Skills to read before acting: (name, when to use it).
-    pub skills: Vec<(String, String)>,
+    /// Abilities with instructions to read before acting: (id, name, when to use it).
+    pub abilities: Vec<(String, String, String)>,
 }
 
-/// Room for the skills list in the prompt; past it, names only.
-pub const MAX_SKILLS_BLOCK: usize = 3_000;
+/// Room for the abilities list in the prompt; past it, ids only.
+pub const MAX_ABILITIES_BLOCK: usize = 3_000;
 
 /// The brief as compact JSON: without the page lists (that is the content map).
 pub fn compact_brief(brief: &Brief) -> Value {
@@ -241,15 +241,15 @@ pub fn system_prompt(persona: &str, guide: &str, ctx: &Context, brief: Option<&B
             head.push_str(&format!("  - {t}\n"));
         }
     }
-    if !ctx.skills.is_empty() {
-        head.push_str("\n# Skills\n\nStanding instructions, KIQR's and the user's. When one fits the request, read it with `read_skill` first and follow it.\n");
+    if !ctx.abilities.is_empty() {
+        head.push_str("\n# Abilities with instructions\n\nWhat you can do here that comes with instructions, KIQR's and the user's: `id — name: when it applies`. When one fits the request, read it with `read_instructions` first and follow it.\n");
         let mut block = String::new();
-        let mut names_only = false;
-        for (name, desc) in &ctx.skills {
-            let line = if names_only || desc.is_empty() { format!("- {name}\n") } else { format!("- {name} — {desc}\n") };
-            if !names_only && block.len() + line.len() > MAX_SKILLS_BLOCK {
-                names_only = true;
-                block.push_str(&format!("- {name}\n"));
+        let mut ids_only = false;
+        for (id, name, desc) in &ctx.abilities {
+            let line = if ids_only { format!("- {id}\n") } else if desc.is_empty() { format!("- {id} — {name}\n") } else { format!("- {id} — {name}: {desc}\n") };
+            if !ids_only && block.len() + line.len() > MAX_ABILITIES_BLOCK {
+                ids_only = true;
+                block.push_str(&format!("- {id}\n"));
                 continue;
             }
             block.push_str(&line);

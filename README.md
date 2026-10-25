@@ -39,7 +39,7 @@ cargo build --release
 - `~/.kiqr` holds everything as YAML and Markdown in a local git repository. Every change is a commit. KIQR never pushes; add a remote yourself if you want a backup.
 - Secrets live in `~/.kiqr/.env` (mode 0600, ignored by git).
 - The crawler reads up to 200 pages per site. Pages that block crawlers or need JavaScript are retried through [UnblockingAPI](https://unblockingapi.com) if you add a key, and reported as unreadable otherwise.
-- Prompts are `SKILL.md` files under `~/.kiqr/skills/`; edit them to tune extraction and profile building.
+- Prompts are `SKILL.md` files under `~/.kiqr/abilities/`; edit them (or a project's copy, from Seemo → Abilities) to tune extraction and profile building.
 - Models per task are set in `~/.kiqr/config.yaml` as `provider/model`: `claude-cli/haiku`, `anthropic/claude-sonnet-5-5`, `openai/gpt-5-mini`, `codex-cli/gpt-5`.
 
 ## CLI

@@ -48,6 +48,7 @@ pub fn router(app: App) -> Router {
         .route("/api/events", get(events))
         .merge(crate::seemo::routes())
         .merge(crate::ext::routes())
+        .merge(crate::market::routes())
         .merge(crate::images::routes())
         .merge(crate::publish::routes())
         .with_state(app)
@@ -226,6 +227,9 @@ struct CrawlOpts {
 
 async fn start_crawl(State(app): State<App>, Path(slug): Path<String>, Query(q): Query<CrawlOpts>) -> ApiResult<serde_json::Value> {
     let mut project = Project::load(&app.store, &slug)?;
+    if !app.config.read().await.core_on("business-profile") {
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "crawling is switched off under Settings → Abilities (Crawl a website and build its business profile)".into()));
+    }
     if q.max_pages.is_some() || q.concurrency.is_some() || q.ai_concurrency.is_some() {
         if let Some(n) = q.max_pages {
             project.crawl.max_pages = Some(n);
@@ -328,7 +332,9 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
                 app.bus.clone(),
                 project.crawl.concurrency.unwrap_or(cfg.crawl.concurrency),
                 project.crawl.ai_concurrency.unwrap_or(cfg.crawl.ai_concurrency),
-                cfg.crawl.escalate_to_unblockingapi,
+                cfg.core_on("unblockingapi"),
+                // The project's own UnblockingAPI account, else the machine's; none when that ability is off.
+                if cfg.core_on("unblockingapi") { kiqr_core::secrets::lookup(app.store.home(), Some(&project.slug), "UNBLOCKINGAPI_KEY") } else { None },
                 extractor.clone(),
             )?
             .with_control(control);
@@ -589,6 +595,10 @@ async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(
     if g.kind != "post" {
         return Err(ApiError(StatusCode::BAD_REQUEST, format!("Seemo can't write {} assets yet; only posts", g.kind)));
     }
+    let (machine_on, project_on) = crate::market::on_for(&app, &slug, "social-posts").await;
+    if !machine_on || !project_on {
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("writing social media posts is switched off {} under Seemo → Abilities", if machine_on { "for this project" } else { "on this machine" })));
+    }
     if Brief::load(&app.store, &slug)?.is_none() {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, "there is no business profile yet; crawl the site first".into()));
     }
@@ -597,7 +607,13 @@ async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("model `{}` is not available", cfg.models.chat)));
     }
     let count = g.count.clamp(1, 10);
-    spawn_job(app, project, "posts", move |ex, project| async move { ex.social_posts(&project, count).await.map(|_| ()) }).await
+    let app2 = app.clone();
+    spawn_job(app, project, "posts", move |ex, project| async move {
+        let made = ex.social_posts(&project, count).await?;
+        crate::images::cards_for_posts(&app2, &project.slug, &made).await;
+        Ok(())
+    })
+    .await
 }
 
 async fn get_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>) -> ApiResult<Asset> {
@@ -611,7 +627,8 @@ async fn put_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String,
     if body.title.trim().is_empty() {
         return Err(ApiError(StatusCode::BAD_REQUEST, "an asset needs a title".into()));
     }
-    let next = Asset { id: current.id, kind: current.kind, created: current.created, files: current.files, title: body.title.trim().to_string(), ..body };
+    // Status, publications and the publish schedule are facts the dedicated routes change, not this one.
+    let next = Asset { id: current.id, kind: current.kind, created: current.created, files: current.files, title: body.title.trim().to_string(), publications: current.publications, channel: current.channel, publish_at: current.publish_at, publish_error: current.publish_error, ..body };
     let saved = assets::save(&app.store, &slug, &next)?;
     emit_saved(&app, &slug, &saved, false);
     Ok(Json(saved))

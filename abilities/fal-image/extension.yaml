@@ -1,8 +1,10 @@
 # fal.ai: Flux and friends behind one key. Images in a few seconds, paid per use.
 id: fal-image
-name: fal.ai images
+name: Create images with fal.ai
 version: 0.1.0
 summary: Photos and illustrations from a text prompt. About $0.03 per image.
+categories: [images]
+icon: image
 transport: http
 homepage: https://fal.ai
 auth:

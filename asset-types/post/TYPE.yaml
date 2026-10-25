@@ -5,6 +5,7 @@ plural: Posts
 icon: message-square-text
 description: Social posts and threads, in the brand's tone of voice.
 preview: post
+image: always
 files:
   - { role: body, accept: [md, txt] }
   - { role: media, accept: [png, jpg, jpeg, webp, gif, mp4] }

@@ -1,6 +1,8 @@
-//! Runs tasks when they are due. One loop for the whole installation, ticking
-//! every 30 seconds; a run that was due while the daemon was down runs once
-//! if it is under an hour late, otherwise it is recorded as missed.
+//! Runs tasks when they are due, and publishes scheduled assets. One loop
+//! for the whole installation, ticking every 30 seconds; a run that was due
+//! while the daemon was down runs once if it is under an hour late,
+//! otherwise it is recorded as missed. A scheduled publish is never missed:
+//! it goes out on the first tick after its time.
 
 use crate::{agent, App};
 use chrono::Utc;
@@ -49,6 +51,7 @@ async fn tick(app: &App, startup: bool) {
     let now = Utc::now();
     let Ok(projects) = Project::list(&app.store) else { return };
     for p in projects {
+        crate::publish::publish_due(app, &p.slug, now).await;
         for mut t in Task::list(&app.store, &p.slug).unwrap_or_default() {
             if t.status != TaskStatus::Active {
                 continue;

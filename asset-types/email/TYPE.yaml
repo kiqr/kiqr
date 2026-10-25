@@ -4,5 +4,6 @@ plural: Emails
 icon: mail
 description: Newsletters and email campaigns.
 preview: article
+image: always
 files:
   - { role: body, accept: [md, html] }

@@ -165,8 +165,10 @@ pub fn cached_left_site(store: &Store, slug: &str, key: &str) -> bool {
 }
 
 impl Crawler {
-    pub fn new(store: Store, bus: EventBus, concurrency: usize, ai_concurrency: usize, escalate: bool, extractor: Option<Arc<Extractor>>) -> Result<Self> {
-        let unblocking = if escalate { UnblockingFetcher::from_env().map(Arc::new) } else { None };
+    /// `unblocking_key`: the UnblockingAPI key for this project's pages (its
+    /// own, else the machine's), used only when escalation is on.
+    pub fn new(store: Store, bus: EventBus, concurrency: usize, ai_concurrency: usize, escalate: bool, unblocking_key: Option<String>, extractor: Option<Arc<Extractor>>) -> Result<Self> {
+        let unblocking = if escalate { UnblockingFetcher::with_key(unblocking_key).map(Arc::new) } else { None };
         Ok(Self {
             store,
             bus,

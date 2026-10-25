@@ -80,7 +80,16 @@ export type AssetType = {
   description: string;
   preview: "article" | "post" | "image" | "video" | "audio" | "campaign" | "files" | string;
   files: { role: string; accept: string[] }[];
+  /** Whether its assets carry an image by default: an article's cover always, a post's image usually. */
+  image: "always" | "usually" | "none";
   builtin: boolean;
+};
+/** The brand as the renderer sees it: colours with roles, the site name, the logo. */
+export type BrandKit = {
+  site_name: string;
+  palette: { dark: string; light: string; accent: string };
+  logo: string | null;
+  html_available: boolean;
 };
 export type AssetStatus = "draft" | "ready" | "scheduled" | "published" | "archived";
 /** Something made with Seemo: an article, a post, a meme, a video… */
@@ -95,10 +104,15 @@ export type Asset = {
   updated_at: string;
   files: { role: string; path: string; bytes: number; sha256: string }[];
   source?: Record<string, unknown>;
+  /** The channel the user approved it for (Ready); when the daemon publishes it (Scheduled); why a scheduled publish failed. */
+  channel?: string | null;
+  publish_at?: string | null;
+  publish_error?: string | null;
+  archived?: boolean;
   publications: { connector: string; account?: string; url?: string; at: string; run?: string }[];
 };
 export type TypeCount = { type: string; count: number };
-export type NewAsset = { type: string; title: string; status?: AssetStatus; tags?: string[]; summary?: string; source?: Record<string, unknown>; files?: { role: string; name: string; text: string }[] };
+export type NewAsset = { type: string; title: string; tags?: string[]; summary?: string; source?: Record<string, unknown>; files?: { role: string; name: string; text: string }[] };
 
 export type KiqrEvent = { at: string; project: string | null; type: string } & Record<string, unknown>;
 
@@ -118,7 +132,7 @@ export type Health = {
 /** `config.yaml`. */
 export type Config = {
   daemon: { host: string; port: number };
-  crawl: { max_pages: number; concurrency: number; ai_concurrency: number; escalate_to_unblockingapi: boolean };
+  crawl: { max_pages: number; concurrency: number; ai_concurrency: number };
   models: { extract: string; synthesize: string; chat: string };
   /** Seemo's sessions: spend ceiling per turn, how many run at once, the timezone for schedules. */
   agent?: { max_budget_usd: number; max_concurrent: number; timezone: string };
@@ -129,7 +143,7 @@ export type Config = {
 // ---- Seemo: chats, approvals, tasks
 
 /** A tool Seemo used while writing a message. `ok` is null while it runs. */
-export type Step = { tool: string; label: string; ok: boolean | null; note?: string; image?: string };
+export type Step = { tool: string; label: string; ok: boolean | null; note?: string; image?: string; asset?: { type: string; id: string } };
 /** A card in a chat: an approval Seemo is waiting for, which becomes a task card once approved. */
 export type Card = {
   kind: "approval" | "task" | string;
@@ -188,50 +202,72 @@ export type Run = {
   session_id: string | null;
   cost_usd: number | null;
 };
-export type CalendarItem = { task: string; title: string; at: string; schedule_text: string };
+/** A task run coming up, or a publish the daemon will do (`kind: "publish"`, with the asset and channel). */
+export type CalendarItem = { kind?: "task" | "publish"; task?: string; asset?: { type: string; id: string; title: string }; channel?: string | null; channel_label?: string; title: string; at: string; schedule_text: string };
+/** What waits for the user: open approvals from every chat, drafts to approve, what is approved but not sent, publishes coming up, failed publishes. */
+export type Todo = {
+  approvals: { id: string; kind: string; chat: string | null; chat_title?: string; message?: string | null; created: string; payload: Record<string, unknown> }[];
+  drafts: Asset[];
+  ready: Asset[];
+  scheduled: Asset[];
+  attention: Asset[];
+  count: number;
+};
 export type ToolGroup = { id: string; label: string; tools: string[] };
 
-// ---- Skills and connections
+// ---- Abilities
 export type Scope = { scope: "global" } | { scope: "project"; project: string };
-/** A folder under skills/: a skill (SKILL.md), a connection (extension.yaml), or both. */
-export type Skill = {
-  name: string;
-  title: string;
-  description: string;
-  abilities: string[];
-  channels: string[];
-  scope: Scope;
-  builtin: boolean;
-  has_skill: boolean;
-  /** One of KIQR's own pipeline prompts (reading pages, building the profile), not something Seemo picks up in a chat. */
-  pipeline?: boolean;
-  connection: { id: string; name: string; ready: boolean } | null;
-  error: string | null;
-  folder: string;
-};
-export type ConnectionAuth = { env: string; label: string; help: string; optional: boolean; set: boolean };
-/** What provides an ability: a service behind a key, a program here, or KIQR itself. */
-export type Connection = {
+/** A key an ability needs, and whether it is set: for this project, for the machine, or not. */
+export type MarketAuth = { env: string; label: string; help: string; optional: boolean; set: "project" | "global" | null };
+/** One instructions file of an ability, and where its text is overridden. */
+export type InstructionFile = { file: string; label: string; project_copy: boolean; machine_copy: boolean };
+/** One ability: what Seemo can do. Core ones are code; the rest are folders with instructions (SKILL.md), a connection (extension.yaml), or both. */
+export type Ability = {
   id: string;
   name: string;
-  version: string;
+  /** The vendor: the GitHub user or organisation behind it (`kiqr` for KIQR's own, `you` for yours). */
+  author: string;
+  author_url: string | null;
   summary: string;
-  transport: "http" | "command" | "mcp" | "builtin";
+  /** When Seemo uses it (from its instructions). */
+  description: string;
+  version: string;
+  latest: string;
   homepage: string;
+  categories: string[];
+  icon: string;
+  cost: string | null;
+  provides: { ability: string; label: string }[];
+  channels: string[];
+  tools: number;
+  trust: "official" | "verified" | "community" | "local" | string;
+  transport: "http" | "command" | "mcp" | "builtin" | "instructions" | string;
+  runs_program: boolean;
+  command: string | null;
+  program_found: boolean | null;
+  hosts: string[];
+  source: "core" | "shipped" | "marketplace" | "local" | "yours";
+  repo: string | null;
+  core: boolean;
   builtin: boolean;
-  folder: string;
-  scope: Scope;
+  installed: boolean;
+  scope: Scope | null;
+  folder: string | null;
+  git: boolean;
+  /** Switched off for the whole machine. */
+  machine_off: boolean;
+  /** Switched off for this project. */
+  paused: boolean;
   ready: boolean;
   missing: string[];
-  auth: ConnectionAuth[];
-  provides: { ability: string; label: string; cost: string | null }[];
-  tools: { name: string; label: string; cost: string | null }[];
-  channels: { kind: string; label: string }[];
-  hosts: string[];
-  command: string | null;
-  env: string[];
-  program_found: boolean | null;
+  auth: MarketAuth[];
+  active_for: string[];
+  instructions: InstructionFile[];
+  in_prompt: boolean;
+  error: string | null;
 };
+export type Contract = { id: string; label: string; tool: string; configured: string | null; active: { id: string; name: string } | null; candidates: { id: string; name: string; ready: boolean }[] };
+export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts: Contract[]; broken: { folder: string; scope: Scope; error: string }[]; guide: Ability | null; index: string; env_file: string; project_env_file: string | null };
 /** Where a project publishes. */
 export type Channel = {
   id: string;
@@ -248,9 +284,7 @@ export type Channel = {
   ready: boolean;
   destination_text: string;
 };
-export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown> };
-export type AbilityInfo = { id: string; label: string; tool: string; configured: string | null; active: { id: string; name: string } | null; connections: { id: string; name: string; ready: boolean }[] };
-export type Extensions = { connections: Connection[]; broken: { folder: string; scope: Scope; error: string }[]; abilities: AbilityInfo[] };
+export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[] };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -285,6 +319,7 @@ export const api = {
   brand: (slug: string) => req<Brand>(`/api/projects/${slug}/brand`).catch(() => null),
   rebuildBrand: (slug: string) => req<Brand>(`/api/projects/${slug}/brand`, { method: "POST", body: "{}" }),
   assetTypes: () => req<AssetType[]>("/api/asset-types"),
+  brandKit: (slug: string) => req<BrandKit>(`/api/projects/${slug}/brand/kit`),
   assets: (slug: string, type?: string) => req<Asset[]>(`/api/projects/${slug}/assets${type ? `?type=${encodeURIComponent(type)}` : ""}`),
   assetSummary: (slug: string) => req<TypeCount[]>(`/api/projects/${slug}/assets/summary`),
   /** Have Seemo write assets from the business profile, in the background (posts for now). */
@@ -321,48 +356,69 @@ export const api = {
   deleteTask: (slug: string, id: string) => req<void>(`/api/projects/${slug}/tasks/${id}`, { method: "DELETE" }),
   calendar: (slug: string, from?: string, to?: string) =>
     req<CalendarItem[]>(`/api/projects/${slug}/calendar${from ? `?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}` : ""}`),
+  todo: (slug: string) => req<Todo>(`/api/projects/${slug}/todo`),
   tools: () => req<{ groups: ToolGroup[] }>("/api/tools"),
 
-  // Skills and connections
-  /** Skills a project sees (its own first), or every folder when `slug` is empty. */
-  skills: (slug?: string) => req<Skill[]>(slug ? `/api/projects/${slug}/skills` : "/api/skills"),
-  skillText: (slug: string, name: string) => (DEMO ? demoSeemoRequest<string>(`/api/projects/${slug}/skills/${name}`) : fetch(`/api/projects/${slug}/skills/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))),
-  /** Write a SKILL.md: for one project (`slug`) or everywhere (`null`). */
-  saveSkill: (slug: string | null, name: string, text: string) => req<Skill>(slug ? `/api/projects/${slug}/skills/${name}` : `/api/skills/${name}`, { method: "PUT", body: JSON.stringify({ text }) }),
-  deleteSkill: (slug: string | null, name: string) => req<void>(slug ? `/api/projects/${slug}/skills/${name}` : `/api/skills/${name}`, { method: "DELETE" }),
-  /** Install a skill folder (a path on this machine or a git URL). */
-  installSkill: (source: string, slug?: string, name?: string) => req<Skill>(slug ? `/api/projects/${slug}/skills` : "/api/skills", { method: "POST", body: JSON.stringify({ source, name }) }),
-  extensions: () => req<Extensions>("/api/extensions"),
-  removeConnection: (id: string, slug?: string) => req<void>(`/api/extensions/${id}${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "DELETE" }),
+  // Abilities
+  /** Everything Seemo can do in a project (or on the machine when `slug` is empty), and the marketplace. */
+  abilities: (slug?: string) => req<AbilitiesView>(slug ? `/api/projects/${slug}/abilities` : "/api/abilities"),
+  /** An ability's instructions as they apply (`file` picks one when it has several). Reads switched-off ones too. */
+  instructions: (slug: string | null, id: string, file?: string) => {
+    const path = `${slug ? `/api/projects/${slug}` : "/api"}/abilities/${encodeURIComponent(id)}/instructions?all=1${file ? `&file=${encodeURIComponent(file)}` : ""}`;
+    return DEMO ? demoSeemoRequest<string>(path) : fetch(path).then((r) => (r.ok ? r.text() : r.json().then((e: { error?: string }) => Promise.reject(new Error(e.error ?? `${r.status}`)))));
+  },
+  /** Write instructions: a new ability of yours, an edit, or a copy of shipped text; for one project (`slug`) or every project (`null`). */
+  saveInstructions: (slug: string | null, id: string, text: string, file?: string) => req<Ability>(`${slug ? `/api/projects/${slug}` : "/api"}/abilities/${encodeURIComponent(id)}/instructions`, { method: "PUT", body: JSON.stringify({ text, file }) }),
+  /** Drop the copy at that scope: a project's copy, or the machine's edit of shipped text (back to the shipped one). */
+  deleteInstructions: (slug: string | null, id: string, file?: string) => req<void>(`${slug ? `/api/projects/${slug}` : "/api"}/abilities/${encodeURIComponent(id)}/instructions${file ? `?file=${encodeURIComponent(file)}` : ""}`, { method: "DELETE" }),
+  installAbility: (id: string, b: { scope: "global" | "project"; project?: string; secrets?: Record<string, string> }) => req<{ id: string; folder: string }>(`/api/abilities/${id}/install`, { method: "POST", body: JSON.stringify(b) }),
+  installAbilitySource: (b: { source: string; scope: "global" | "project"; project?: string; name?: string }) => req<Ability>("/api/abilities/install", { method: "POST", body: JSON.stringify(b) }),
+  updateAbility: (id: string, slug?: string) => req<{ detail: string }>(`/api/abilities/${id}/update${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "POST", body: "{}" }),
+  /** Off or on for the whole machine (core abilities too). */
+  pauseAbility: (id: string, slug?: string) => req<{ paused: boolean }>(`/api/abilities/${id}/pause${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "POST", body: "{}" }),
+  resumeAbility: (id: string, slug?: string) => req<{ paused: boolean }>(`/api/abilities/${id}/resume${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "POST", body: "{}" }),
+  removeAbility: (id: string, slug?: string) => req<void>(`/api/abilities/${id}${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "DELETE" }),
+  /** Off or on for one project. */
+  pauseProjectAbility: (slug: string, id: string) => req<{ paused: boolean }>(`/api/projects/${slug}/abilities/${id}/pause`, { method: "POST", body: "{}" }),
+  resumeProjectAbility: (slug: string, id: string) => req<{ paused: boolean }>(`/api/projects/${slug}/abilities/${id}/resume`, { method: "POST", body: "{}" }),
   /** Set a secret in .env by name; an empty value clears it. The value is never read back. */
   setSecret: (name: string, value: string) => req<{ name: string; set: boolean }>(`/api/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
+  /** The same for one project: its own .env wins over the machine's. */
+  setProjectSecret: (slug: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
 
   // Channels and publishing
   channels: (slug: string) => req<{ channels: Channel[]; kinds: ChannelKindInfo[] }>(`/api/projects/${slug}/channels`),
   createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string> }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
   deleteChannel: (slug: string, id: string) => req<void>(`/api/projects/${slug}/channels/${id}`, { method: "DELETE" }),
-  /** Publish an asset through a channel. From the UI the click is the yes. */
-  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel: string, note = "") =>
+  /** Publish an asset now, through the channel it was approved for or the one given. From the UI the click is the yes. */
+  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel = "", note = "") =>
     req<{ published: boolean; url: string | null; detail: string; channel_label: string }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel, note, by: "user" }) }),
+  /** The user's yes to an asset, for a channel: it becomes Ready. Status is never set by hand; these change what it follows from. */
+  approveAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel: string) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/approve`, { method: "POST", body: JSON.stringify({ channel }) }),
+  scheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">, at: string, channel = "") => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "POST", body: JSON.stringify({ at, channel }) }),
+  unscheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "DELETE" }),
+  unpublishAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/unpublish`, { method: "POST", body: "{}" }),
+  archiveAsset: (slug: string, a: Pick<Asset, "type" | "id">, archived: boolean) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}`, { method: "PATCH", body: JSON.stringify({ archived }) }),
   sendEmail: (slug: string, m: { to: string; subject: string; text: string; asset?: { type: string; id: string } }) => req<{ sent: boolean; to: string; subject: string; connection: string }>(`/api/projects/${slug}/email`, { method: "POST", body: JSON.stringify(m) }),
 };
 
 let demoConfig: Config = {
   daemon: { host: "127.0.0.1", port: 7777 },
-  crawl: { max_pages: 200, concurrency: 5, ai_concurrency: 3, escalate_to_unblockingapi: true },
+  crawl: { max_pages: 200, concurrency: 5, ai_concurrency: 3 },
   models: { extract: "claude-cli/haiku", synthesize: "claude-cli/sonnet", chat: "claude-cli/sonnet" },
   agent: { max_budget_usd: 2, max_concurrent: 3, timezone: "Europe/Stockholm" },
   abilities: {},
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (/\/(chats|approvals|tasks|calendar|skills|channels|email)(\/|\?|$)/.test(path) || /\/publish$/.test(path) || path === "/api/tools" || path.startsWith("/api/extensions") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|channels|email|secrets|abilities|todo)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);
   }
   if (path === "/api/projects") return Promise.resolve((demoState.created ? [demoProject] : []) as T);
   if (path.startsWith("/api/projects/") && path.split("/").length === 4) return Promise.resolve(demoProject as T);
+  if (path.endsWith("/brand/kit")) return Promise.resolve({ site_name: "UnblockingAPI", palette: { dark: "#0b1220", light: "#f8fafc", accent: "#e11d74" }, logo: null, html_available: true } as T);
   if (path === "/api/asset-types" || path.includes("/assets")) return demoAssetRequest<T>(path, init);
   if (path.endsWith("/brief")) return Promise.resolve((init?.method === "PUT" ? JSON.parse(String(init.body)) : demoState.created ? demoBrief : null) as T);
   if (path.endsWith("/crawl/limit")) return Promise.resolve({ max_pages: JSON.parse(String(init?.body)).max_pages, live: true } as T);

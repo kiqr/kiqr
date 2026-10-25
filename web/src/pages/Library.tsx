@@ -1,10 +1,13 @@
 // The library: everything made with Seemo, by type. Types are data, so this page works for
 // kinds of assets nobody has defined yet: it previews what it can and lists files otherwise.
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { motion } from "motion/react";
-import { ArrowLeft, Bot, Download, ExternalLink, FileText, Library as LibraryIcon, Rocket, SearchX, Send, Trash2, User } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import { ArrowLeft, Bot, Download, FileText, Library as LibraryIcon, Maximize2, Rocket, SearchX, Send, Trash2, User, X } from "lucide-react";
 import { api, useAsync, useEvents, type Asset, type AssetStatus, type AssetType } from "../api";
+import { PostCard } from "./PostCard";
+import { AssetActions, StatusChip, STATUSES, STATUS_LABEL } from "./AssetActions";
 import { Markdown } from "../markdown";
 import { assetIcon } from "../assetIcons";
 import { ago } from "./Project";
@@ -12,10 +15,6 @@ import { EmptyLibrary, Guide } from "./LibraryEmpty";
 import "../profile.css";
 import "../library.css";
 
-const STATUSES: AssetStatus[] = ["draft", "ready", "scheduled", "published", "archived"];
-const STATUS_TONE: Record<AssetStatus, string> = { draft: "", ready: "acc", scheduled: "ai", published: "ok", archived: "" };
-/** Badge wording, sentence case like "All". Archived assets live in the Archive. */
-const STATUS_LABEL: Record<AssetStatus, string> = { draft: "Draft", ready: "Ready", scheduled: "Scheduled", published: "Published", archived: "Archive" };
 const IMAGE = /\.(png|jpe?g|webp|gif|svg|avif)$/i;
 const VIDEO = /\.(mp4|webm|mov)$/i;
 const AUDIO = /\.(mp3|wav|ogg|m4a)$/i;
@@ -32,7 +31,13 @@ function useLibrary(slug: string, type?: string) {
 export function LibraryPage() {
   const { slug = "", type } = useParams();
   const { types, assets } = useLibrary(slug, type);
+  // Cards without an image take the brand's accent, so the grid still looks like the business.
+  const kit = useAsync(() => api.brandKit(slug).catch(() => null), [slug]);
+  const brand = useAsync(() => api.brand(slug), [slug]);
+  const accent = kit.data?.palette?.accent;
   const [status, setStatus] = useState<AssetStatus | null>(null);
+  // Posts open in a modal over the grid; the page behind stays where it was.
+  const [open, setOpen] = useState<{ type: string; id: string } | null>(null);
   useEffect(() => setStatus(null), [type]);
   const t = types.find((x) => x.id === type);
   const all = assets.data ?? [];
@@ -42,6 +47,7 @@ export function LibraryPage() {
   // Until the first asset exists, the library page is the getting-started page.
   const fresh = !t && !!assets.data && all.length === 0;
   const Icon = t ? assetIcon(t.icon) : fresh ? Rocket : LibraryIcon;
+  const opened = open ? all.find((a) => a.type === open.type && a.id === open.id) : undefined;
 
   return (
     <div className="prof lib">
@@ -88,11 +94,61 @@ export function LibraryPage() {
       ) : (
         <div className="lib-grid">
           {list.map((a, i) => (
-            <AssetCard key={`${a.type}/${a.id}`} slug={slug} a={a} t={types.find((x) => x.id === a.type)} i={i} showType={!t} />
+            <AssetCard key={`${a.type}/${a.id}`} slug={slug} a={a} t={types.find((x) => x.id === a.type)} i={i} showType={!t} accent={accent} onOpen={types.find((x) => x.id === a.type)?.preview === "post" ? () => setOpen({ type: a.type, id: a.id }) : undefined} />
           ))}
         </div>
       )}
+      <AnimatePresence>{opened && <PostModal slug={slug} a={opened} brand={brand.data ?? null} accent={accent} onClose={() => setOpen(null)} onChange={assets.reload} />}</AnimatePresence>
     </div>
+  );
+}
+
+/** A post over the library: the feed card, its status, and where to send it. Esc or the backdrop closes it. */
+function PostModal({ slug, a, brand, accent, onClose, onChange }: { slug: string; a: Asset; brand: import("../api").Brand | null; accent?: string; onClose: () => void; onChange: () => void }) {
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", key);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", key);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+  // A portal: the page content animates with a transform, which would otherwise pin a fixed backdrop to it.
+  return createPortal(
+    <motion.div className="lib-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }} onClick={onClose} role="dialog" aria-modal aria-label={a.title}>
+      <motion.div className="lib-modal" initial={{ opacity: 0, y: 14, scale: 0.985 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.99 }} transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }} onClick={(e) => e.stopPropagation()}>
+        <div className="stage">
+          <PostCard slug={slug} a={a} brand={brand} accent={accent} />
+        </div>
+        <aside className="side">
+          <button className="x" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+          <div>
+            <p className="cap">Post</p>
+            <h2>{a.title}</h2>
+            {a.summary && <p className="muted sm">{a.summary}</p>}
+          </div>
+          <div>
+            <p className="cap">Status</p>
+            <StatusChip a={a} />
+            <p className="muted sm by">
+              <Maker by={a.created.by} long /> · {ago(a.updated_at)}
+            </p>
+          </div>
+          <div>
+            <p className="cap">{a.status === "published" ? "Published" : a.status === "draft" ? "Approve" : "Publish"}</p>
+            <AssetActions slug={slug} a={a} onChange={onChange} />
+          </div>
+          <Link className="btn g full" to={`/p/${slug}/library/${a.type}/${a.id}`}>
+            <Maximize2 size={14} /> Open the page
+          </Link>
+        </aside>
+      </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
@@ -114,14 +170,25 @@ function TypeStrip({ slug, types, assets }: { slug: string; types: AssetType[]; 
   );
 }
 
-function AssetCard({ slug, a, t, i, showType }: { slug: string; a: Asset; t?: AssetType; i: number; showType: boolean }) {
+function AssetCard({ slug, a, t, i, showType, accent, onOpen }: { slug: string; a: Asset; t?: AssetType; i: number; showType: boolean; accent?: string; onOpen?: () => void }) {
   const Icon = assetIcon(t?.icon);
   const visual = a.files.find((f) => IMAGE.test(f.path));
   const src = visual ? api.assetFile(slug, a, visual.path) : "";
+  const tint = !src && accent ? ({ "--brand": accent } as React.CSSProperties) : undefined;
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.035, duration: 0.3 }}>
-      <Link to={`/p/${slug}/library/${a.type}/${a.id}`} className="lib-card">
-        <div className={`lib-thumb ${src ? "img" : ""}`}>
+      <Link
+        to={`/p/${slug}/library/${a.type}/${a.id}`}
+        className="lib-card"
+        onClick={(e) => {
+          // A plain click opens the modal; modifier clicks still open the page in a new tab.
+          if (onOpen && !e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+            e.preventDefault();
+            onOpen();
+          }
+        }}
+      >
+        <div className={`lib-thumb ${src ? "img" : ""}`} style={tint}>
           {src ? <img src={src} alt="" loading="lazy" /> : <Icon size={26} />}
           {showType && (
             <span className="lib-kind">
@@ -133,7 +200,7 @@ function AssetCard({ slug, a, t, i, showType }: { slug: string; a: Asset; t?: As
           <p className="nm">{a.title}</p>
           {a.summary && <p className="ds">{a.summary}</p>}
           <div className="lib-meta">
-            <span className={`chip ${STATUS_TONE[a.status]}`}>{a.status === "archived" ? "Archived" : STATUS_LABEL[a.status]}</span>
+            <StatusChip a={a} />
             {a.publications.map((p, k) => (
               <span key={k} className="chip ok" title={p.account}>
                 <Send size={11} /> {p.connector}
@@ -180,7 +247,7 @@ function EmptyType({ slug, t }: { slug: string; t: AssetType }) {
       <p className="t">No {t.plural.toLowerCase()} yet</p>
       <p className="muted">{t.id === "article" ? "Pick a content gap and Seemo adds a draft article here." : "Ask Seemo for one in a chat, or schedule a task that makes them."}</p>
       {t.id === "article" && (
-        <Link className="btn p" to={`/p/${slug}/gaps`}>
+        <Link className="btn p" to={`/p/${slug}/content#gaps`}>
           <SearchX size={15} /> Content gaps
         </Link>
       )}
@@ -194,8 +261,9 @@ export function AssetPage() {
   const navigate = useNavigate();
   const asset = useAsync(() => api.asset(slug, type, id), [slug, type, id]);
   const types = useAsync(() => api.assetTypes(), []);
+  const brand = useAsync(() => api.brand(slug), [slug]);
+  const kit = useAsync(() => api.brandKit(slug).catch(() => null), [slug]);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [busy, setBusy] = useState(false);
   useEvents(slug, (e) => e.type === "asset_saved" && e.asset_type === type && e.id === id && asset.reload(), { demo: false });
 
   const a = asset.data;
@@ -214,15 +282,6 @@ export function AssetPage() {
   const t = types.data?.find((x) => x.id === a.type);
   const Icon = assetIcon(t?.icon);
 
-  const setStatus = async (status: AssetStatus) => {
-    setBusy(true);
-    try {
-      await api.saveAsset(slug, { ...a, status });
-      asset.reload();
-    } finally {
-      setBusy(false);
-    }
-  };
   const remove = async () => {
     await api.deleteAsset(slug, a.type, a.id);
     navigate(`/p/${slug}/library/${a.type}`);
@@ -264,19 +323,19 @@ export function AssetPage() {
       </div>
 
       <div className="lib-detail">
-        <div className="pcard lib-preview">
-          <Preview slug={slug} a={a} t={t} />
-        </div>
+        {t?.preview === "post" ? (
+          <div className="post-stage">
+            <PostCard slug={slug} a={a} brand={brand.data ?? null} accent={kit.data?.palette?.accent} />
+          </div>
+        ) : (
+          <div className="pcard lib-preview">
+            <Preview slug={slug} a={a} t={t} />
+          </div>
+        )}
         <aside className="lib-side">
           <div className="pcard">
             <p className="cap">Status</p>
-            <div className="lib-status">
-              {STATUSES.map((s) => (
-                <button key={s} disabled={busy} className={`chip ${a.status === s ? STATUS_TONE[s] || "acc" : ""}`} onClick={() => a.status !== s && setStatus(s)}>
-                  {s === "archived" ? "Archived" : STATUS_LABEL[s]}
-                </button>
-              ))}
-            </div>
+            <StatusChip a={a} />
             <dl className="lib-dl">
               <dt>Made by</dt>
               <dd>
@@ -313,27 +372,9 @@ export function AssetPage() {
             </dl>
           </div>
           <div className="pcard">
-            <p className="cap">Published</p>
-            {a.publications.length === 0 ? (
-              <p className="muted sm">Not yet. Once connectors are set up, Seemo publishes from here or from a scheduled task.</p>
-            ) : (
-              <ul className="lib-pubs">
-                {a.publications.map((p, i) => (
-                  <li key={i}>
-                    <Send size={13} />
-                    <span>
-                      <b>{p.connector}</b> {p.account}
-                      <small>{new Date(p.at).toLocaleString()}</small>
-                    </span>
-                    {p.url && (
-                      <a href={p.url} target="_blank" rel="noreferrer" aria-label="Open">
-                        <ExternalLink size={13} />
-                      </a>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <p className="cap">{a.status === "published" ? "Published" : a.status === "draft" ? "Approve" : "Publish"}</p>
+            {a.status === "draft" && <p className="muted sm">Approve it for a channel; then publish it now or pick a time. Seemo can ask to publish it too, and you say yes on its card.</p>}
+            <AssetActions slug={slug} a={a} onChange={asset.reload} />
           </div>
           <div className="pcard">
             <p className="cap">Files</p>
@@ -356,77 +397,8 @@ export function AssetPage() {
               </ul>
             )}
           </div>
-          <PublishBox slug={slug} a={a} onDone={asset.reload} />
         </aside>
       </div>
-    </div>
-  );
-}
-
-/** Send the asset out through one of the project's channels, and where it went so far. */
-function PublishBox({ slug, a, onDone }: { slug: string; a: Asset; onDone: () => void }) {
-  const channels = useAsync(() => api.channels(slug).catch(() => ({ channels: [], kinds: [] })), [slug]);
-  const list = (channels.data?.channels ?? []).filter((c) => c.ready);
-  const [pick, setPick] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const chosen = pick || list[0]?.id || "";
-  const publish = async () => {
-    if (!chosen) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const r = await api.publishAsset(slug, a, chosen);
-      setMsg({ ok: true, text: `Published to ${r.channel_label}${r.url ? ` at ${r.url}` : ""}.` });
-      onDone();
-    } catch (e) {
-      setMsg({ ok: false, text: (e as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="pcard">
-      <p className="cap">Publish</p>
-      {a.publications.length > 0 && (
-        <ul className="lib-pubs">
-          {a.publications.map((p, i) => (
-            <li key={i}>
-              <Send size={12} />
-              <span>{p.connector}</span>
-              {p.url ? (
-                <a href={p.url} target="_blank" rel="noreferrer">
-                  open <ExternalLink size={11} />
-                </a>
-              ) : (
-                <small>{p.account ?? ""}</small>
-              )}
-              <small>{ago(p.at)}</small>
-            </li>
-          ))}
-        </ul>
-      )}
-      {list.length === 0 ? (
-        <p className="muted sm">
-          No channel to publish to yet. <Link to={`/p/${slug}/channels`}>Add one</Link>.
-        </p>
-      ) : (
-        <div className="lib-publish">
-          {list.length > 1 && (
-            <select className="input" value={chosen} onChange={(e) => setPick(e.target.value)}>
-              {list.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label} ({c.destination_text})
-                </option>
-              ))}
-            </select>
-          )}
-          <button className="btn g" disabled={busy || !chosen} onClick={() => void publish()}>
-            <Send size={14} /> {busy ? "Publishing…" : `Publish to ${list.find((c) => c.id === chosen)?.label ?? "channel"}`}
-          </button>
-        </div>
-      )}
-      {msg && <p className={`sm ${msg.ok ? "ok" : "err"}`}>{msg.text}</p>}
     </div>
   );
 }

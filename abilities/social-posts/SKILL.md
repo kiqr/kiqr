@@ -1,5 +1,5 @@
 ---
-name: social-posts
+name: Write social media posts
 description: Write a few ready-to-publish social media posts from the business brief, in the brand's tone of voice, as JSON.
 ---
 
@@ -21,9 +21,10 @@ Rules:
 - No emoji unless the tone of voice clearly uses them. No exclamation marks unless the brand's own examples use them.
 - End with a clear, honest next step when it fits (visit the site, read more, get in touch), not on every post.
 - `title`: a short internal label for the library, 3 to 7 words, not the post's first line.
+- `image`: every post carries an image. Give each an image idea: `headline` (the post's point in at most 7 words, not its first line copied), `support` (one line of at most 12 words, from the post) and `style` (`dark`, `light` or `accent`: which brand colour is the background; vary it across the batch).
 
 Return only JSON:
 
 ```json
-{ "posts": [ { "network": "linkedin", "title": "Why we render only when needed", "text": "The post, exactly as it will be published." } ] }
+{ "posts": [ { "network": "linkedin", "title": "Why we render only when needed", "text": "The post, exactly as it will be published.", "image": { "headline": "Render only when the page needs it", "support": "One credit per page, whatever the site throws at you.", "style": "dark" } } ] }
 ```

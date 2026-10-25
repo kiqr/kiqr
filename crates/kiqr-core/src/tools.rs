@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 /// outside any ability contract), named after it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Group {
-    /// Read the profile, brief, brand, assets, tasks, config and skills.
+    /// Read the profile, brief, brand, assets, tasks, config and the abilities' instructions.
     Read,
     /// Read pages on the web through KIQR's own fetcher.
     Web,
@@ -305,7 +305,7 @@ pub fn catalogue() -> Vec<Tool> {
             name: "list_asset_types",
             group: Read,
             label: "Checking the asset types",
-            description: "The kinds of asset the library knows: id, name, icon, the files each holds and how it is previewed.",
+            description: "The kinds of asset the library knows: id, name, icon, the files each holds, how it is previewed, and `image`: whether its assets carry an image by default (always, usually or none).",
             call: Call::Http { method: "GET", path: "/api/asset-types", body: Body::None },
             schema: no_args,
         },
@@ -345,24 +345,24 @@ pub fn catalogue() -> Vec<Tool> {
             name: "get_config",
             group: Read,
             label: "Reading KIQR's settings",
-            description: "config.yaml: daemon host and port, crawl defaults (max_pages, concurrency, ai_concurrency, escalate_to_unblockingapi), the model per task (extract, synthesize, chat) and agent settings. Never contains secrets.",
+            description: "config.yaml: daemon host and port, crawl defaults (max_pages, concurrency, ai_concurrency), the model per task (extract, synthesize, chat), agent settings, which installed ability serves each contract (abilities) and the built-in abilities switched off (core_off). Never contains secrets.",
             call: Call::Http { method: "GET", path: "/api/config", body: Body::None },
             schema: no_args,
         },
         Tool {
-            name: "read_skill",
+            name: "read_instructions",
             group: Read,
-            label: "Reading a skill",
-            description: "The text of a skill: standing instructions for a kind of work, written by KIQR or by the user. The system prompt lists the skills and when to use each; read the one that matches before acting.",
-            call: Call::Http { method: "GET", path: "/api/projects/{slug}/skills/{name}", body: Body::None },
-            schema: || obj(json!({ "name": { "type": "string" } }), &["name"]),
+            label: "Reading how to",
+            description: "An ability's instructions: how this kind of work is done here, written by KIQR or by the user. The system prompt lists the abilities that have instructions and when each applies; read the one that matches before acting. `ability` is its id; `file` picks one when an ability has several (the list says which).",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/abilities/{ability}/instructions", body: Body::Query },
+            schema: || obj(json!({ "ability": { "type": "string" }, "file": { "type": "string" } }), &["ability"]),
         },
         Tool {
-            name: "list_skills",
+            name: "list_abilities",
             group: Read,
-            label: "Listing the skills",
-            description: "Every skill this project can use: name, when to use it, and whether a connection it needs is ready.",
-            call: Call::Http { method: "GET", path: "/api/projects/{slug}/skills", body: Body::None },
+            label: "Listing the abilities",
+            description: "Everything you can do in this project: id, name, whether it is on and set up here, and whether it has instructions to read.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/abilities/brief", body: Body::None },
             schema: no_args,
         },
         Tool {
@@ -415,7 +415,7 @@ pub fn catalogue() -> Vec<Tool> {
             name: "create_asset",
             group: WriteAssets,
             label: "Adding to the library",
-            description: "Save a new asset in the library as a draft: a post, an article, a reply, an email… `text` becomes its body file (Markdown). Use `summary` for a one-line description (for a post: the network, e.g. 'For LinkedIn') and `tags` for the network or topic.",
+            description: "Save a new asset in the library as a draft: a post, an article, a reply, an email… `text` becomes its body file (Markdown). Use `summary` for a one-line description (for a post: the network, e.g. 'For LinkedIn') and `tags` for the network or topic. Everything gets a featured image: follow up with `create_image` on the new asset right away (the Create images instructions say how). The asset shows in the chat as it will look; the user approves it there or in the library, so never ask for approval in text.",
             call: Call::Http { method: "POST", path: "/api/projects/{slug}/assets", body: Body::Args },
             schema: || obj(
                 json!({
@@ -424,7 +424,6 @@ pub fn catalogue() -> Vec<Tool> {
                     "text": { "type": "string", "description": "The content, exactly as it would be published" },
                     "summary": { "type": "string" },
                     "tags": { "type": "array", "items": { "type": "string" } },
-                    "status": { "type": "string", "enum": ["draft", "ready"] },
                 }),
                 &["type", "title", "text"],
             ),
@@ -433,12 +432,12 @@ pub fn catalogue() -> Vec<Tool> {
             name: "update_asset",
             group: WriteAssets,
             label: "Changing an asset",
-            description: "Change an asset's title, status (draft, ready, archived), tags, summary or text. Pass only what changes.",
+            description: "Change an asset's title, tags, summary or text, or archive it (`archived: true`) and bring it back. Pass only what changes. Status is not set by anyone: it follows from the user's approval (Ready), a scheduled publish (Scheduled) and publishing (Published).",
             call: Call::Http { method: "PATCH", path: "/api/projects/{slug}/assets/{type}/{id}", body: Body::Args },
             schema: || {
                 let mut p = asset_ref();
                 p["title"] = json!({ "type": "string" });
-                p["status"] = json!({ "type": "string", "enum": ["draft", "ready", "archived"] });
+                p["archived"] = json!({ "type": "boolean", "description": "true puts it in the archive, false brings it back" });
                 p["tags"] = json!({ "type": "array", "items": { "type": "string" } });
                 p["summary"] = json!({ "type": "string" });
                 p["text"] = json!({ "type": "string", "description": "New body text" });
@@ -459,6 +458,7 @@ pub fn catalogue() -> Vec<Tool> {
                     "icon": { "type": "string" },
                     "description": { "type": "string" },
                     "preview": { "type": "string", "enum": ["article", "post", "image", "video", "audio", "campaign", "files"] },
+                    "image": { "type": "string", "enum": ["always", "usually", "none"], "description": "Whether its assets carry an image by default" },
                 }),
                 &["id", "name", "plural"],
             ),
@@ -601,12 +601,13 @@ pub fn catalogue() -> Vec<Tool> {
             name: "publish_asset",
             group: Publish,
             label: "Proposing to publish",
-            description: "Send an asset out through a channel (by id from list_channels). The user sees what goes where and confirms; this call waits for that answer. The asset becomes `published` with a record of where it went.",
+            description: "Send an asset out through a channel (by id from list_channels), now or at a time (`at`). The user sees what goes where and confirms; this call waits for that answer. Now: the asset becomes `published` with a record of where it went. With `at`: the asset is approved for the channel and `scheduled`; the daemon publishes it at that time.",
             call: Call::Approval("publish"),
             schema: || obj(
                 json!({
                     "asset": { "type": "object", "properties": { "type": { "type": "string" }, "id": { "type": "string" } }, "required": ["type", "id"] },
                     "channel": { "type": "string", "description": "Channel id" },
+                    "at": { "type": "string", "description": "RFC 3339 time to publish at; omit to publish now" },
                     "note": { "type": "string", "description": "A line for the user about why now" },
                 }),
                 &["asset", "channel"],
@@ -617,7 +618,7 @@ pub fn catalogue() -> Vec<Tool> {
             name: "change_config",
             group: Config,
             label: "Proposing a settings change",
-            description: "Change KIQR settings (config.yaml). Keys are dotted paths: models.extract, models.synthesize, models.chat (provider/model, e.g. claude-cli/sonnet, anthropic/claude-haiku-5-5), crawl.max_pages, crawl.concurrency (1-10), crawl.ai_concurrency (1-10), crawl.escalate_to_unblockingapi, daemon.host, daemon.port, agent.max_budget_usd, agent.max_concurrent, agent.timezone. The user sees the change and confirms; this call waits for that answer. Applied at once, except host and port, which need a restart. Secrets cannot be set here; they go in .env via Settings.",
+            description: "Change KIQR settings (config.yaml). Keys are dotted paths: models.extract, models.synthesize, models.chat (provider/model, e.g. claude-cli/sonnet, anthropic/claude-haiku-5-5), crawl.max_pages, crawl.concurrency (1-10), crawl.ai_concurrency (1-10), daemon.host, daemon.port, agent.max_budget_usd, agent.max_concurrent, agent.timezone. The user sees the change and confirms; this call waits for that answer. Applied at once, except host and port, which need a restart. Secrets cannot be set here; they go in .env via Settings.",
             call: Call::Approval("config"),
             schema: || obj(
                 json!({
@@ -628,14 +629,14 @@ pub fn catalogue() -> Vec<Tool> {
             ),
         },
         Tool {
-            name: "save_skill",
+            name: "save_ability",
             group: Config,
-            label: "Proposing a skill",
-            description: "Keep a way of working as a skill: standing instructions you will read before similar requests (how we write product updates, how to publish to the blog, what a weekly report contains). The user sees the text and confirms; this call waits for that answer. `description` is one line saying when to use it. Scope `this_project` (default) or `everywhere`.",
-            call: Call::Approval("skill"),
+            label: "Proposing an ability",
+            description: "Keep a way of working as an ability with instructions you will read before similar requests (how we write product updates, how to publish to the blog, what a weekly report contains). The user sees the text and confirms; this call waits for that answer. `name` is the action as the user would say it ('Write product update posts'); `description` is one line saying when to use it. Scope `this_project` (default) or `everywhere`.",
+            call: Call::Approval("ability"),
             schema: || obj(
                 json!({
-                    "name": { "type": "string", "description": "kebab-case id, e.g. product-updates" },
+                    "name": { "type": "string", "description": "The action, e.g. Write product update posts" },
                     "description": { "type": "string", "description": "When to use it, one line" },
                     "text": { "type": "string", "description": "The instructions, Markdown" },
                     "scope": { "type": "string", "enum": ["this_project", "everywhere"] },
@@ -679,7 +680,7 @@ pub fn label_for(specs: &[ToolSpec], name: &str, args: &Value) -> String {
     let name = name.strip_prefix("mcp__kiqr__").unwrap_or(name);
     let found = specs.iter().find(|t| t.name == name).map(|t| t.label.clone()).or_else(|| find(name).map(|t| t.label.to_string()));
     let Some(label) = found else { return format!("Using {name}") };
-    let target = ["section", "name", "title", "task", "type", "url", "channel"].iter().find_map(|k| args.get(*k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()));
+    let target = ["section", "ability", "name", "title", "task", "type", "url", "channel"].iter().find_map(|k| args.get(*k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()));
     match target {
         Some(x) if name != "create_task" && name != "create_asset" && name != "create_image" => format!("{label}: {x}"),
         _ => label,

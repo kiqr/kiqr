@@ -7,6 +7,7 @@ import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, Exter
 import { api, useAsync, useEvents, type Card, type Message, type Step, type Streaming, type Task } from "../api";
 import { Markdown } from "../markdown";
 import { ago } from "../pages/Project";
+import { AssetEmbed } from "../pages/AssetEmbed";
 
 export function Conversation({ slug, messages, streaming, compact, trailing }: { slug: string; messages: Message[]; streaming: Streaming | null; compact?: boolean; trailing?: React.ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
@@ -35,7 +36,7 @@ export function Conversation({ slug, messages, streaming, compact, trailing }: {
         <div className="cm ai live">
           <span className="av" />
           <div className="body">
-            <Steps steps={streaming.steps} live />
+            <Steps slug={slug} steps={streaming.steps} live />
             {streaming.text ? (
               <Markdown text={streaming.text} className="chat-md" />
             ) : (
@@ -75,7 +76,7 @@ function MessageView({ slug, m, compact }: { slug: string; m: Message; compact?:
     <div className="cm ai">
       <span className="av" />
       <div className="body">
-        <Steps steps={m.steps ?? []} />
+        <Steps slug={slug} steps={m.steps ?? []} />
         <Markdown text={m.text} className="chat-md" />
         {m.error && (
           <p className="err">
@@ -89,20 +90,30 @@ function MessageView({ slug, m, compact }: { slug: string; m: Message; compact?:
 }
 
 /** The tools behind a message: one line while running, a folded list afterwards. */
-function Steps({ steps, live }: { steps: Step[]; live?: boolean }) {
+function Steps({ slug, steps, live }: { slug: string; steps: Step[]; live?: boolean }) {
   const [open, setOpen] = useState(false);
   if (!steps.length) return null;
   const running = steps.find((s) => s.ok === null);
   const failed = steps.filter((s) => s.ok === false).length;
-  const images = steps.filter((s) => s.image).map((s) => s.image!);
-  const gallery = images.length > 0 && (
-    <div className="step-images">
-      {images.map((u) => (
-        <a key={u} href={u} target="_blank" rel="noreferrer">
-          <img src={u} alt="" loading="lazy" />
-        </a>
+  // Each asset once, however many steps touched it (made, changed, an image landed on it).
+  const made = steps.filter((s) => s.asset).map((s) => s.asset!).filter((a, i, arr) => arr.findIndex((b) => b.type === a.type && b.id === a.id) === i);
+  // An image that landed on an asset shown below is shown there, not twice.
+  const images = steps.filter((s) => s.image && !made.some((a) => s.image!.includes(`/assets/${a.type}/${a.id}/`))).map((s) => s.image!);
+  const gallery = (images.length > 0 || made.length > 0) && (
+    <>
+      {made.map((a) => (
+        <AssetEmbed key={`${a.type}/${a.id}`} slug={slug} type={a.type} id={a.id} />
       ))}
-    </div>
+      {images.length > 0 && (
+        <div className="step-images">
+          {images.map((u) => (
+            <a key={u} href={u} target="_blank" rel="noreferrer">
+              <img src={u} alt="" loading="lazy" />
+            </a>
+          ))}
+        </div>
+      )}
+    </>
   );
   if (live && running)
     return (
@@ -142,7 +153,7 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
   if (card.kind === "approval" && card.status === "pending") return <ApprovalCard slug={slug} card={card} compact={compact} />;
   if (card.approval_kind === "task" && card.task) return <TaskCard slug={slug} taskId={card.task} compact={compact} />;
   if (card.approval_kind === "task") return <Resolved kind="task" status={card.status} title={String(card.payload.title ?? "Task")} />;
-  if (card.approval_kind === "skill") return <Resolved kind="skill" status={card.status} title={String(card.payload.name ?? "Skill")} />;
+  if (card.approval_kind === "ability") return <Resolved kind="ability" status={card.status} title={String(card.payload.name ?? "Ability")} />;
   if (card.approval_kind === "channel") return <Resolved kind="channel" status={card.status} title={String(card.payload.label ?? "Channel")} />;
   if (card.approval_kind === "publish" || card.approval_kind === "email") {
     const p = card.payload as Record<string, unknown>;
@@ -151,7 +162,7 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
     return (
       <div className={`ccard ${card.status}`}>
         <p className="cap">
-          <Send size={13} /> {card.status === "approved" ? (card.approval_kind === "email" ? "Sent" : "Published") : `${card.approval_kind === "email" ? "Email" : "Publish"} ${card.status}`}
+          <Send size={13} /> {card.status === "approved" ? (card.approval_kind === "email" ? "Sent" : card.result?.scheduled ? "Scheduled" : "Published") : `${card.approval_kind === "email" ? "Email" : "Publish"} ${card.status}`}
         </p>
         <p className="ttl">{title}</p>
         {url && (
@@ -189,7 +200,7 @@ function Resolved({ kind, status, title }: { kind: string; status: string; title
   return (
     <div className={`ccard ${status}`}>
       <p className="cap">
-        {kind === "skill" ? <BookOpen size={13} /> : kind === "channel" ? <Send size={13} /> : <ListChecks size={13} />} {kind === "task" ? "Task" : kind === "skill" ? "Skill" : kind === "channel" ? "Channel" : "Change"} {status === "approved" && (kind === "skill" || kind === "channel") ? "added" : status}
+        {kind === "ability" ? <BookOpen size={13} /> : kind === "channel" ? <Send size={13} /> : <ListChecks size={13} />} {kind === "task" ? "Task" : kind === "ability" ? "Ability" : kind === "channel" ? "Channel" : "Change"} {status === "approved" && (kind === "ability" || kind === "channel") ? "added" : status}
       </p>
       <p className="ttl">{title}</p>
     </div>
@@ -197,7 +208,7 @@ function Resolved({ kind, status, title }: { kind: string; status: string; title
 }
 
 /** Seemo wants a yes: a task to create, or settings to change. */
-function ApprovalCard({ slug, card, compact }: { slug: string; card: Card; compact?: boolean }) {
+export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card; compact?: boolean }) {
   const [busy, setBusy] = useState<"approve" | "decline" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -213,20 +224,22 @@ function ApprovalCard({ slug, card, compact }: { slug: string; card: Card; compa
     }
   };
   const isTask = card.approval_kind === "task";
-  const isSkill = card.approval_kind === "skill";
+  const isAbility = card.approval_kind === "ability";
   const isPublish = card.approval_kind === "publish";
   const isEmail = card.approval_kind === "email";
   const isChannel = card.approval_kind === "channel";
   const next = ((p.next as string[]) ?? []).slice(0, 3);
   const instruction = String(p.instruction ?? "");
-  const skillText = String(p.text ?? "");
+  const abilityText = String(p.text ?? "");
   const files = (p.files as { name: string; bytes: number }[] | undefined) ?? [];
-  const caption = isTask ? "Seemo proposes a task" : isSkill ? "Seemo wants to remember a skill" : isPublish ? "Seemo wants to publish" : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a channel" : "Seemo proposes a settings change";
-  const yes = isTask ? "Approve and run" : isSkill ? "Save the skill" : isPublish ? "Publish it" : isEmail ? "Send it" : isChannel ? "Add the channel" : "Apply";
+  const scheduled = isPublish && typeof p.at === "string" && p.at;
+  const caption = isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a channel" : "Seemo proposes a settings change";
+  const yes = isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isChannel ? "Add the channel" : "Apply";
+  const no = "Decline";
   return (
     <div className="ccard pending">
       <p className="cap">
-        {isTask ? <ListChecks size={13} /> : isSkill ? <BookOpen size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : <Settings2 size={13} />} {caption}
+        {isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : <Settings2 size={13} />} {caption}
       </p>
       {isPublish || isEmail ? (
         <>
@@ -242,6 +255,7 @@ function ApprovalCard({ slug, card, compact }: { slug: string; card: Card; compa
               </>
             )}
             <span className="muted"> · via {String(p.connection_name ?? "")}</span>
+            {scheduled && <span className="muted"> · at {when(String(p.at))}</span>}
           </p>
           {!!p.excerpt && <p className={`instr ${more ? "open" : ""}`}>{String(p.excerpt)}</p>}
           {String(p.excerpt ?? "").length > 220 && !compact && (
@@ -267,17 +281,17 @@ function ApprovalCard({ slug, card, compact }: { slug: string; card: Card; compa
           </ul>
           <p className="muted sm">Publishing to it will still ask you each time.</p>
         </>
-      ) : isSkill ? (
+      ) : isAbility ? (
         <>
           <p className="ttl">{String(p.name)}</p>
           <p className="sched">{String(p.description ?? "")}</p>
-          <p className={`instr ${more ? "open" : ""}`}>{skillText}</p>
-          {skillText.length > 220 && !compact && (
+          <p className={`instr ${more ? "open" : ""}`}>{abilityText}</p>
+          {abilityText.length > 220 && !compact && (
             <button className="btn t sm" onClick={() => setMore((m) => !m)}>
-              {more ? "Less" : "Read the whole skill"}
+              {more ? "Less" : "Read all of it"}
             </button>
           )}
-          <p className="muted sm">Kept for {String(p.scope_text ?? "this project")}; Seemo reads it before matching requests.</p>
+          <p className="muted sm">Becomes an ability for {String(p.scope_text ?? "this project")}; Seemo reads these instructions before matching requests.</p>
         </>
       ) : isTask ? (
         <>
@@ -324,7 +338,7 @@ function ApprovalCard({ slug, card, compact }: { slug: string; card: Card; compa
           {busy === "approve" ? <Loader2 size={14} className="spin" /> : <Check size={14} />} {yes}
         </button>
         <button className="btn g" disabled={!!busy} onClick={() => decide("decline")}>
-          Decline
+          {no}
         </button>
       </div>
     </div>

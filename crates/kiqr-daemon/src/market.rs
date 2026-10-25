@@ -1,0 +1,845 @@
+//! Abilities as the user sees them, behind Seemo → Abilities: one list of
+//! what Seemo can do here (core abilities that are code, shipped and
+//! installed folders, the ones the user taught), and the marketplace below
+//! it, from an index kiqr.cloud hosts (cached, with the shipped list as the
+//! offline fallback). Installing clones the ability's repository into
+//! `abilities/` (or writes a shipped one); keys go to the machine's `.env` or
+//! a project's. Nothing but writing, the renderer and web reading is on
+//! without a choice; core abilities switch off but never leave.
+
+use crate::api::{ApiError, ApiResult};
+use crate::App;
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
+use kiqr_core::abilities;
+use kiqr_core::events::EventKind;
+use kiqr_core::extensions::{self, AuthKey, Manifest, Scope, Transport};
+use kiqr_core::project::Project;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::time::Duration;
+
+pub fn routes() -> Router<App> {
+    Router::new()
+        .route("/api/abilities", get(list))
+        .route("/api/projects/{slug}/abilities", get(list_project))
+        .route("/api/projects/{slug}/abilities/brief", get(brief))
+        .route("/api/abilities/install", post(install_source))
+        .route("/api/abilities/{id}/install", post(install))
+        .route("/api/abilities/{id}/update", post(update))
+        .route("/api/abilities/{id}/pause", post(pause))
+        .route("/api/abilities/{id}/resume", post(resume))
+        .route("/api/abilities/{id}", axum::routing::delete(remove))
+        .route("/api/projects/{slug}/abilities/{id}/pause", post(project_pause))
+        .route("/api/projects/{slug}/abilities/{id}/resume", post(project_resume))
+}
+
+/// A project switches an ability off, or on again, for itself.
+async fn set_project_paused(app: &App, slug: &str, id: &str, paused: bool) -> ApiResult<Value> {
+    let mut p = Project::load(&app.store, slug)?;
+    let known = extensions::is_core_id(id) || !app.registry.read().await.installed(id).is_empty();
+    if !known {
+        return Err(ApiError(StatusCode::NOT_FOUND, format!("no ability '{id}'")));
+    }
+    p.abilities_off.retain(|x| x != id);
+    if paused {
+        p.abilities_off.push(id.to_string());
+    }
+    p.save(&app.store)?;
+    app.store.commit(&format!("project({slug}): ability {id} {}", if paused { "off" } else { "on" })).await?;
+    app.bus.emit(Some(slug), EventKind::ExtensionPaused { id: id.to_string(), paused });
+    Ok(Json(json!({ "id": id, "project": slug, "paused": paused })))
+}
+
+async fn project_pause(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
+    set_project_paused(&app, &slug, &id, true).await
+}
+
+async fn project_resume(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
+    set_project_paused(&app, &slug, &id, false).await
+}
+
+fn bad(msg: impl Into<String>) -> ApiError {
+    ApiError(StatusCode::BAD_REQUEST, msg.into())
+}
+
+/// One entry of the index: enough to show a card and to install.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IndexItem {
+    pub id: String,
+    pub name: String,
+    pub summary: String,
+    pub version: String,
+    /// A git repository to clone; none for a shipped ability.
+    pub repo: Option<String>,
+    /// A folder inside that repository, when the repository holds several abilities (the marketplace's own does).
+    pub path: Option<String>,
+    pub homepage: String,
+    pub categories: Vec<String>,
+    pub icon: String,
+    pub cost: Option<String>,
+    /// Ability contracts it provides: image, video, music, email.
+    pub provides: Vec<String>,
+    /// Channel kinds it publishes to.
+    pub channels: Vec<String>,
+    pub auth: Vec<AuthKey>,
+    /// `official` (KIQR's own), `verified`, `community`.
+    pub trust: String,
+    pub transport: String,
+    /// The vendor: the GitHub user or organisation behind the repository (`kiqr` for KIQR's own).
+    pub author: String,
+    #[serde(skip_deserializing)]
+    pub shipped: bool,
+}
+
+/// `github.com/<author>/<repo>` → `author`.
+fn author_from_repo(repo: &str) -> Option<String> {
+    let u = url::Url::parse(repo).ok()?;
+    let mut parts = u.path().trim_matches('/').split('/');
+    let a = parts.next()?.trim_end_matches(".git");
+    (!a.is_empty()).then(|| a.to_lowercase())
+}
+
+fn author_of(item: &IndexItem) -> String {
+    if !item.author.trim().is_empty() {
+        return item.author.trim().to_lowercase();
+    }
+    if let Some(a) = item.repo.as_deref().and_then(author_from_repo) {
+        return a;
+    }
+    if item.shipped { "kiqr".into() } else { "you".into() }
+}
+
+/// A folder name or a few of them, nothing that climbs out.
+fn safe_path(p: &str) -> bool {
+    !p.is_empty() && p.len() <= 120 && p.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != ".." && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+}
+
+/// Clone a repository (shallow) and return the folder to install from, plus the temp dir to remove.
+async fn fetch_repo(app: &App, repo: &str, path: Option<&str>) -> Result<(std::path::PathBuf, std::path::PathBuf), ApiError> {
+    let tmp = app.store.home().root().join("tmp").join("install").join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&tmp).map_err(anyhow::Error::from)?;
+    let status = tokio::process::Command::new("git").args(["clone", "--depth", "1", "--quiet", repo, "repo"]).current_dir(&tmp).status().await.map_err(|err| bad(format!("could not run git: {err}")))?;
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(bad(format!("git could not clone {repo}")));
+    }
+    let from = match path {
+        Some(p) => tmp.join("repo").join(p),
+        None => tmp.join("repo"),
+    };
+    if !from.join("extension.yaml").exists() && !from.join("SKILL.md").exists() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(bad(format!("{repo}{} has no extension.yaml or SKILL.md", path.map(|p| format!(" ({p})")).unwrap_or_default())));
+    }
+    Ok((from, tmp))
+}
+
+fn source_note(repo: &str, path: Option<&str>) -> String {
+    match path {
+        Some(p) => format!("{repo}#{p}\n"),
+        None => format!("{repo}\n"),
+    }
+}
+
+fn author_url(item: &IndexItem, author: &str) -> Option<String> {
+    if author == "you" {
+        return None;
+    }
+    match item.repo.as_deref().and_then(|r| url::Url::parse(r).ok()) {
+        Some(u) => Some(format!("{}://{}/{}", u.scheme(), u.host_str().unwrap_or("github.com"), author)),
+        None => Some(format!("https://github.com/{author}")),
+    }
+}
+
+fn item_from_manifest(m: &Manifest) -> IndexItem {
+    let cost = m.provides.values().find_map(|p| p.cost.clone()).or_else(|| m.tools.iter().find_map(|t| t.provide.cost.clone()));
+    IndexItem {
+        id: m.id.clone(),
+        name: m.name.clone(),
+        summary: m.summary.clone(),
+        version: m.version.clone(),
+        repo: None,
+        path: None,
+        homepage: m.homepage.clone(),
+        categories: if m.categories.is_empty() { default_categories(m) } else { m.categories.clone() },
+        icon: m.icon.clone(),
+        cost,
+        provides: m.provides.keys().cloned().collect(),
+        channels: m.channels.iter().map(|c| c.kind.clone()).collect(),
+        auth: m.auth.clone(),
+        trust: "official".into(),
+        transport: serde_json::to_value(m.transport).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+        author: String::new(),
+        shipped: false,
+    }
+}
+
+fn default_categories(m: &Manifest) -> Vec<String> {
+    let mut out: Vec<String> = m
+        .provides
+        .keys()
+        .map(|k| match k.as_str() {
+            "image" => "images",
+            "video" => "video",
+            "music" => "music",
+            "email" => "email",
+            other => other,
+        })
+        .map(str::to_string)
+        .collect();
+    if !m.channels.is_empty() {
+        out.push("publishing".into());
+    }
+    if m.transport == Transport::Mcp && m.command.contains("playwright") {
+        out.push("browser".into());
+    }
+    if !m.tools.is_empty() || (m.transport == Transport::Mcp && !m.expose.is_empty()) {
+        out.push("tools".into());
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn core_item(c: &extensions::CoreAbility) -> IndexItem {
+    IndexItem {
+        id: c.id.into(),
+        name: c.name.into(),
+        summary: c.summary.into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        repo: None,
+        path: None,
+        homepage: c.homepage.into(),
+        categories: c.categories.iter().map(|s| s.to_string()).collect(),
+        icon: c.icon.into(),
+        cost: Some(c.cost.into()),
+        provides: vec![],
+        channels: vec![],
+        auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false }).collect(),
+        trust: "official".into(),
+        transport: "builtin".into(),
+        author: "kiqr".into(),
+        shipped: true,
+    }
+}
+
+/// The index: shipped abilities, then whatever kiqr.cloud lists (cached for
+/// an hour; a remote entry with the same id wins on words, never on source).
+pub async fn catalogue(app: &App) -> Vec<IndexItem> {
+    let mut items: Vec<IndexItem> = extensions::shipped_all()
+        .into_iter()
+        .map(|(_, m)| {
+            let mut i = item_from_manifest(&m);
+            i.shipped = true;
+            i
+        })
+        .collect();
+    for r in remote_index(app).await {
+        if r.id.is_empty() || !kiqr_core::tools::valid_ext_id(&r.id) {
+            continue;
+        }
+        let ok_repo = r.repo.as_deref().map(|u| u.starts_with("https://")).unwrap_or(false);
+        if let Some(i) = items.iter_mut().find(|i| i.id == r.id) {
+            // A shipped ability keeps its shipped source; the index may refresh its words and point at a repo.
+            let shipped = i.shipped;
+            let repo = if ok_repo { r.repo.clone() } else { None };
+            let path = if ok_repo { r.path.clone().filter(|p| safe_path(p)) } else { None };
+            *i = IndexItem { shipped, repo, path, ..r };
+            if i.trust.is_empty() {
+                i.trust = "official".into();
+            }
+        } else if ok_repo {
+            let mut r = r;
+            if r.trust.is_empty() {
+                r.trust = "community".into();
+            }
+            r.path = r.path.filter(|p| safe_path(p));
+            items.push(r);
+        }
+    }
+    items
+}
+
+async fn remote_index(app: &App) -> Vec<IndexItem> {
+    let url = app.config.read().await.marketplace.url.clone();
+    if url.trim().is_empty() {
+        return vec![];
+    }
+    let cache = app.store.home().root().join("tmp").join("marketplace.json");
+    let fresh = std::fs::metadata(&cache).and_then(|m| m.modified()).map(|t| t.elapsed().unwrap_or_default() < Duration::from_secs(3600)).unwrap_or(false);
+    let text = if fresh {
+        std::fs::read_to_string(&cache).ok()
+    } else {
+        let fetched = async {
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(6)).user_agent(kiqr_core::fetch::USER_AGENT).build().ok()?;
+            match client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => resp.text().await.ok(),
+                Ok(resp) => {
+                    tracing::warn!(%url, status = %resp.status(), "the marketplace index could not be read");
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(%url, error = %e, "the marketplace index could not be fetched");
+                    None
+                }
+            }
+        }
+        .await;
+        match fetched {
+            Some(t) if serde_json::from_str::<Value>(&t).is_ok() => {
+                let _ = std::fs::create_dir_all(cache.parent().unwrap());
+                let _ = std::fs::write(&cache, &t);
+                Some(t)
+            }
+            _ => {
+                // No network or no index yet: the last copy, if any.
+                std::fs::read_to_string(&cache).ok()
+            }
+        }
+    };
+    let Some(v) = text.and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return vec![] };
+    match serde_json::from_value::<Vec<IndexItem>>(v["abilities"].clone()) {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::warn!(error = %e, "the marketplace index has entries KIQR cannot read");
+            vec![]
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ListQuery {
+    project: Option<String>,
+}
+
+/// One ability as the page, the CLI and Seemo see it: the index's words, the
+/// installed folder's facts, the core definition, and the switches and keys
+/// for one project (or the machine when `slug` is none).
+struct Ctx<'a> {
+    app: &'a App,
+    slug: Option<&'a str>,
+    cfg: kiqr_core::Config,
+    reg: &'a extensions::Registry,
+    project_off: Vec<String>,
+    /// (contract, ability id) active for this project.
+    active: Vec<(String, String)>,
+}
+
+fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
+    let i = e.instructions.clone().unwrap_or_default();
+    IndexItem {
+        id: e.name.clone(),
+        name: i.name.clone(),
+        summary: if i.summary.trim().is_empty() { i.description.clone() } else { i.summary.clone() },
+        version: String::new(),
+        repo: None,
+        path: None,
+        homepage: String::new(),
+        categories: if i.categories.is_empty() { vec!["writing".into()] } else { i.categories.clone() },
+        icon: if i.icon.is_empty() { "book-open".into() } else { i.icon.clone() },
+        cost: Some("model usage".into()),
+        provides: vec![],
+        channels: vec![],
+        auth: vec![],
+        trust: if e.builtin { "official".into() } else { "local".into() },
+        transport: "instructions".into(),
+        author: if !i.author.trim().is_empty() { i.author.clone() } else if e.builtin { "kiqr".into() } else { String::new() },
+        shipped: e.builtin,
+    }
+}
+
+/// Where the text of one instruction file is overridden: the project's copy, the machine's edit of a shipped file.
+fn copies(ctx: &Ctx, folder: &str, builtin: bool) -> (bool, bool) {
+    let home = ctx.app.store.home();
+    let project = ctx.slug.map(|s| home.project_abilities_dir(s).join(folder).join("SKILL.md").exists()).unwrap_or(false);
+    let path = home.abilities_dir().join(folder).join("SKILL.md");
+    let machine = if builtin {
+        match (std::fs::read_to_string(&path), std::fs::read_to_string(path.with_file_name(".builtin"))) {
+            (Ok(c), Ok(l)) => c != l,
+            (Ok(c), Err(_)) => Some(c.as_str()) != kiqr_core::extract::builtin_instructions(folder).or_else(|| extensions::BUILTIN_EXTENSIONS.iter().find(|(n, _, _)| *n == folder).and_then(|(_, t, _)| *t)),
+            _ => false,
+        }
+    } else {
+        path.exists()
+    };
+    (project, machine)
+}
+
+fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&extensions::Entry>, core: Option<&extensions::CoreAbility>) -> Value {
+    let home = ctx.app.store.home();
+    let auth: Vec<&AuthKey> = m.map(|m| m.auth.iter().collect()).unwrap_or_else(|| item.auth.iter().collect());
+    let missing: Vec<String> = auth.iter().filter(|a| !a.optional && !kiqr_core::secrets::has(home, ctx.slug, &a.env)).map(|a| a.env.clone()).collect();
+    let program_found = m.filter(|m| m.transport == Transport::Mcp).map(|m| crate::ext::on_path(&m.command));
+    let installed = core.is_some() || e.is_some();
+    let ready = installed && missing.is_empty() && program_found.unwrap_or(true);
+    let provides: Vec<Value> = m.map(|m| m.provides.keys().cloned().collect::<Vec<_>>()).unwrap_or_else(|| item.provides.clone()).iter().map(|id| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or("") })).collect();
+    let mut item = item.clone();
+    if item.repo.is_none() {
+        item.repo = e.and_then(|e| e.source.clone());
+    }
+    let item = &item;
+    let author = author_of(item);
+    // The instruction files: a core ability's shipped ones, else the folder's own SKILL.md.
+    let files: Vec<Value> = match (core, e) {
+        (Some(c), _) => c
+            .instructions
+            .iter()
+            .map(|(folder, label)| {
+                let (project, machine) = copies(ctx, folder, true);
+                json!({ "file": folder, "label": label, "project_copy": project, "machine_copy": machine })
+            })
+            .collect(),
+        (None, Some(e)) if e.instructions.is_some() => {
+            let (project, machine) = copies(ctx, &e.name, e.builtin);
+            vec![json!({ "file": e.name, "label": e.instructions.as_ref().map(|i| i.name.clone()).unwrap_or_default(), "project_copy": project, "machine_copy": machine })]
+        }
+        _ => vec![],
+    };
+    let description = e.and_then(|e| e.instructions.as_ref()).map(|i| i.description.clone()).or_else(|| {
+        core.and_then(|c| c.instructions.first()).and_then(|(folder, _)| ctx.reg.entry(ctx.slug, folder).and_then(|e| e.instructions.as_ref()).map(|i| i.description.clone()))
+    });
+    let in_prompt = core.map(|c| c.in_prompt).unwrap_or(!files.is_empty());
+    let machine_off = match (core, e) {
+        (Some(c), _) => !ctx.cfg.core_on(c.id),
+        (None, Some(e)) => e.paused,
+        _ => false,
+    };
+    let is_core = core.is_some() || e.is_some_and(|e| e.is_core());
+    let source = if core.is_some() {
+        "core"
+    } else if item.shipped || e.is_some_and(|e| e.builtin) {
+        "shipped"
+    } else if item.repo.is_some() || e.is_some_and(|e| e.git) {
+        "marketplace"
+    } else if m.is_none() {
+        "yours"
+    } else {
+        "local"
+    };
+    json!({
+        "id": item.id,
+        "name": item.name,
+        "author": if source == "yours" { "you".to_string() } else { author.clone() },
+        "author_url": if source == "yours" { None } else { author_url(item, &author) },
+        "summary": item.summary,
+        "description": description.unwrap_or_default(),
+        "version": e.and_then(|_| m.map(|m| m.version.clone())).unwrap_or_else(|| item.version.clone()),
+        "latest": item.version,
+        "homepage": item.homepage,
+        "categories": if item.categories.is_empty() { m.map(default_categories).unwrap_or_default() } else { item.categories.clone() },
+        "icon": item.icon,
+        "cost": item.cost,
+        "provides": provides,
+        "channels": m.map(|m| m.channels.iter().map(|c| c.label.clone()).collect::<Vec<_>>()).unwrap_or_else(|| item.channels.clone()),
+        "tools": m.map(|m| m.tools.len() + if m.transport == Transport::Mcp { m.expose.len() } else { 0 }).unwrap_or(0),
+        "trust": item.trust,
+        "transport": m.map(|m| serde_json::to_value(m.transport).unwrap_or(Value::Null)).unwrap_or_else(|| json!(item.transport)),
+        "runs_program": m.map(|m| matches!(m.transport, Transport::Mcp | Transport::Command)).unwrap_or(item.transport == "mcp" || item.transport == "command"),
+        "command": m.filter(|m| matches!(m.transport, Transport::Mcp | Transport::Command)).map(|m| format!("{} {}", m.command, m.args.join(" ")).trim().to_string()),
+        "program_found": program_found,
+        "hosts": m.map(|m| m.hosts.clone()).unwrap_or_default(),
+        "source": source,
+        "repo": item.repo,
+        "core": is_core,
+        "builtin": core.is_some() || e.is_some_and(|e| e.builtin),
+        "installed": installed,
+        "scope": e.map(|e| json!(e.scope)).unwrap_or_else(|| if core.is_some() { json!({ "scope": "global" }) } else { Value::Null }),
+        "folder": e.map(|e| e.dir.display().to_string()),
+        "git": e.is_some_and(|e| e.git),
+        "machine_off": machine_off,
+        "paused": ctx.project_off.iter().any(|x| x == &item.id),
+        "ready": ready,
+        "missing": missing,
+        "auth": auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": kiqr_core::secrets::scope_of(home, ctx.slug, &a.env) })).collect::<Vec<_>>(),
+        "active_for": ctx.active.iter().filter(|(_, id)| *id == item.id).map(|(a, _)| a.clone()).collect::<Vec<_>>(),
+        "instructions": files,
+        "in_prompt": in_prompt,
+        "error": e.and_then(|e| e.error.clone()),
+    })
+}
+
+/// What the page shows: what is here, what could be, and the rest.
+pub(crate) struct Listing {
+    pub abilities: Vec<Value>,
+    pub market: Vec<Value>,
+    pub contracts: Vec<Value>,
+    pub broken: Vec<Value>,
+    /// Seemo's own guide (`seemo-agent`), in the same shape, for Advanced.
+    pub guide: Option<Value>,
+}
+
+/// Every ability for a project (or the machine): core first, then installed
+/// folders and the index, then local folders. Attached folders (a core
+/// ability's instruction files, Seemo's guide) are never their own row.
+pub(crate) async fn listing(app: &App, slug: Option<&str>) -> Listing {
+    let cfg = app.config.read().await.clone();
+    let items = catalogue(app).await;
+    let reg = app.registry.read().await;
+    let project_off = slug.map(|s| crate::ext::project_off(app, s)).unwrap_or_default();
+    let active: Vec<(String, String)> = abilities::all().iter().filter_map(|a| reg.provider(slug.unwrap_or(""), a.id, cfg.abilities.get(a.id).map(String::as_str), |m| crate::ext::ready_in(app, slug, m)).map(|(_, m)| (a.id.to_string(), m.id.clone()))).collect();
+    let ctx = Ctx { app, slug, cfg: cfg.clone(), reg: &reg, project_off, active };
+    let attached = extensions::attached_folders();
+    let mut abilities_out: Vec<Value> = Vec::new();
+    let mut market: Vec<Value> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for c in extensions::CORE_ABILITIES {
+        abilities_out.push(ability_view(&ctx, &core_item(c), None, None, Some(c)));
+        seen.push(c.id.to_string());
+    }
+    for item in &items {
+        let e = reg.entry(slug, &item.id);
+        let v = ability_view(&ctx, item, e.and_then(|e| e.manifest.as_ref()), e, None);
+        if e.is_some() {
+            abilities_out.push(v);
+        } else {
+            market.push(v);
+        }
+        seen.push(item.id.clone());
+    }
+    // Installed from a folder, a URL or taught here: not in any index.
+    for e in reg.entries.iter().filter(|e| e.error.is_none()) {
+        if seen.contains(&e.id().to_string()) || attached.contains(&e.name.as_str()) {
+            continue;
+        }
+        if let Scope::Project(p) = &e.scope {
+            if slug != Some(p.as_str()) {
+                continue;
+            }
+        }
+        // A machine folder the project shadows with its own copy: the project's wins.
+        if e.scope == Scope::Global && slug.is_some_and(|s| reg.entries.iter().any(|o| o.scope == Scope::Project(s.to_string()) && o.id() == e.id())) {
+            continue;
+        }
+        let item = match &e.manifest {
+            Some(m) => item_from_manifest(m),
+            None => item_from_instructions(e),
+        };
+        let mut v = ability_view(&ctx, &item, e.manifest.as_ref(), Some(e), None);
+        if e.manifest.is_some() {
+            v["trust"] = json!("local");
+        }
+        abilities_out.push(v);
+        seen.push(e.id().to_string());
+    }
+    let contracts: Vec<Value> = abilities::all()
+        .iter()
+        .map(|a| {
+            let configured = cfg.abilities.get(a.id).cloned();
+            let candidates: Vec<Value> = reg.connections(slug.unwrap_or("")).into_iter().filter(|(_, m)| m.provides.contains_key(a.id)).map(|(_, m)| json!({ "id": m.id, "name": m.name, "ready": crate::ext::ready_in(app, slug, m) })).collect();
+            let act = ctx.active.iter().find(|(x, _)| x == a.id).map(|(_, id)| id.clone());
+            let name = act.as_ref().and_then(|id| candidates.iter().find(|c| c["id"] == *id).and_then(|c| c["name"].as_str().map(str::to_string)));
+            json!({ "id": a.id, "label": a.label, "tool": a.tool, "configured": configured, "active": act.map(|id| json!({ "id": id, "name": name })), "candidates": candidates })
+        })
+        .collect();
+    let broken: Vec<Value> = reg.entries.iter().filter_map(|e| e.error.as_ref().map(|err| json!({ "folder": e.name, "scope": e.scope, "error": err }))).collect();
+    let guide = reg.entry(slug, extensions::GUIDE_FOLDER).map(|e| {
+        let mut item = item_from_instructions(e);
+        item.name = "Seemo's own guide".into();
+        item.summary = "How Seemo works inside KIQR: the tools, when to act and when to make a task, how to ask for a yes, how to report. Read at the start of every chat and run.".into();
+        item.icon = "book-open".into();
+        item.author = "kiqr".into();
+        let mut v = ability_view(&ctx, &item, None, Some(e), None);
+        v["core"] = json!(true);
+        v["source"] = json!("core");
+        v["in_prompt"] = json!(false);
+        v["instructions"][0]["label"] = json!("How Seemo works inside KIQR");
+        v
+    });
+    Listing { abilities: abilities_out, market, contracts, broken, guide }
+}
+
+/// One ability by id, for a project.
+pub(crate) async fn one(app: &App, slug: Option<&str>, id: &str) -> Option<Value> {
+    let l = listing(app, slug).await;
+    l.abilities.into_iter().chain(l.market).find(|v| v["id"] == id)
+}
+
+/// Whether an ability is on: for the machine, and for this project.
+pub(crate) async fn on_for(app: &App, slug: &str, id: &str) -> (bool, bool) {
+    let project_on = !crate::ext::project_off(app, slug).iter().any(|x| x == id);
+    if let Some(c) = extensions::core_ability(id) {
+        return (app.config.read().await.core_on(c.id), project_on);
+    }
+    let reg = app.registry.read().await;
+    (reg.entry(Some(slug), id).is_some_and(|e| !e.paused), project_on)
+}
+
+async fn list_json(app: &App, slug: Option<&str>) -> Value {
+    let cfg = app.config.read().await.clone();
+    let home = app.store.home();
+    let l = listing(app, slug).await;
+    json!({
+        "abilities": l.abilities,
+        "market": l.market,
+        "contracts": l.contracts,
+        "broken": l.broken,
+        "guide": l.guide,
+        "index": cfg.marketplace.url,
+        "env_file": home.env_file().display().to_string(),
+        "project_env_file": slug.map(|s| home.project_env_file(s).display().to_string()),
+    })
+}
+
+async fn list(State(app): State<App>, Query(q): Query<ListQuery>) -> ApiResult<Value> {
+    let slug = q.project.clone().filter(|s| !s.is_empty());
+    if let Some(s) = &slug {
+        Project::load(&app.store, s)?;
+    }
+    Ok(Json(list_json(&app, slug.as_deref()).await))
+}
+
+async fn list_project(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Value> {
+    Project::load(&app.store, &slug)?;
+    Ok(Json(list_json(&app, Some(&slug)).await))
+}
+
+/// For Seemo (`list_abilities`): what it can do here, in a few fields.
+async fn brief(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Value> {
+    Project::load(&app.store, &slug)?;
+    let l = listing(&app, Some(&slug)).await;
+    let rows: Vec<Value> = l
+        .abilities
+        .iter()
+        .map(|v| {
+            let on = !v["machine_off"].as_bool().unwrap_or(false) && !v["paused"].as_bool().unwrap_or(false);
+            json!({
+                "id": v["id"],
+                "name": v["name"],
+                "on": on,
+                "ready": v["ready"],
+                "needs": v["missing"],
+                "when": v["description"],
+                "instructions": v["instructions"].as_array().map(|a| a.iter().filter_map(|f| f["file"].as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "abilities": rows, "note": "Read an ability's instructions with read_instructions before doing that kind of work. Off or not ready means you cannot use it here; say so instead of improvising." })))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct InstallBody {
+    /// `global` (everywhere) or `project`.
+    scope: String,
+    project: Option<String>,
+    /// Keys to set right away, by name.
+    secrets: std::collections::BTreeMap<String, String>,
+}
+
+fn scope_of(b_scope: &str, project: &Option<String>) -> Result<Scope, ApiError> {
+    match (b_scope, project.as_deref().filter(|p| !p.is_empty())) {
+        ("project", Some(p)) => Ok(Scope::Project(p.to_string())),
+        ("project", None) => Err(bad("installing for a project needs its slug")),
+        _ => Ok(Scope::Global),
+    }
+}
+
+/// Write a shipped ability's folder into `abilities/`, like a first run would.
+async fn install_shipped(app: &App, id: &str, scope: &Scope) -> Result<String, ApiError> {
+    let (folder, skill, manifest, _) = extensions::shipped(id).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no ability '{id}' to install")))?;
+    let root = match scope {
+        Scope::Global => app.store.home().abilities_dir(),
+        Scope::Project(s) => {
+            Project::load(&app.store, s)?;
+            app.store.home().project_abilities_dir(s)
+        }
+    };
+    let dir = root.join(folder);
+    if let Some(s) = skill {
+        extensions::install_builtin_text(&app.store, &dir.join("SKILL.md"), s).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+    app.store.write_text(&dir.join("extension.yaml"), manifest)?;
+    let _ = std::fs::remove_file(dir.join(".off"));
+    Ok(folder.to_string())
+}
+
+/// Install is always for the machine: one copy, one version. A project
+/// connects an installed ability with its own keys (`PUT /api/projects/{slug}/secrets/{NAME}`).
+/// `project` in the body only says whose `.env` the keys given here go to.
+async fn install(State(app): State<App>, Path(id): Path<String>, body: Option<Json<InstallBody>>) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let b = body.map(|Json(b)| b).unwrap_or_default();
+    let scope = Scope::Global;
+    {
+        let reg = app.registry.read().await;
+        if reg.installed(&id).iter().any(|e| e.scope == scope) {
+            return Err(ApiError(StatusCode::CONFLICT, format!("'{id}' is already installed there")));
+        }
+    }
+    let item = catalogue(&app).await.into_iter().find(|i| i.id == id).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("the marketplace has no ability '{id}'")))?;
+    let folder = match (&item.repo, item.shipped) {
+        (Some(repo), _) => {
+            let (from, tmp) = fetch_repo(&app, repo, item.path.as_deref()).await?;
+            let r = crate::ext::install_into(&app, scope.clone(), crate::ext::Install { source: from.display().to_string(), name: Some(id.clone()) }).await;
+            let _ = std::fs::remove_dir_all(&tmp);
+            let (_, Json(v)) = r?;
+            let folder = v["name"].as_str().unwrap_or(&id).to_string();
+            // Remember where it came from, so Update can fetch it again. The folder itself is committed to ~/.kiqr.
+            let _ = std::fs::write(app.store.home().abilities_dir().join(&folder).join(".source"), source_note(repo, item.path.as_deref()));
+            folder
+        }
+        (None, true) => {
+            let folder = install_shipped(&app, &id, &scope).await?;
+            let label = match &scope {
+                Scope::Global => "abilities".to_string(),
+                Scope::Project(s) => format!("abilities({s})"),
+            };
+            app.store.commit(&format!("{label}: install {folder}")).await?;
+            crate::ext::reload(&app).await;
+            app.bus.emit(None, EventKind::ExtensionInstalled { id: id.clone(), name: item.name.clone() });
+            folder
+        }
+        (None, false) => return Err(bad(format!("'{id}' has no repository to install from"))),
+    };
+    let slug = b.project.as_deref().filter(|p| !p.is_empty()).filter(|_| b.scope == "project");
+    for (name, value) in &b.secrets {
+        if !value.trim().is_empty() {
+            crate::ext::set_secret(&app, slug, name, value).await?;
+        }
+    }
+    Ok((StatusCode::CREATED, Json(json!({ "id": id, "folder": folder, "scope": scope }))))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SourceBody {
+    source: String,
+    scope: String,
+    project: Option<String>,
+    name: Option<String>,
+}
+
+/// Advanced: a git URL or a folder on this machine that is not in any index.
+async fn install_source(State(app): State<App>, Json(b): Json<SourceBody>) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let scope = scope_of(&b.scope, &b.project)?;
+    crate::ext::install_into(&app, scope, crate::ext::Install { source: b.source, name: b.name }).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ScopeQuery {
+    project: Option<String>,
+}
+
+fn find_installed(reg: &extensions::Registry, id: &str, project: &Option<String>) -> Result<extensions::Entry, ApiError> {
+    let scope = project.clone().filter(|p| !p.is_empty()).map(Scope::Project).unwrap_or(Scope::Global);
+    reg.installed(id).into_iter().find(|e| e.scope == scope).cloned().ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("'{id}' is not installed there")))
+}
+
+/// `git pull` for a cloned ability; a fresh copy for a shipped one.
+async fn update(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ScopeQuery>) -> ApiResult<Value> {
+    let e = {
+        let reg = app.registry.read().await;
+        find_installed(&reg, &id, &q.project)?
+    };
+    let detail = if let Some(src) = e.source.clone() {
+        // Fetch the repository again and replace the folder's files; the switch and the source note stay.
+        let (repo, path) = match src.split_once('#') {
+            Some((r, p)) if safe_path(p) => (r.to_string(), Some(p.to_string())),
+            _ => (src.clone(), None),
+        };
+        let (from, tmp) = fetch_repo(&app, &repo, path.as_deref()).await?;
+        let paused = e.paused;
+        std::fs::remove_dir_all(&e.dir).map_err(anyhow::Error::from)?;
+        let copied = crate::ext::copy_dir(&from, &e.dir);
+        let _ = std::fs::remove_dir_all(&tmp);
+        copied.map_err(|err| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("could not copy: {err}")))?;
+        let _ = std::fs::write(e.dir.join(".source"), source_note(&repo, path.as_deref()));
+        if paused {
+            let _ = std::fs::write(e.dir.join(".off"), "paused by the user\n");
+        }
+        "fetched again".to_string()
+    } else if e.git {
+        let out = tokio::process::Command::new("git").args(["pull", "--ff-only", "--quiet"]).current_dir(&e.dir).output().await.map_err(|err| bad(format!("could not run git: {err}")))?;
+        if !out.status.success() {
+            return Err(bad(format!("git pull failed: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        "pulled".to_string()
+    } else if extensions::shipped(&id).is_some() {
+        install_shipped(&app, &id, &e.scope).await?;
+        "refreshed from this release".to_string()
+    } else {
+        return Err(bad("this ability came from a folder, not a repository; install it again to update it"));
+    };
+    let label = match &e.scope {
+        Scope::Global => "abilities".to_string(),
+        Scope::Project(s) => format!("abilities({s})"),
+    };
+    app.store.commit(&format!("{label}: update {}", e.name)).await?;
+    crate::ext::reload(&app).await;
+    app.mcp.stop(&id).await;
+    app.bus.emit(None, EventKind::ExtensionInstalled { id: id.clone(), name: e.manifest.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| id.clone()) });
+    Ok(Json(json!({ "id": id, "updated": true, "detail": detail })))
+}
+
+async fn set_paused(app: &App, id: &str, project: &Option<String>, paused: bool) -> ApiResult<Value> {
+    // Core abilities, code or folder, never leave: their switch lives in config.yaml.
+    if extensions::is_core_id(id) {
+        if let Some(c) = extensions::core_ability(id) {
+            if !paused {
+                let missing: Vec<&str> = c.auth.iter().filter(|(env, _, _)| !kiqr_core::secrets::has(app.store.home(), None, env)).map(|(env, _, _)| *env).collect();
+                if !missing.is_empty() {
+                    return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} needs {} before it can be on", c.name, missing.join(", "))));
+                }
+            }
+        }
+        let mut cfg = app.config.read().await.clone();
+        cfg.core_off.retain(|x| x != id);
+        if paused {
+            cfg.core_off.push(id.to_string());
+        }
+        crate::api::apply_config(app, cfg, "you", false).await?;
+        crate::ext::reload(app).await;
+        app.bus.emit(None, EventKind::ExtensionPaused { id: id.to_string(), paused });
+        return Ok(Json(json!({ "id": id, "paused": paused })));
+    }
+    let e = {
+        let reg = app.registry.read().await;
+        find_installed(&reg, id, project)?
+    };
+    if !paused {
+        if let Some(m) = &e.manifest {
+            if !crate::ext::ready_in(app, None, m) {
+                return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} needs {} before it can be on", m.name, crate::ext::missing_in(app, None, m).join(", "))));
+            }
+        }
+    }
+    let marker = e.dir.join(".off");
+    if paused {
+        std::fs::write(&marker, "paused by the user\n").map_err(|err| ApiError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        app.mcp.stop(id).await;
+    } else {
+        let _ = std::fs::remove_file(&marker);
+    }
+    crate::ext::reload(app).await;
+    app.bus.emit(None, EventKind::ExtensionPaused { id: id.to_string(), paused });
+    Ok(Json(json!({ "id": id, "paused": paused })))
+}
+
+async fn pause(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ScopeQuery>) -> ApiResult<Value> {
+    set_paused(&app, &id, &q.project, true).await
+}
+
+async fn resume(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ScopeQuery>) -> ApiResult<Value> {
+    set_paused(&app, &id, &q.project, false).await
+}
+
+/// Remove an installed ability's folder. Keys stay in `.env` until cleared.
+async fn remove(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ScopeQuery>) -> Result<StatusCode, ApiError> {
+    if extensions::is_core_id(&id) {
+        return Err(bad("this is one of KIQR's core abilities: it can be switched off, not removed"));
+    }
+    let e = {
+        let reg = app.registry.read().await;
+        find_installed(&reg, &id, &q.project)?
+    };
+    crate::ext::remove_folder(&app, &e.dir, &id, &e.scope).await?;
+    app.mcp.stop(&id).await;
+    Ok(StatusCode::NO_CONTENT)
+}

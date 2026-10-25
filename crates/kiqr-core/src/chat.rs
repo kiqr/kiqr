@@ -73,6 +73,16 @@ pub struct Step {
     /// An image the step produced, as a URL the browser can load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// An asset the step created, so the chat can show it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<StepAsset>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StepAsset {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
 }
 
 /// A card in the transcript. `kind` is `approval` (a task or config change
@@ -262,7 +272,7 @@ mod tests {
     fn titles_are_short_and_whole_words() {
         assert_eq!(title_from("Hello"), "Hello");
         assert_eq!(title_from("  \n# Write me three posts about teeth whitening"), "Write me three posts about teeth whitening");
-        let long = title_from("Please write three social media posts for the library as draft post assets, using the social-posts skill, and tell me when they are in");
+        let long = title_from("Please write three social media posts for the library as draft post assets, following the instructions for social media posts, and tell me when they are in");
         assert!(long.ends_with('…'));
         assert!(long.chars().count() <= 61);
         assert!(!long.contains("assets,"));

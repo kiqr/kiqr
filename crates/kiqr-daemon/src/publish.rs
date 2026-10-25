@@ -1,7 +1,8 @@
 //! Publishing: channels (where content goes out), the approvals behind
-//! `publish_asset`, `send_email` and `create_channel`, and the built-in email
-//! sender. Every publish asks the user first; this module does the sending
-//! once they said yes.
+//! `publish_asset`, `send_email` and `create_channel`, the user's own
+//! approve / schedule / publish / unpublish on an asset, the scheduled
+//! publishes the daemon does, and the built-in email sender. Every publish
+//! asks the user first; this module does the sending once they said yes.
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
@@ -12,7 +13,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use kiqr_core::assets::{self, Asset, Publication, Status};
 use kiqr_core::channels::{self, Channel};
 use kiqr_core::events::EventKind;
@@ -26,6 +27,9 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/channels", get(list_channels).post(create_channel))
         .route("/api/projects/{slug}/channels/{id}", get(get_channel).put(put_channel).delete(delete_channel))
         .route("/api/projects/{slug}/assets/{kind}/{id}/publish", axum::routing::post(publish_route))
+        .route("/api/projects/{slug}/assets/{kind}/{id}/approve", axum::routing::post(approve_route))
+        .route("/api/projects/{slug}/assets/{kind}/{id}/schedule", axum::routing::post(schedule_route).delete(unschedule_route))
+        .route("/api/projects/{slug}/assets/{kind}/{id}/unpublish", axum::routing::post(unpublish_route))
         .route("/api/projects/{slug}/email", axum::routing::post(email_route))
 }
 
@@ -38,8 +42,12 @@ fn bad(msg: impl Into<String>) -> ApiError {
 /// The channel kinds a project can use right now: ready connections that publish.
 async fn kinds(app: &App, slug: &str) -> Vec<(Manifest, ChannelKind)> {
     let reg = app.registry.read().await;
+    let off = crate::ext::project_off(app, slug);
     let mut out = Vec::new();
     for (_, m) in reg.connections(slug) {
+        if off.contains(&m.id) {
+            continue;
+        }
         for k in &m.channels {
             out.push((m.clone(), k.clone()));
         }
@@ -47,21 +55,25 @@ async fn kinds(app: &App, slug: &str) -> Vec<(Manifest, ChannelKind)> {
     out
 }
 
-fn kind_view(m: &Manifest, k: &ChannelKind) -> Value {
+/// A kind a new channel could use, with what the project still has to give
+/// it (a mail account is set up inside the project, when the channel is made).
+fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
+    let home = app.store.home();
     json!({
         "kind": k.kind,
         "label": k.label,
         "connection": m.id,
         "connection_name": m.name,
-        "ready": crate::ext::ready(m),
+        "ready": crate::ext::ready_in(app, Some(slug), m),
         "destination": k.destination,
+        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": kiqr_core::secrets::scope_of(home, Some(slug), &a.env) })).collect::<Vec<_>>(),
     })
 }
 
 async fn channel_view(app: &App, slug: &str, c: &Channel) -> Value {
     let (name, ready) = {
         let reg = app.registry.read().await;
-        reg.connection(slug, &c.extension).map(|(_, m)| (m.name.clone(), crate::ext::ready(m))).unwrap_or_else(|| (c.extension.clone(), false))
+        reg.connection(slug, &c.extension).map(|(_, m)| (m.name.clone(), crate::ext::ready_in(app, Some(slug), m))).unwrap_or_else(|| (c.extension.clone(), false))
     };
     let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
     v["connection_name"] = json!(name);
@@ -77,7 +89,7 @@ async fn list_channels(State(app): State<App>, Path(slug): Path<String>) -> ApiR
     for c in Channel::list(&app.store, &slug)? {
         list.push(channel_view(&app, &slug, &c).await);
     }
-    let kinds: Vec<Value> = kinds(&app, &slug).await.iter().map(|(m, k)| kind_view(m, k)).collect();
+    let kinds: Vec<Value> = kinds(&app, &slug).await.iter().map(|(m, k)| kind_view(&app, &slug, m, k)).collect();
     Ok(Json(json!({ "channels": list, "kinds": kinds })))
 }
 
@@ -99,9 +111,9 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
     }
     let all = kinds(app, slug).await;
     let matching: Vec<&(Manifest, ChannelKind)> = all.iter().filter(|(m, k)| k.kind == kind && b.connection.as_deref().map(|c| c == m.id).unwrap_or(true)).collect();
-    let Some((m, k)) = matching.iter().find(|(m, _)| crate::ext::ready(m)).or_else(|| matching.first()).map(|x| (&x.0, &x.1)) else {
+    let Some((m, k)) = matching.iter().find(|(m, _)| crate::ext::ready_in(app, Some(slug), m)).or_else(|| matching.first()).map(|x| (&x.0, &x.1)) else {
         let have: Vec<String> = all.iter().map(|(_, k)| k.kind.clone()).collect();
-        return Err(bad(if have.is_empty() { "no connection can publish yet; add one under Settings → Connections".to_string() } else { format!("no connection publishes '{kind}'; available: {}", have.join(", ")) }));
+        return Err(bad(if have.is_empty() { "nothing can publish yet; install Email under Settings → Abilities".to_string() } else { format!("nothing publishes '{kind}'; available: {}", have.join(", ")) }));
     };
     let mut destination = serde_json::Map::new();
     for (field, spec) in &k.destination {
@@ -127,7 +139,7 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
         "kind_label": k.label,
         "connection": m.id,
         "connection_name": m.name,
-        "ready": crate::ext::ready(m),
+        "ready": crate::ext::ready_in(app, Some(slug), m),
         "destination": destination,
     }))
 }
@@ -219,9 +231,35 @@ fn asset_parts(app: &App, slug: &str, a: &Asset) -> Result<(String, Vec<(String,
 #[serde(default)]
 pub struct PublishBody {
     pub asset: AssetRef,
+    /// Empty means the channel the asset was approved for.
     pub channel: String,
+    /// Set, the asset is scheduled for then instead of published now.
+    pub at: Option<DateTime<Utc>>,
     pub note: String,
     pub by: Option<String>,
+}
+
+/// A channel of the project that can publish right now, by id. The error
+/// says what exists when the id is unknown.
+async fn ready_channel(app: &App, slug: &str, id: &str) -> Result<Channel, ApiError> {
+    let c = Channel::load(&app.store, slug, id.trim()).map_err(|_| {
+        let have: Vec<String> = Channel::list(&app.store, slug).unwrap_or_default().into_iter().map(|c| format!("{} ({})", c.id, c.label)).collect();
+        bad(if have.is_empty() { "there is no channel yet; create one first (create_channel) or ask the user to add one under Seemo → Channels".to_string() } else { format!("no channel '{}'; channels: {}", id.trim(), have.join(", ")) })
+    })?;
+    let cv = channel_view(app, slug, &c).await;
+    if cv["ready"].as_bool() != Some(true) {
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("the ability behind the channel ({}) is not set up for this project; add a channel of that kind under Channels to set the account up", cv["connection_name"].as_str().unwrap_or(""))));
+    }
+    Ok(c)
+}
+
+/// The channel a request means: the one named, else the asset's own.
+fn channel_of<'a>(a: &'a Asset, named: &'a str) -> Result<&'a str, ApiError> {
+    let named = named.trim();
+    if !named.is_empty() {
+        return Ok(named);
+    }
+    a.channel.as_deref().filter(|c| !c.is_empty()).ok_or_else(|| bad("name a channel; the asset is not approved for one yet"))
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -235,13 +273,13 @@ pub struct AssetRef {
 /// What the card shows before a yes: the asset, where it goes, the first lines.
 pub async fn publish_preview(app: &App, slug: &str, b: &PublishBody) -> Result<Value, ApiError> {
     let a = assets::load(&app.store, slug, &b.asset.kind, &b.asset.id)?;
-    let c = Channel::load(&app.store, slug, b.channel.trim()).map_err(|_| {
-        let have: Vec<String> = Channel::list(&app.store, slug).unwrap_or_default().into_iter().map(|c| format!("{} ({})", c.id, c.label)).collect();
-        bad(if have.is_empty() { "there is no channel yet; create one first (create_channel) or ask the user to add one under Seemo → Channels".to_string() } else { format!("no channel '{}'; channels: {}", b.channel, have.join(", ")) })
-    })?;
+    if a.archived {
+        return Err(bad("it is archived; bring it back first"));
+    }
+    let c = ready_channel(app, slug, channel_of(&a, &b.channel)?).await?;
     let cv = channel_view(app, slug, &c).await;
-    if cv["ready"].as_bool() != Some(true) {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("the channel's connection ({}) is not set up; add its keys under Settings → Connections", cv["connection_name"].as_str().unwrap_or(""))));
+    if b.at.is_some_and(|t| t <= Utc::now()) {
+        return Err(bad("that time has passed; leave `at` out to publish now"));
     }
     let (body, files) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
     let subject = c.destination.get("subject").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string).unwrap_or_else(|| a.title.clone());
@@ -257,16 +295,30 @@ pub async fn publish_preview(app: &App, slug: &str, b: &PublishBody) -> Result<V
         "excerpt": kiqr_core::profile::truncate_chars(body.trim(), 400),
         "words": body.split_whitespace().count(),
         "files": files.iter().map(|(n, b, m)| json!({ "name": n, "bytes": b.len(), "mime": m })).collect::<Vec<_>>(),
+        "at": b.at,
         "note": b.note,
     }))
 }
 
-/// Send the asset through the channel and record it. After a yes.
+/// Send the asset through the channel and record it, or, when the preview
+/// carries `at`, approve it for the channel and leave it to the scheduler.
+/// After a yes.
 pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Result<Value, ApiError> {
     let kind = preview["asset"]["type"].as_str().unwrap_or("").to_string();
     let id = preview["asset"]["id"].as_str().unwrap_or("").to_string();
     let mut a = assets::load(&app.store, slug, &kind, &id)?;
     let mut c = Channel::load(&app.store, slug, preview["channel"].as_str().unwrap_or(""))?;
+    if let Some(at) = preview["at"].as_str().and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.with_timezone(&Utc)) {
+        let a = set_schedule(app, slug, a, &c, Some(at)).await?;
+        return Ok(json!({
+            "scheduled": true,
+            "asset": { "type": a.kind, "id": a.id, "title": a.title, "status": a.status },
+            "channel": c.id,
+            "channel_label": c.label,
+            "at": at,
+            "note": "Scheduled. The daemon publishes it at that time; the asset is marked scheduled until then.",
+        }));
+    }
     let (body, files) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
     let subject = preview["subject"].as_str().unwrap_or(&a.title).to_string();
     let m = {
@@ -276,7 +328,7 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     let k = m.channels.iter().find(|k| k.kind == c.kind).cloned().ok_or_else(|| bad(format!("{} no longer publishes '{}'", m.name, c.kind)))?;
     let (url, account, detail) = if m.transport == Transport::Builtin && m.id == "kiqr-smtp" {
         let to = c.destination.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let r = smtp_send(&to, &subject, &body, files).await.map_err(|e| bad(format!("{e:#}")))?;
+        let r = smtp_send(&kiqr_core::secrets::env_fn(app.store.home(), Some(slug)), &to, &subject, &body, files).await.map_err(|e| bad(format!("{e:#}")))?;
         (None, Some(r.from), format!("sent to {to}"))
     } else {
         // The connection's publish tool, with the asset and the destination.
@@ -300,7 +352,9 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     };
     let now = Utc::now();
     a.publications.push(Publication { connector: c.id.clone(), account, url: url.clone(), at: now, run: if by.starts_with("task:") { Some(by.to_string()) } else { None } });
-    a.status = Status::Published;
+    a.channel = Some(c.id.clone());
+    a.publish_at = None;
+    a.publish_error = None;
     let a = assets::save(&app.store, slug, &a)?;
     crate::api::emit_saved(app, slug, &a, false);
     c.publications += 1;
@@ -328,6 +382,123 @@ async fn publish_route(State(app): State<App>, Path((slug, kind, id)): Path<(Str
     Ok(Json(do_publish(&app, &slug, &preview, &by).await?))
 }
 
+// ------------------------------------------- approve, schedule, unpublish
+//
+// Status is never set by hand. These change the facts it follows from: the
+// channel the user approved the asset for, the time the daemon publishes it,
+// and whether KIQR still counts it as published.
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ApproveBody {
+    channel: String,
+}
+
+#[derive(Deserialize)]
+struct ScheduleBody {
+    at: DateTime<Utc>,
+    #[serde(default)]
+    channel: String,
+}
+
+/// Approve the asset for a channel, with or without a time. Ready, or Scheduled.
+async fn set_schedule(app: &App, slug: &str, mut a: Asset, c: &Channel, at: Option<DateTime<Utc>>) -> Result<Asset, ApiError> {
+    if a.archived {
+        return Err(bad("it is archived; bring it back first"));
+    }
+    if !a.publications.is_empty() {
+        return Err(bad("it is published already; unpublish it first"));
+    }
+    a.channel = Some(c.id.clone());
+    a.publish_at = at;
+    a.publish_error = None;
+    let a = assets::save(&app.store, slug, &a)?;
+    crate::api::emit_saved(app, slug, &a, false);
+    app.bus.emit(Some(slug), EventKind::AssetApproved { asset_type: a.kind.clone(), id: a.id.clone(), title: a.title.clone(), channel: c.id.clone(), at });
+    Ok(a)
+}
+
+/// `POST …/approve {channel}`: the user's yes to this asset, for that channel. It is Ready.
+async fn approve_route(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>, Json(b): Json<ApproveBody>) -> ApiResult<Asset> {
+    let _ = Project::load(&app.store, &slug)?;
+    let a = assets::load(&app.store, &slug, &kind, &id)?;
+    let c = ready_channel(&app, &slug, channel_of(&a, &b.channel)?).await?;
+    let at = a.publish_at;
+    Ok(Json(set_schedule(&app, &slug, a, &c, at).await?))
+}
+
+/// `POST …/schedule {at, channel?}`: publish it then, through its channel or the one named. Scheduled.
+async fn schedule_route(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>, Json(b): Json<ScheduleBody>) -> ApiResult<Asset> {
+    let _ = Project::load(&app.store, &slug)?;
+    let a = assets::load(&app.store, &slug, &kind, &id)?;
+    if b.at <= Utc::now() {
+        return Err(bad("that time has passed; publish it now instead"));
+    }
+    let c = ready_channel(&app, &slug, channel_of(&a, &b.channel)?).await?;
+    Ok(Json(set_schedule(&app, &slug, a, &c, Some(b.at)).await?))
+}
+
+/// `DELETE …/schedule`: drop the time; it stays approved for the channel (Ready).
+async fn unschedule_route(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>) -> ApiResult<Asset> {
+    let _ = Project::load(&app.store, &slug)?;
+    let mut a = assets::load(&app.store, &slug, &kind, &id)?;
+    a.publish_at = None;
+    a.publish_error = None;
+    let a = assets::save(&app.store, &slug, &a)?;
+    crate::api::emit_saved(&app, &slug, &a, false);
+    Ok(Json(a))
+}
+
+/// `POST …/unpublish`: KIQR stops counting it as published. Nothing is taken
+/// down: channels have no take-back, and the record says so. The asset goes
+/// back to Ready for its channel.
+async fn unpublish_route(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>) -> ApiResult<Asset> {
+    let _ = Project::load(&app.store, &slug)?;
+    let mut a = assets::load(&app.store, &slug, &kind, &id)?;
+    if a.publications.is_empty() {
+        return Err(bad("it is not published"));
+    }
+    // Older assets were published before a channel was kept on them: remember the one it went through.
+    if a.channel.is_none() {
+        a.channel = a.publications.last().map(|p| p.connector.clone());
+    }
+    a.publications.clear();
+    let a = assets::save(&app.store, &slug, &a)?;
+    crate::api::emit_saved(&app, &slug, &a, false);
+    app.bus.emit(Some(&slug), EventKind::AssetUnpublished { asset_type: a.kind.clone(), id: a.id.clone(), title: a.title.clone() });
+    Ok(Json(a))
+}
+
+/// Publish what is due: Scheduled assets whose time has come. The scheduler
+/// calls this every tick. A failure stays on the asset (it falls back to
+/// Ready, with the reason) and Seemo says so.
+pub async fn publish_due(app: &App, slug: &str, now: DateTime<Utc>) {
+    let Ok(list) = assets::list(&app.store, slug) else { return };
+    for a in list.into_iter().filter(|a| a.status == Status::Scheduled && a.publish_at.is_some_and(|t| t <= now)) {
+        let key = format!("publish:{slug}/{}/{}", a.kind, a.id);
+        if !app.jobs.write().await.insert(key.clone()) {
+            continue;
+        }
+        let body = PublishBody { asset: AssetRef { kind: a.kind.clone(), id: a.id.clone() }, channel: a.channel.clone().unwrap_or_default(), ..Default::default() };
+        let r = match publish_preview(app, slug, &body).await {
+            Ok(p) => do_publish(app, slug, &p, "schedule").await,
+            Err(e) => Err(e),
+        };
+        if let Err(ApiError(_, msg)) = r {
+            tracing::warn!(slug, asset = %format!("{}/{}", a.kind, a.id), error = %msg, "a scheduled publish failed");
+            if let Ok(mut x) = assets::load(&app.store, slug, &a.kind, &a.id) {
+                x.publish_at = None;
+                x.publish_error = Some(msg.clone());
+                if let Ok(x) = assets::save(&app.store, slug, &x) {
+                    crate::api::emit_saved(app, slug, &x, false);
+                }
+            }
+            app.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("I could not publish \"{}\" as scheduled: {msg}", a.title) });
+        }
+        app.jobs.write().await.remove(&key);
+    }
+}
+
 // ------------------------------------------------------------------- email
 
 #[derive(Deserialize, Default)]
@@ -350,10 +521,10 @@ pub async fn email_preview(app: &App, slug: &str, b: &EmailBody) -> Result<Value
     let provider = {
         let cfg = app.config.read().await.clone();
         let reg = app.registry.read().await;
-        reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), crate::ext::ready).map(|(_, m)| m.name.clone())
+        reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), |m| crate::ext::ready_in(app, Some(slug), m)).map(|(_, m)| m.name.clone())
     };
     let Some(provider) = provider else {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "no mail connection is set up; add Email (SMTP) under Settings → Connections".into()));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, "no mail ability is set up for this project; install Email under Settings → Abilities and add an email channel".into()));
     };
     let files: Vec<Value> = match &b.asset {
         Some(r) if !r.id.is_empty() => {
@@ -389,10 +560,10 @@ pub async fn do_email(app: &App, slug: &str, preview: &Value) -> Result<Value, A
     let m = {
         let cfg = app.config.read().await.clone();
         let reg = app.registry.read().await;
-        reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), crate::ext::ready).map(|(_, m)| m.clone()).ok_or_else(|| bad("no mail connection is set up"))?
+        reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), |m| crate::ext::ready_in(app, Some(slug), m)).map(|(_, m)| m.clone()).ok_or_else(|| bad("no mail ability is set up for this project; add an email channel under Channels"))?
     };
     let result = if m.transport == Transport::Builtin && m.id == "kiqr-smtp" {
-        let r = smtp_send(&to, &subject, &text, files).await.map_err(|e| bad(format!("{e:#}")))?;
+        let r = smtp_send(&kiqr_core::secrets::env_fn(app.store.home(), Some(slug)), &to, &subject, &text, files).await.map_err(|e| bad(format!("{e:#}")))?;
         json!({ "sent": true, "to": to, "from": r.from, "subject": subject, "connection": m.name })
     } else {
         let provide = m.provides.get("email").cloned().unwrap_or_default();
@@ -417,11 +588,10 @@ pub struct Sent {
 
 /// Send one email over SMTP with the `.env` settings: Markdown text as both
 /// plain text and HTML, files attached.
-pub async fn smtp_send(to: &str, subject: &str, text_md: &str, files: Vec<(String, Vec<u8>, String)>) -> Result<Sent> {
+pub async fn smtp_send(env: &(impl Fn(&str) -> Option<String> + Sync), to: &str, subject: &str, text_md: &str, files: Vec<(String, Vec<u8>, String)>) -> Result<Sent> {
     use lettre::message::{header::ContentType, Attachment, Mailbox, MultiPart, SinglePart};
     use lettre::transport::smtp::authentication::Credentials;
     use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
     let host = env("SMTP_HOST").ok_or_else(|| anyhow!("SMTP_HOST is not set"))?;
     let user = env("SMTP_USER").ok_or_else(|| anyhow!("SMTP_USER is not set"))?;
     // No password: a relay that needs none (on this machine or a private network).

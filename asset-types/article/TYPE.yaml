@@ -5,6 +5,7 @@ plural: Articles
 icon: newspaper
 description: Long-form pieces for your blog, written from the business profile and the content gaps.
 preview: article
+image: always
 files:
   - { role: body, accept: [md] }
   - { role: cover, accept: [png, jpg, jpeg, webp] }

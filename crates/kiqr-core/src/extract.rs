@@ -1,5 +1,5 @@
 //! Fact extraction (per page) and profile synthesis (per section). The prompts
-//! are the built-in skills; a copy in `~/.kiqr/skills/<name>/SKILL.md`
+//! are the built-in instructions; a copy in `~/.kiqr/abilities/<name>/SKILL.md`
 //! overrides the built-in one so users can tune them.
 
 use crate::events::{EventBus, EventKind};
@@ -13,28 +13,25 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-const BUILTIN_EXTRACT: &str = include_str!("../../../skills/extract-facts/SKILL.md");
-const BUILTIN_BUILD: &str = include_str!("../../../skills/build-profile/SKILL.md");
-const BUILTIN_BRIEF: &str = include_str!("../../../skills/business-brief/SKILL.md");
-const BUILTIN_POSTS: &str = include_str!("../../../skills/social-posts/SKILL.md");
+const BUILTIN_EXTRACT: &str = include_str!("../../../abilities/extract-facts/SKILL.md");
+const BUILTIN_BUILD: &str = include_str!("../../../abilities/build-profile/SKILL.md");
+const BUILTIN_BRIEF: &str = include_str!("../../../abilities/business-brief/SKILL.md");
+const BUILTIN_POSTS: &str = include_str!("../../../abilities/social-posts/SKILL.md");
 
-/// Install the built-in skills into the home directory if they are missing,
-/// so users see and can edit them.
-pub fn install_builtin_skills(store: &Store) -> Result<bool> {
+/// Install the built-in instructions (the pipeline prompts, the posts
+/// recipe, Seemo's guide) into the home so users see and can edit them.
+pub fn install_builtin_instructions(store: &Store) -> Result<bool> {
     let mut wrote = false;
     for (name, body) in [
         ("extract-facts", BUILTIN_EXTRACT),
         ("build-profile", BUILTIN_BUILD),
         ("business-brief", BUILTIN_BRIEF),
-        ("crawl-site", include_str!("../../../skills/crawl-site/SKILL.md")),
+        ("crawl-site", include_str!("../../../abilities/crawl-site/SKILL.md")),
         ("social-posts", BUILTIN_POSTS),
         ("seemo-agent", crate::agent::BUILTIN_GUIDE),
     ] {
-        let path = store.home().skills_dir().join(name).join("SKILL.md");
-        if !path.exists() {
-            store.write_text(&path, body)?;
-            wrote = true;
-        }
+        let path = store.home().abilities_dir().join(name).join("SKILL.md");
+        wrote |= crate::extensions::install_builtin_text(store, &path, body)?;
     }
     Ok(wrote)
 }
@@ -53,41 +50,25 @@ fn network_name(n: &str) -> String {
     }
 }
 
-/// A skill's text: the user's copy in `~/.kiqr/skills/<name>/SKILL.md`, else
-/// the built-in one. Frontmatter stripped.
-pub fn skill_text(store: &Store, name: &str, builtin: &str) -> String {
-    let path = store.home().skills_dir().join(name).join("SKILL.md");
+/// Built-in instructions as they apply: the user's copy in
+/// `~/.kiqr/abilities/<name>/SKILL.md`, else the shipped text. Frontmatter stripped.
+pub fn instructions_text(store: &Store, name: &str, builtin: &str) -> String {
+    let path = store.home().abilities_dir().join(name).join("SKILL.md");
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| builtin.to_string());
     strip_frontmatter(&text)
 }
 
-/// The built-in text of a skill, if it ships with KIQR.
-pub fn builtin_skill(name: &str) -> Option<&'static str> {
+/// The shipped text of built-in instructions, if KIQR ships that folder.
+pub fn builtin_instructions(name: &str) -> Option<&'static str> {
     match name {
         "extract-facts" => Some(BUILTIN_EXTRACT),
         "build-profile" => Some(BUILTIN_BUILD),
         "business-brief" => Some(BUILTIN_BRIEF),
-        "crawl-site" => Some(include_str!("../../../skills/crawl-site/SKILL.md")),
+        "crawl-site" => Some(include_str!("../../../abilities/crawl-site/SKILL.md")),
         "social-posts" => Some(BUILTIN_POSTS),
         "seemo-agent" => Some(crate::agent::BUILTIN_GUIDE),
         _ => None,
     }
-}
-
-/// Skill names: built-in ones plus any folder the user added.
-pub fn skill_names(store: &Store) -> Vec<String> {
-    let mut names: Vec<String> = ["extract-facts", "build-profile", "business-brief", "crawl-site", "social-posts", "seemo-agent"].iter().map(|s| s.to_string()).collect();
-    if let Ok(rd) = std::fs::read_dir(store.home().skills_dir()) {
-        for e in rd.flatten() {
-            if e.path().join("SKILL.md").exists() {
-                let n = e.file_name().to_string_lossy().to_string();
-                if !names.contains(&n) {
-                    names.push(n);
-                }
-            }
-        }
-    }
-    names
 }
 
 fn strip_frontmatter(s: &str) -> String {
@@ -116,7 +97,7 @@ impl Extractor {
             return Ok(vec![]);
         }
         let (prov, model) = provider::resolve(&self.config.models.extract)?;
-        let system = skill_text(&self.store, "extract-facts", BUILTIN_EXTRACT);
+        let system = instructions_text(&self.store, "extract-facts", BUILTIN_EXTRACT);
         let body = truncate(markdown, 60_000);
         let prompt = format!("URL: {url}\nTitle: {title}\n\n{body}");
         let text = prov.complete(&Request { system, prompt, model, json: true, max_tokens: 8000 }).await?;
@@ -164,7 +145,7 @@ impl Extractor {
         }
         let facts = profile::load_facts(&self.store, slug)?;
         let (prov, model) = provider::resolve(&self.config.models.synthesize)?;
-        let system = skill_text(&self.store, "build-profile", BUILTIN_BUILD);
+        let system = instructions_text(&self.store, "build-profile", BUILTIN_BUILD);
 
         // Decide up front which sections have anything to synthesize, so the UI
         // knows how many steps to expect.
@@ -244,7 +225,7 @@ impl Extractor {
 
     /// Write `count` social media posts from the business brief and add them to
     /// the library as drafts. Uses the chat model: this is Seemo writing.
-    pub async fn social_posts(&self, project: &Project, count: usize) -> Result<Vec<crate::assets::Asset>> {
+    pub async fn social_posts(&self, project: &Project, count: usize) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
         let slug = &project.slug;
         let result = self.social_posts_inner(project, count).await;
         match &result {
@@ -257,12 +238,12 @@ impl Extractor {
         result
     }
 
-    async fn social_posts_inner(&self, project: &Project, count: usize) -> Result<Vec<crate::assets::Asset>> {
+    async fn social_posts_inner(&self, project: &Project, count: usize) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
         let slug = &project.slug;
         let brief = Brief::load(&self.store, slug)?.ok_or_else(|| anyhow::anyhow!("there is no business profile yet; crawl the site first"))?;
         let networks: Vec<String> = crate::brand::Brand::load(&self.store, slug)?.map(|b| b.social.into_iter().map(|s| s.network.to_lowercase()).collect()).unwrap_or_default();
         let (prov, model) = provider::resolve(&self.config.models.chat)?;
-        let system = skill_text(&self.store, "social-posts", BUILTIN_POSTS);
+        let system = instructions_text(&self.store, "social-posts", BUILTIN_POSTS);
         let mut b = serde_json::to_value(&brief)?;
         // The brief's page lists are for the content map, not for writing posts.
         if let Some(clusters) = b.get_mut("topic_clusters").and_then(|v| v.as_array_mut()) {
@@ -282,6 +263,7 @@ impl Extractor {
             network: String,
             title: String,
             text: String,
+            image: Option<PostImage>,
         }
         let posts: Vec<PostOut> = value.get("posts").cloned().map(serde_json::from_value).transpose()?.unwrap_or_default();
         let posts: Vec<PostOut> = posts.into_iter().filter(|p| !p.text.trim().is_empty()).take(count).collect();
@@ -309,7 +291,13 @@ impl Extractor {
                 },
             )?;
             self.bus.emit(Some(slug), EventKind::AssetSaved { asset_type: a.kind.clone(), id: a.id.clone(), title: a.title.clone(), status: "draft".into(), created: true });
-            made.push(a);
+            // Every post gets its card: the instructions' idea, else the title over the first sentence.
+            let idea = p.image.filter(|i| !i.headline.trim().is_empty()).unwrap_or_else(|| PostImage {
+                headline: a.title.clone(),
+                support: p.text.split(['.', '!', '?', '\n']).next().map(|s| s.trim().to_string()).filter(|s| s.len() <= 90).unwrap_or_default(),
+                style: ["dark", "light", "accent"][made.len() % 3].to_string(),
+            });
+            made.push((a, Some(idea)));
         }
         Ok(made)
     }
@@ -318,7 +306,7 @@ impl Extractor {
         let slug = &project.slug;
         profile::purge_offsite(&self.store, slug)?;
         let (prov, model) = provider::resolve(&self.config.models.synthesize)?;
-        let system = skill_text(&self.store, "business-brief", BUILTIN_BRIEF);
+        let system = instructions_text(&self.store, "business-brief", BUILTIN_BRIEF);
 
         let sections: Vec<serde_json::Value> = profile::load_all(&self.store, slug)?
             .into_iter()
@@ -497,4 +485,16 @@ fn truncate(s: &str, max: usize) -> String {
 fn hash(s: &str) -> String {
     let d = Sha256::digest(s.as_bytes());
     d.iter().take(12).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The image idea the social-posts instructions give a post: a headline of a few
+/// words, a supporting line and a style. The daemon renders it as a branded
+/// card so posts made without an agent session still get their image.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PostImage {
+    pub headline: String,
+    pub support: String,
+    /// `dark`, `light` or `accent`: which brand colour is the background.
+    pub style: String,
 }

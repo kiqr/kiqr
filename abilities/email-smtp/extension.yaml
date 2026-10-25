@@ -1,9 +1,11 @@
 # Email over SMTP. Works with Gmail (an app password), Fastmail, Outlook,
 # or any mail host. Values live in .env; the daemon sends.
 id: kiqr-smtp
-name: Email (SMTP)
+name: Send email from your mail account
 version: 0.1.0
-summary: Send email from your own mail account. Every send asks you first.
+summary: "Email over SMTP: Gmail with an app password, Fastmail, Outlook or any mail host. Each project connects its own account. Every send asks you first."
+categories: [email, publishing]
+icon: mail
 transport: builtin
 homepage: https://support.google.com/accounts/answer/185833
 auth:

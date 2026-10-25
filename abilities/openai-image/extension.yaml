@@ -1,8 +1,10 @@
 # OpenAI's image model. Good at text in images and product shots.
 id: openai-image
-name: OpenAI images
+name: Create images with OpenAI
 version: 0.1.0
 summary: Images from a prompt with gpt-image-1. About $0.04 to $0.17 per image.
+categories: [images]
+icon: image
 transport: http
 homepage: https://platform.openai.com/docs/guides/image-generation
 auth:

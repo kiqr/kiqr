@@ -121,7 +121,7 @@ async fn call(client: &Client, scope: &Scope, name: &str, mut args: Value) -> Va
         CallSpec::Approval { approval } => approval_call(client, scope, approval, args).await,
         CallSpec::Ability { ability } => {
             args["by"] = json!(by);
-            post_tool(client, &format!("/api/projects/{}/abilities/{ability}", scope.project), args).await
+            answer(request(client, "POST", &format!("/api/projects/{}/abilities/{ability}", scope.project), Some(args)).await)
         }
         CallSpec::Ext { ext, tool: t } => {
             args["by"] = json!(by);
@@ -216,6 +216,12 @@ async fn approval_call(client: &Client, scope: &Scope, kind: &str, args: Value) 
     }
     let opened: Value = serde_json::from_str(&text).unwrap_or_default();
     let id = opened["id"].as_str().unwrap_or("").to_string();
+    wait_for_approval(client, scope, &id).await
+}
+
+/// Poll an open approval until the person answers, in short waits so a
+/// dropped connection costs little; gives up after 15 minutes.
+async fn wait_for_approval(client: &Client, scope: &Scope, id: &str) -> Value {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
     while std::time::Instant::now() < deadline {
         match request(client, "GET", &format!("/api/projects/{}/approvals/{id}?wait=60", scope.project), None).await {

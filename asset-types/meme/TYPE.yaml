@@ -4,6 +4,7 @@ plural: Memes
 icon: laugh
 description: Memes and other quick, shareable images.
 preview: image
+image: always
 files:
   - { role: image, accept: [png, jpg, jpeg, webp, gif] }
   - { role: caption, accept: [md, txt] }

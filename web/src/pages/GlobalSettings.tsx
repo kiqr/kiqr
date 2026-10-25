@@ -1,13 +1,11 @@
-// Settings for the whole installation: models, crawl defaults, connections and storage.
+// Settings for the whole installation: models, crawl defaults, the abilities marketplace and storage.
 // Project-level things (crawl overrides, where a project publishes) live in the project.
 import { useEffect, useState } from "react";
 import { Link, NavLink, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import {
-  Bot, Check, Cloud, Cpu, Database, ExternalLink, FolderGit2, HardDrive, Image as ImageIcon, KeyRound, Loader2, Plug, Radar, Server, Settings as SettingsIcon, ShieldCheck, Sparkles, Terminal, Trash2, X,
-  type LucideIcon,
-} from "lucide-react";
-import { api, useAsync, useEvents, type Config, type Connection, type Health } from "../api";
+import { Bot, Check, Cloud, Cpu, Database, FolderGit2, HardDrive, KeyRound, Radar, Server, Settings as SettingsIcon, Sparkles, Terminal, X, type LucideIcon } from "lucide-react";
+import { api, useAsync, useEvents, type Config, type Health } from "../api";
+import { SecretField } from "./SecretField";
 import "../settings.css";
 
 type Tab = { id: string; label: string; icon: LucideIcon };
@@ -15,7 +13,6 @@ const TABS: Tab[] = [
   { id: "", label: "General", icon: SettingsIcon },
   { id: "models", label: "Models", icon: Cpu },
   { id: "crawling", label: "Crawling", icon: Radar },
-  { id: "connections", label: "Connections", icon: Plug },
   { id: "storage", label: "Storage", icon: Database },
 ];
 
@@ -87,7 +84,6 @@ export function Settings() {
           {current.id === "" && <General h={h} config={config.data} />}
           {current.id === "models" && draft && <Models h={h} draft={draft} setDraft={setDraft} />}
           {current.id === "crawling" && draft && <Crawling h={h} draft={draft} setDraft={setDraft} />}
-          {current.id === "connections" && <Connections h={h} />}
           {current.id === "storage" && <Storage h={h} />}
         </motion.div>
       </div>
@@ -120,15 +116,15 @@ export function Settings() {
 
 function General({ h, config }: { h?: Health; config?: Config }) {
   const projects = useAsync(() => api.projects(), []);
-  const ext = useAsync(() => api.extensions(), []);
+  const mk = useAsync(() => api.abilities(), []);
   const models = h?.providers ?? [];
   const ready = models.filter((p) => p.available).length;
-  const connected = (ext.data?.connections ?? []).filter((c) => c.ready).length + (h?.unblockingapi ? 1 : 0);
-  const abilitiesOn = (ext.data?.abilities ?? []).filter((a) => a.active).length;
+  const installed = (mk.data?.abilities ?? []).length;
+  const abilitiesOn = (mk.data?.contracts ?? []).filter((c) => c.active).length;
   const tiles: { icon: LucideIcon; label: string; value: string; note: string; to: string; tone: "ok" | "warn" | "" }[] = [
     { icon: Cpu, label: "Models", value: `${ready}/${models.length || 3}`, note: ready === models.length ? "Every task has a model it can use" : "A task has no model it can use", to: "/settings/models", tone: ready === models.length ? "ok" : "warn" },
     { icon: Radar, label: "Crawl default", value: config ? `${config.crawl.max_pages}` : "–", note: config ? `pages, ${config.crawl.concurrency} at a time` : "", to: "/settings/crawling", tone: "" },
-    { icon: Plug, label: "Connections", value: `${connected}`, note: abilitiesOn ? `${abilitiesOn} of ${ext.data?.abilities.length ?? 4} abilities on` : "None yet", to: "/settings/connections", tone: connected ? "ok" : "" },
+    { icon: Sparkles, label: "Abilities", value: `${installed}`, note: abilitiesOn ? `on this machine; set up per project under Seemo → Abilities` : "on this machine; nothing beyond writing and images yet", to: projects.data?.[0] ? `/p/${projects.data[0].slug}/abilities` : "/projects", tone: abilitiesOn ? "ok" : "" },
     { icon: FolderGit2, label: "Projects", value: `${projects.data?.length ?? "–"}`, note: "Each in its own folder, every change a commit", to: "/settings/storage", tone: "" },
   ];
   return (
@@ -194,49 +190,27 @@ function usable(spec: string, h?: Health) {
 
 function Models({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (c: Config) => void }) {
   const tools = h?.tools ?? [];
-  const ext = useAsync(() => api.extensions(), []);
-  useEvents(null, (e) => ["secret_set", "extension_installed", "extension_removed", "skill_saved", "skill_deleted"].includes(e.type) && ext.reload(), { demo: false });
-  const abilities = ext.data?.abilities ?? [];
-  const pick = (id: string, conn: string) => setDraft({ ...draft, abilities: { ...(draft.abilities ?? {}), [id]: conn } });
   return (
     <>
-      <Card icon={ImageIcon} title="Abilities" text="What Seemo can do beyond writing, and which connection does it. The built-in renderer makes images with nothing installed; connect a generator for photos and illustrations.">
+      <Card icon={KeyRound} title="Model keys" text="For models over the API. Your Claude or ChatGPT subscription needs none: it signs in through the command-line tool. Saved to .env, never shown again, never sent to the model.">
         <div className="set-models">
-          {abilities.map((a) => {
-            const chosen = draft.abilities?.[a.id] ?? a.configured ?? a.active?.id ?? "";
-            const ready = a.connections.filter((c) => c.ready);
-            return (
-              <div key={a.id} className="set-model">
-                <span className="ic">
-                  <Sparkles size={15} />
-                </span>
-                <div className="min0">
-                  <p className="nm">{a.label}</p>
-                  <p className="ds">{a.active ? `Through ${a.active.name}.` : a.connections.length ? "A connection exists but is not set up yet." : "No connection provides this yet."}</p>
-                </div>
-                <div className="pick">
-                  {ready.length > 1 ? (
-                    <select className="input" value={chosen} onChange={(e) => pick(a.id, e.target.value)}>
-                      {a.connections.map((c) => (
-                        <option key={c.id} value={c.id} disabled={!c.ready}>
-                          {c.name}
-                          {c.ready ? "" : " (needs a key)"}
-                        </option>
-                      ))}
-                    </select>
-                  ) : a.active ? (
-                    <span className="chip ok">
-                      <b /> {a.active.name}
-                    </span>
-                  ) : (
-                    <Link to="/settings/connections" className="chip warn">
-                      <b /> off: add a connection
-                    </Link>
-                  )}
-                </div>
+          {[
+            { name: "Anthropic API", text: "Claude models over the API, for anthropic/… below.", env: "ANTHROPIC_API_KEY", help: "https://console.anthropic.com/settings/keys" },
+            { name: "OpenAI API", text: "GPT models over the API, for openai/… below (and OpenAI images).", env: "OPENAI_API_KEY", help: "https://platform.openai.com/api-keys" },
+          ].map((p) => (
+            <div key={p.env} className="set-model">
+              <span className="ic">
+                <KeyRound size={15} />
+              </span>
+              <div className="min0">
+                <p className="nm">{p.name}</p>
+                <p className="ds">{p.text}</p>
               </div>
-            );
-          })}
+              <div className="pick">
+                <SecretField name={p.env} label={p.env} help={p.help} set={!!h?.secrets?.find((x) => x.name === p.env)?.set} />
+              </div>
+            </div>
+          ))}
         </div>
       </Card>
       <Card icon={Cpu} title="Which model does what" text="Each task names a provider and a model. Your Claude or ChatGPT subscription works through its command-line tool; API keys work too.">
@@ -287,7 +261,7 @@ function Models({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (
 
 /* ---------- Crawling ---------- */
 
-function Crawling({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (c: Config) => void }) {
+function Crawling({ draft, setDraft }: { h?: Health; draft: Config; setDraft: (c: Config) => void }) {
   const set = (patch: Partial<Config["crawl"]>) => setDraft({ ...draft, crawl: { ...draft.crawl, ...patch } });
   const num = (v: string, min: number, max: number) => Math.max(min, Math.min(max, Math.round(Number(v) || min)));
   return (
@@ -297,15 +271,6 @@ function Crawling({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft:
           <Field label="Pages per crawl" hint="How many pages Seemo reads. Raise it live from the crawl screen." value={draft.crawl.max_pages} min={1} max={5000} onChange={(v) => set({ max_pages: num(v, 1, 5000) })} />
           <Field label="Pages fetched at a time" hint="1–10. KIQR fetches pages itself, never the model." value={draft.crawl.concurrency} min={1} max={10} onChange={(v) => set({ concurrency: num(v, 1, 10) })} />
           <Field label="Pages read at a time" hint="1–10. Reading is queued and never slows fetching." value={draft.crawl.ai_concurrency} min={1} max={10} onChange={(v) => set({ ai_concurrency: num(v, 1, 10) })} />
-        </div>
-      </Card>
-      <Card icon={ShieldCheck} title="Pages that block crawlers" text="Some sites answer with a challenge page, a block or an empty JavaScript shell.">
-        <div className="set-toggle-row">
-          <div>
-            <p className="nm">Read them with UnblockingAPI</p>
-            <p className="ds">{h?.unblockingapi ? "A real browser and residential proxies, only for pages KIQR couldn't read. Each success costs one credit." : "Add UNBLOCKINGAPI_KEY to .env to use it. Until then such pages are listed as unreadable."}</p>
-          </div>
-          <Switch on={draft.crawl.escalate_to_unblockingapi} onChange={(on) => set({ escalate_to_unblockingapi: on })} disabled={!h?.unblockingapi} />
         </div>
       </Card>
     </>
@@ -322,267 +287,13 @@ function Field({ label, hint, value, min, max, onChange }: { label: string; hint
   );
 }
 
-function Switch({ on, onChange, disabled }: { on: boolean; onChange: (on: boolean) => void; disabled?: boolean }) {
-  return (
-    <button type="button" role="switch" aria-checked={on} disabled={disabled} className={`switch ${on ? "on" : ""}`} onClick={() => onChange(!on)}>
-      <motion.i layout transition={{ type: "spring", stiffness: 600, damping: 35 }} />
-    </button>
-  );
-}
 
 /* ---------- Connections ---------- */
-
-const RELOAD_ON = ["secret_set", "extension_installed", "extension_removed", "skill_saved", "skill_deleted"];
-
-function Connections({ h }: { h?: Health }) {
-  const ext = useAsync(() => api.extensions(), []);
-  useEvents(null, (e) => RELOAD_ON.includes(e.type) && ext.reload(), { demo: false });
-  const conns = ext.data?.connections ?? [];
-  const secret = (n: string) => !!h?.secrets?.find((s) => s.name === n)?.set;
-  const providers: { name: string; text: string; env: string; help: string; set: boolean }[] = [
-    { name: "UnblockingAPI", text: "Reads pages that block crawlers or need JavaScript, for the crawl and for Seemo's read_url.", env: "UNBLOCKINGAPI_KEY", help: "https://unblockingapi.com", set: !!h?.unblockingapi },
-    { name: "Anthropic API", text: "Claude models over the API, for anthropic/… in Models.", env: "ANTHROPIC_API_KEY", help: "https://console.anthropic.com/settings/keys", set: secret("ANTHROPIC_API_KEY") },
-    { name: "OpenAI API", text: "GPT models over the API, for openai/… in Models (and OpenAI images).", env: "OPENAI_API_KEY", help: "https://platform.openai.com/api-keys", set: secret("OPENAI_API_KEY") },
-  ];
-  return (
-    <>
-      <div className="set-conns">
-        {conns.map((c, i) => (
-          <ConnectionCard key={c.id} c={c} i={i} onChange={ext.reload} />
-        ))}
-        <motion.div className="set-conn st-soon" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: conns.length * 0.05 }}>
-          <span className="ic">
-            <Cloud size={17} />
-          </span>
-          <div className="min0">
-            <p className="nm">
-              kiqr.cloud <span className="soon">Coming soon</span>
-            </p>
-            <p className="ds">One-click sign-in for Canva, Gmail, X, Reddit, LinkedIn and more, through the kiqr.cloud relay. Optional: the open-source client never needs it.</p>
-          </div>
-        </motion.div>
-      </div>
-      <Card icon={KeyRound} title="Model and crawl providers" text="Keys for the models in Models and for reading blocked pages. Saved to .env; never shown again, never sent to the model.">
-        <div className="set-models">
-          {providers.map((p) => (
-            <div key={p.env} className="set-model">
-              <span className="ic">
-                <KeyRound size={15} />
-              </span>
-              <div className="min0">
-                <p className="nm">
-                  {p.name}
-                  {p.set && (
-                    <span className="chip ok" style={{ marginLeft: 8 }}>
-                      <b /> set
-                    </span>
-                  )}
-                </p>
-                <p className="ds">{p.text}</p>
-              </div>
-              <div className="pick">
-                <SecretField name={p.env} label={p.env} help={p.help} set={p.set} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </Card>
-      <Card icon={Plug} title="Your own connections" text="Any folder with an extension.yaml: an HTTP call, a program on this computer, or an MCP server. Install it under Seemo → Skills (Advanced) in a project, and it shows up here.">
-        {ext.data && ext.data.broken.length > 0 && (
-          <ul className="set-broken">
-            {ext.data.broken.map((b) => (
-              <li key={b.folder}>
-                <code>{b.folder}</code> <span>{b.error}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="set-note">Values live in <code>{h?.env_file ?? ".env"}</code>. A connection that runs a program says so on its card and is never installed without you.</p>
-      </Card>
-    </>
-  );
-}
-
-/** One connection: what it provides, what it needs, and the fields to give it. */
-function ConnectionCard({ c, i, onChange }: { c: Connection; i: number; onChange: () => void }) {
-  const [confirm, setConfirm] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const state: "on" | "off" | "warn" = c.ready ? "on" : c.transport === "mcp" && c.program_found === false ? "warn" : "off";
-  const remove = async () => {
-    setBusy(true);
-    try {
-      await api.removeConnection(c.id, c.scope.scope === "project" ? c.scope.project : undefined);
-      onChange();
-    } finally {
-      setBusy(false);
-      setConfirm(false);
-    }
-  };
-  const provides = c.provides.map((p) => p.label).filter(Boolean);
-  const cost = c.provides.find((p) => p.cost)?.cost ?? c.tools.find((t) => t.cost)?.cost ?? null;
-  return (
-    <motion.div className={`set-conn st-${state}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
-      <span className="ic">{c.transport === "builtin" ? <Sparkles size={17} /> : c.transport === "mcp" || c.transport === "command" ? <Terminal size={17} /> : <Plug size={17} />}</span>
-      <div className="min0 grow">
-        <p className="nm">
-          {c.name}
-          {c.ready ? (
-            <span className="chip ok">
-              <b /> connected
-            </span>
-          ) : state === "warn" ? (
-            <span className="chip warn">
-              <b /> program not found
-            </span>
-          ) : (
-            <span className="chip warn">
-              <b /> needs a key
-            </span>
-          )}
-          {c.scope.scope === "project" && <span className="chip">{c.scope.project}</span>}
-        </p>
-        <p className="ds">
-          {c.summary}
-          {c.homepage && (
-            <>
-              {" "}
-              <a href={c.homepage} target="_blank" rel="noreferrer" className="lnk">
-                {new URL(c.homepage).hostname} <ExternalLink size={11} />
-              </a>
-            </>
-          )}
-        </p>
-        {(provides.length > 0 || c.tools.length > 0 || c.channels.length > 0) && (
-          <p className="how">
-            {provides.length > 0 && <>Provides: {provides.join(", ")}. </>}
-            {c.channels.length > 0 && <>Publishes to: {c.channels.map((ch) => ch.label).join(", ")}. </>}
-            {c.tools.length > 0 && <>{c.tools.length} tool{c.tools.length === 1 ? "" : "s"} of its own. </>}
-            {cost && <>Cost: {cost}.</>}
-          </p>
-        )}
-        {(c.transport === "mcp" || c.transport === "command") && (
-          <p className="how warn">
-            Runs a program on this computer{c.command ? <>: <code>{c.command}</code></> : null}.
-          </p>
-        )}
-        {c.auth.length > 0 && (
-          <div className="set-keys">
-            {c.auth.map((a) => (
-              <SecretField key={a.env} name={a.env} label={a.label || a.env} help={a.help} set={a.set} optional={a.optional} />
-            ))}
-          </div>
-        )}
-        {!c.builtin && (
-          <div className="set-conn-acts">
-            {confirm ? (
-              <>
-                <span className="muted sm">Remove this connection and its skill?</span>
-                <button className="btn t bad" disabled={busy} onClick={() => void remove()}>
-                  {busy ? <Loader2 size={14} className="spin" /> : <Check size={14} />} Remove
-                </button>
-                <button className="btn t" onClick={() => setConfirm(false)}>
-                  Keep
-                </button>
-              </>
-            ) : (
-              <button className="btn t sm" onClick={() => setConfirm(true)}>
-                <Trash2 size={13} /> Remove
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-    </motion.div>
-  );
-}
-
-/** A help line: a bare URL becomes "where to get it"; a sentence keeps its words, with any URL in it linked. */
-function Hint({ text }: { text: string }) {
-  if (/^https?:\/\/\S+$/.test(text.trim()))
-    return (
-      <a href={text.trim()} target="_blank" rel="noreferrer" className="lnk">
-        where to get it <ExternalLink size={10} />
-      </a>
-    );
-  const parts = text.split(/(https?:\/\/\S+)/);
-  return (
-    <span className="hint">
-      {parts.map((p, i) =>
-        /^https?:\/\//.test(p) ? (
-          <a key={i} href={p} target="_blank" rel="noreferrer" className="lnk">
-            {p.replace(/^https?:\/\//, "")} <ExternalLink size={10} />
-          </a>
-        ) : (
-          <span key={i}>{p}</span>
-        ),
-      )}
-    </span>
-  );
-}
-
-/** One secret by name: typed once, saved to .env, never shown again. */
-function SecretField({ name, label, help, set, optional }: { name: string; label: string; help?: string; set: boolean; optional?: boolean }) {
-  const [value, setValue] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(set);
-  const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(!set);
-  useEffect(() => {
-    setDone(set);
-    setEditing(!set);
-  }, [set]);
-  const save = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await api.setSecret(name, value.trim());
-      setDone(r.set);
-      setEditing(!r.set);
-      setValue("");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="set-key">
-      <span className="lb">
-        {label}
-        {optional && <small> optional</small>}
-        {help && <Hint text={help} />}
-      </span>
-      {editing ? (
-        <span className="in">
-          <input className="input mono" type="password" autoComplete="off" spellCheck={false} placeholder={done ? "new value" : "paste it here"} value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && value.trim() && void save()} />
-          <button className="btn g sm" disabled={busy || !value.trim()} onClick={() => void save()}>
-            {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Save
-          </button>
-          {done && (
-            <button className="btn t sm" onClick={() => setEditing(false)}>
-              Cancel
-            </button>
-          )}
-        </span>
-      ) : (
-        <span className="in">
-          <span className="chip ok">
-            <b /> set
-          </span>
-          <button className="btn t sm" onClick={() => setEditing(true)}>
-            Change
-          </button>
-        </span>
-      )}
-      {error && <span className="err">{error}</span>}
-    </div>
-  );
-}
 
 /* ---------- Storage ---------- */
 
 function Storage({ h }: { h?: Health }) {
-  const tracked = ["config.yaml", "Business profiles and briefs", "Facts from every page", "Asset types", "Skills and Seemo's persona", "Tasks and their runs"];
+  const tracked = ["config.yaml", "Business profiles and briefs", "Facts from every page", "Asset types", "Abilities and Seemo's persona", "Tasks and their runs"];
   const ignored = [".env (secrets)", "Crawl cache", "Generated assets: articles, images, videos…"];
   return (
     <>

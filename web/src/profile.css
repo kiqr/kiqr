@@ -233,3 +233,15 @@ a.stat:hover { text-decoration: none; border-color: color-mix(in oklab, var(--ac
 .shot .cap2 { position: absolute; left: 0; right: 0; bottom: 0; padding: 22px 10px 8px; font-size: 11px; color: #fff; background: linear-gradient(transparent, rgba(0,0,0,.75)); opacity: 0; transform: translateY(6px); transition: opacity 200ms, transform 200ms; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .shot:hover .cap2 { opacity: 1; transform: none; }
 .shot:hover { text-decoration: none; border-color: var(--line-2); }
+
+/* content: site map, then gaps */
+.cm-views { display: flex; gap: 8px; flex: none; align-items: center; }
+.cm-views .chip { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; text-decoration: none; }
+.cm-sec { margin-top: 8px; }
+.cm-sec + .cm-sec { margin-top: 36px; padding-top: 28px; border-top: 1px solid var(--line); }
+.cm-sec h2 { display: flex; align-items: center; gap: 8px; font: 600 17px/1.3 var(--sans); letter-spacing: -.01em; margin-bottom: 14px; }
+.cm-sec h2 svg { color: var(--accent); }
+.cm-sec h2 .n { font: 500 12px/1 var(--mono); color: var(--dim); margin-left: 2px; }
+.cm-sec-ds { font-size: 13px; color: var(--muted); max-width: 640px; margin: -6px 0 14px; }
+
+/* skills or abilities? */

@@ -4,5 +4,6 @@ plural: Images
 icon: image
 description: Illustrations, banners and graphics.
 preview: image
+image: always
 files:
   - { role: image, accept: [png, jpg, jpeg, webp, gif, svg] }

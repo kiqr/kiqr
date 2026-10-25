@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { Link, Navigate, useParams } from "react-router-dom";
-import { Check, Network, Plus, SearchX, type LucideIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Check, Network, Plus, RefreshCw, SearchX, type LucideIcon } from "lucide-react";
 import { api, useAsync, useEvents, type Asset, type ContentGap } from "../api";
 import { pathOf } from "./Project";
 import "../profile.css";
@@ -16,27 +16,73 @@ function useBrief() {
   return { slug, brief };
 }
 
-/** The site's existing content, grouped into topic clusters. */
-export function ContentMap() {
+/** Your business → Content: what the site has published (the site map, in topic clusters) and what it has not written about yet (the gaps). */
+export function ContentPage() {
   const { slug, brief } = useBrief();
+  const navigate = useNavigate();
+  const { hash } = useLocation();
+  const project = useAsync(() => api.project(slug), [slug]);
   const b = brief.data;
+  useEffect(() => {
+    if (hash === "#gaps" && b) document.getElementById("gaps")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [hash, b]);
   if (brief.loading) return null;
   if (!b) return <NoBrief slug={slug} icon={Network} what="the content map" />;
   const total = b.topic_clusters.reduce((n, c) => n + c.page_count, 0) || 1;
+  const crawling = project.data?.jobs?.includes("crawl") ?? false;
+  const rescan = async () => {
+    try {
+      await api.crawl(slug);
+    } catch (e) {
+      if (!/already running/.test((e as Error).message)) return;
+    }
+    navigate(`/p/${slug}/crawl`);
+  };
   return (
     <div className="prof">
       <div className="cm-head">
         <div>
-          <p className="cap">Content map</p>
-          <h1 className="d2">What {b.business_name} has published</h1>
+          <p className="cap">Your business</p>
+          <h1 className="d2">Content</h1>
           <p>
-            {total} pages in {b.topic_clusters.length} topic clusters. New articles fill the gaps between them.
+            What {b.business_name} has published, in {b.topic_clusters.length} topic clusters over {total} pages, and the {b.content_gaps.length} gaps Seemo would fill next.
           </p>
         </div>
-        <Link className="btn g" to={`/p/${slug}/gaps`}>
-          <SearchX size={15} /> {b.content_gaps.length} content gaps
-        </Link>
+        <div className="cm-views">
+          <a className="chip" href="#gaps">
+            <SearchX size={13} /> Gaps {b.content_gaps.length}
+          </a>
+          {crawling ? (
+            <Link className="btn g live" to={`/p/${slug}/crawl`}>
+              <span className="pulse" /> Crawl running
+            </Link>
+          ) : (
+            <button className="btn g" onClick={() => void rescan()}>
+              <RefreshCw size={14} /> Rescan website
+            </button>
+          )}
+        </div>
       </div>
+      <section className="cm-sec" id="map">
+        <h2>
+          <Network size={16} /> Site map <span className="n">{total} pages</span>
+        </h2>
+        <MapSection b={b} total={total} />
+      </section>
+      <section className="cm-sec" id="gaps">
+        <h2>
+          <SearchX size={16} /> Content gaps <span className="n">{b.content_gaps.length}</span>
+        </h2>
+        <p className="cm-sec-ds">Each gap is tied to something the business sells or someone it serves, and is likely to bring in customers from search. Seemo writes articles and posts from these.</p>
+        <GapsSection slug={slug} b={b} />
+      </section>
+    </div>
+  );
+}
+
+function MapSection({ b, total }: { b: NonNullable<ReturnType<typeof useBrief>["brief"]["data"]>; total: number }) {
+  return (
+    <>
       <div className="cm-bar" aria-hidden>
         {b.topic_clusters.map((c, i) => (
           <i key={i} title={`${c.label}: ${c.page_count}`} style={{ width: `${(c.page_count / total) * 100}%`, background: COLORS[i % COLORS.length], animationDelay: `${i * 60}ms` }} />
@@ -68,17 +114,15 @@ export function ContentMap() {
           );
         })}
       </div>
-    </div>
+    </>
   );
 }
 
 /** Topics the site doesn't cover yet; articles and posts are written from these. */
-export function ContentGaps() {
-  const { slug, brief } = useBrief();
+function GapsSection({ slug, b }: { slug: string; b: NonNullable<ReturnType<typeof useBrief>["brief"]["data"]> }) {
   const [intent, setIntent] = useState<ContentGap["intent"] | null>(null);
   const articles = useAsync(() => api.assets(slug, "article").catch(() => [] as Asset[]), [slug]);
   const [busy, setBusy] = useState<string | null>(null);
-  const b = brief.data;
   const planned = (topic: string) => (articles.data ?? []).find((a) => a.source?.gap === topic);
   const plan = async (g: ContentGap) => {
     setBusy(g.topic);
@@ -89,18 +133,9 @@ export function ContentGaps() {
       setBusy(null);
     }
   };
-  if (brief.loading) return null;
-  if (!b) return <NoBrief slug={slug} icon={SearchX} what="content gaps" />;
   const gaps = b.content_gaps.filter((g) => !intent || g.intent === intent);
   return (
-    <div className="prof">
-      <div className="cm-head">
-        <div>
-          <p className="cap">Content gaps</p>
-          <h1 className="d2">What {b.business_name} hasn't written about yet</h1>
-          <p>Each gap is tied to something the business sells or someone it serves, and is likely to bring in customers from search. Seemo writes articles and posts from these.</p>
-        </div>
-      </div>
+    <>
       <div className="filters">
         <button className={`chip ${intent === null ? "acc" : ""}`} onClick={() => setIntent(null)}>
           All {b.content_gaps.length}
@@ -136,7 +171,7 @@ export function ContentGaps() {
           </li>
         ))}
       </ul>
-    </div>
+    </>
   );
 }
 

@@ -2,21 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
 import {
-  BookOpen,
   Brain,
   CalendarDays,
   Check,
   ChevronsUpDown,
   Globe,
+  Inbox,
   Library,
   ListChecks,
   MessagesSquare,
   Network,
   Plus,
-  Radar,
   Rocket,
-  SearchX,
   Send,
+  Sparkles,
   Settings,
   SlidersHorizontal,
   Swords,
@@ -25,16 +24,17 @@ import {
 import { api, useAsync, useEvents, type AssetType, type Project, type TypeCount } from "./api";
 import { assetIcon } from "./assetIcons";
 import { SeemoWidget } from "./SeemoWidget";
+import { TODO_EVENTS } from "./pages/Todo";
 
-type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number };
+type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number; hot?: boolean };
 
 /**
  * Project-scoped navigation. Content is the library plus one item per asset type (types are
  * data, so the group grows when Seemo makes a new kind of thing); what we know about the
- * business; Seemo, which is the automation: chats, the calendar of tasks, skills, and the channels
+ * business; Seemo, which is the automation: chats, the calendar of tasks, abilities, and the channels
  * it publishes through; settings last.
  */
-function navGroups(types: AssetType[], counts: TypeCount[] | undefined): { label: string; items: NavItem[] }[] {
+function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting: number): { label: string; items: NavItem[] }[] {
   const n = (id: string) => counts?.find((c) => c.type === id)?.count ?? 0;
   // A type appears once the project has something of it; nothing is pinned.
   const shown = types.filter((t) => n(t.id) > 0);
@@ -43,9 +43,9 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined): { label
   const fresh = counts !== undefined && total === 0;
   return [
     {
-      label: "Content",
+      label: "Library",
       items: [
-        { sub: "library", label: fresh ? "Getting started" : "Library", icon: fresh ? Rocket : Library, count: total || undefined },
+        { sub: "library", label: fresh ? "Getting started" : "All", icon: fresh ? Rocket : Library, count: total || undefined },
         ...shown.map((t) => ({ sub: `library/${t.id}`, label: t.plural, icon: assetIcon(t.icon), count: n(t.id) || undefined })),
       ],
     },
@@ -53,20 +53,19 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined): { label
       label: "Your business",
       items: [
         { sub: "", label: "Business profile", icon: Brain },
-        { sub: "map", label: "Content map", icon: Network },
-        { sub: "gaps", label: "Content gaps", icon: SearchX },
-        { sub: "crawl", label: "Website crawls", icon: Radar },
+        { sub: "channels", label: "Channels", icon: Send },
         { sub: "competitors", label: "Competitors", icon: Swords },
+        { sub: "content", label: "Content", icon: Network },
       ],
     },
     {
       label: "Seemo",
       items: [
-        { sub: "chats", label: "Chats", icon: MessagesSquare },
+        { sub: "todo", label: "To do", icon: Inbox, count: waiting || undefined, hot: true },
+        { sub: "abilities", label: "Abilities", icon: Sparkles },
         { sub: "calendar", label: "Calendar", icon: CalendarDays },
+        { sub: "chats", label: "Chats", icon: MessagesSquare },
         { sub: "tasks", label: "Tasks", icon: ListChecks },
-        { sub: "skills", label: "Skills", icon: BookOpen },
-        { sub: "channels", label: "Channels", icon: Send },
       ],
     },
     {
@@ -80,11 +79,14 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined): { label
 function useAssetNav(slug: string | undefined) {
   const types = useAsync(() => api.assetTypes().catch(() => [] as AssetType[]), []);
   const counts = useAsync(() => (slug ? api.assetSummary(slug).catch(() => [] as TypeCount[]) : Promise.resolve([] as TypeCount[])), [slug]);
+  // What waits for the user (approvals, drafts, failed publishes), for the To do count.
+  const waiting = useAsync(() => (slug ? api.todo(slug).then((t) => t.count).catch(() => 0) : Promise.resolve(0)), [slug]);
   useEvents(slug ?? null, (e) => {
     if (e.type === "asset_saved" || e.type === "asset_deleted") counts.reload();
     if (e.type === "asset_type_saved") types.reload();
+    if (TODO_EVENTS.includes(e.type)) waiting.reload();
   }, { demo: false });
-  return navGroups(types.data ?? [], counts.data);
+  return navGroups(types.data ?? [], counts.data, waiting.data ?? 0);
 }
 
 export function Shell() {
@@ -119,7 +121,7 @@ export function Shell() {
                           {isActive && <motion.span layoutId="nav-active" className="hl" transition={{ type: "spring", stiffness: 500, damping: 40 }} />}
                           <it.icon size={16} />
                           <span>{it.label}</span>
-                          {it.count !== undefined && <span className="ct">{it.count}</span>}
+                          {it.count !== undefined && <span className={`ct ${it.hot ? "hot" : ""}`}>{it.count}</span>}
                         </>
                       )}
                     </NavLink>

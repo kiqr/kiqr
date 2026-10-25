@@ -1,12 +1,12 @@
 ---
-name: make-images
+name: Create images with the built-in renderer
 description: How to make an on-brand image for a post, an article cover or a standalone visual with the built-in renderer (SVG, or HTML when a browser is installed), or with a generator when the user wants a photo or an illustration.
 abilities: [image]
 ---
 
 # Making images
 
-You design, KIQR renders. `create_image` takes an SVG (or HTML) you write and turns it into a PNG on an asset. Nothing is installed, nothing is paid. When a generator connection is active, the same tool takes a `prompt` instead; its description says which shape it expects.
+Everything gets a featured image: every post, every article cover, every email header, all of them on brand. You design, KIQR renders. `create_image` takes an SVG (or HTML) you write and turns it into a PNG on an asset. Nothing is installed, nothing is paid. When a generator connection is active, the same tool takes a `prompt` instead; its description says which shape it expects.
 
 ## The process
 
@@ -15,6 +15,12 @@ You design, KIQR renders. `create_image` takes an SVG (or HTML) you write and tu
 3. Pick a template below and adapt it: the headline, one supporting line, the brand mark. Fewer words than you think.
 4. Call `create_image` with `asset` (the post or article it belongs to; omit it for a standalone image and give a `title`), `name` (e.g. `cover`), `format`, `source`, `size`.
 5. Read the result: the file name, its URL, which renderer ran. Mention the image in one line to the user; never paste the SVG into the chat.
+
+## Batches and covers
+
+- A batch of posts: one image each, no exceptions. Vary the template and the background (one dark, one light, one on the accent), never the same template twice in a row, and size each for its network.
+- An article: always a cover, `name: cover`, `size: cover`. A kicker word (GUIDE, HOW-TO, UPDATE), the title in at most two lines, the brand mark. The cover keeps the title legible, so render it even when a generator is connected; a generated photo is for the body or when the user asks.
+- A post that needs a photo or an illustration rather than words: only with a generator connected. Without one, a designed card is the image; say so if the user asked for a photo.
 
 ## Rules for SVG
 

@@ -22,6 +22,7 @@ pub mod profile;
 pub mod project;
 pub mod provider;
 pub mod render;
+pub mod secrets;
 pub mod store;
 pub mod tasks;
 pub mod tools;

@@ -35,13 +35,48 @@ impl Home {
     pub fn config_file(&self) -> PathBuf {
         self.root.join("config.yaml")
     }
-    /// Skills and connections: `skills/<name>/SKILL.md` and/or `extension.yaml`.
-    pub fn skills_dir(&self) -> PathBuf {
-        self.root.join("skills")
+    /// Abilities: `abilities/<id>/SKILL.md` (instructions) and/or `extension.yaml` (a connection).
+    pub fn abilities_dir(&self) -> PathBuf {
+        self.root.join("abilities")
     }
-    /// A project's own skills and connections. Committed.
-    pub fn project_skills_dir(&self, slug: &str) -> PathBuf {
-        self.project_dir(slug).join("skills")
+    /// A project's own abilities. Committed.
+    pub fn project_abilities_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("abilities")
+    }
+    /// Folders older homes used before the rename, with where each goes now.
+    /// Empty once everything is in place.
+    pub fn ability_folder_moves(&self) -> Vec<(PathBuf, PathBuf)> {
+        // An empty `abilities/` (the store creates it on open) is as good as none.
+        fn vacant(p: &Path) -> bool {
+            !p.exists() || std::fs::read_dir(p).map(|mut rd| rd.next().is_none()).unwrap_or(false)
+        }
+        let mut out = vec![];
+        let old = self.root.join("skills");
+        if old.is_dir() && vacant(&self.abilities_dir()) {
+            out.push((old, self.abilities_dir()));
+        }
+        if let Ok(rd) = std::fs::read_dir(self.projects_dir()) {
+            for p in rd.flatten() {
+                let old = p.path().join("skills");
+                let new = p.path().join("abilities");
+                if old.is_dir() && vacant(&new) {
+                    out.push((old, new));
+                }
+            }
+        }
+        out
+    }
+
+    /// Carry out `ability_folder_moves`. Returns how many folders moved.
+    pub fn move_ability_folders(&self) -> std::io::Result<usize> {
+        let moves = self.ability_folder_moves();
+        for (from, to) in &moves {
+            if to.exists() {
+                std::fs::remove_dir(to)?;
+            }
+            std::fs::rename(from, to)?;
+        }
+        Ok(moves.len())
     }
     /// Publishing channels: `channels/<id>/channel.yaml`. Committed.
     pub fn channels_dir(&self, slug: &str) -> PathBuf {

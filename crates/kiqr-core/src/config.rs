@@ -13,9 +13,33 @@ pub struct Config {
     pub crawl: CrawlDefaults,
     pub models: Models,
     pub agent: AgentConfig,
-    /// Which connection serves an ability when several could: `image: fal-image`.
-    /// An ability not listed uses the built-in connection, else the only ready one.
+    /// Which installed ability serves a contract when several could: `image: fal-image`.
+    /// One not listed uses the built-in one, else the only ready one.
     pub abilities: std::collections::BTreeMap<String, String>,
+    pub marketplace: MarketplaceConfig,
+    /// Built-in abilities the user switched off (`write`, `read-web`, `tasks`…).
+    pub core_off: Vec<String>,
+}
+
+impl Config {
+    /// Is a built-in ability on?
+    pub fn core_on(&self, id: &str) -> bool {
+        !self.core_off.iter().any(|x| x == id)
+    }
+}
+
+/// Where the list of abilities comes from. The index is fetched and cached;
+/// without a network the shipped list is used.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarketplaceConfig {
+    pub url: String,
+}
+
+impl Default for MarketplaceConfig {
+    fn default() -> Self {
+        Self { url: "https://raw.githubusercontent.com/kiqr/marketplace/main/index.json".into() }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,9 +57,6 @@ pub struct CrawlDefaults {
     pub concurrency: usize,
     /// Pages read by the model in parallel. Reading is queued and never blocks fetching.
     pub ai_concurrency: usize,
-    /// Escalate blocked or JavaScript-only pages to UnblockingAPI when a key is
-    /// present. Pages that cannot be read are still reported either way.
-    pub escalate_to_unblockingapi: bool,
 }
 
 /// One model assignment per kind of task. The value is `provider/model`,
@@ -64,7 +85,7 @@ pub struct AgentConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default() }
+        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default(), marketplace: MarketplaceConfig::default(), core_off: vec![] }
     }
 }
 impl Default for AgentConfig {
@@ -79,7 +100,7 @@ impl Default for DaemonConfig {
 }
 impl Default for CrawlDefaults {
     fn default() -> Self {
-        Self { max_pages: 200, concurrency: 5, ai_concurrency: 3, escalate_to_unblockingapi: true }
+        Self { max_pages: 200, concurrency: 5, ai_concurrency: 3 }
     }
 }
 impl Default for Models {

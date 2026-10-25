@@ -16,6 +16,15 @@ pub struct Project {
     pub crawl: CrawlSettings,
     #[serde(default)]
     pub last_crawl: Option<CrawlSummary>,
+    /// Abilities switched off for this project only (ids; core ones included).
+    #[serde(default)]
+    pub abilities_off: Vec<String>,
+}
+
+impl Project {
+    pub fn ability_on(&self, id: &str) -> bool {
+        !self.abilities_off.iter().any(|x| x == id)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -59,6 +68,7 @@ impl Project {
             return Err(anyhow!("project '{slug}' already exists"));
         }
         let project = Project {
+            abilities_off: vec![],
             name: url.host_str().unwrap_or(&slug).trim_start_matches("www.").to_string(),
             slug: slug.clone(),
             url: url.to_string(),

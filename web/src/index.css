@@ -39,6 +39,8 @@ code { font: 500 12px/1.3 var(--mono); }
 .nav a span { position: relative; }
 .nav a .ct { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--dim); }
 .nav a.active .ct { color: var(--accent); }
+/* things waiting for the user: a teal pill, read from across the room */
+.nav a .ct.hot { padding: 3px 7px; border-radius: 999px; color: var(--bg); background: var(--accent); font-weight: 600; }
 .nav a .badge { margin-left: auto; font: 500 10px/1 var(--mono); padding: 3px 6px; border-radius: 999px; background: rgba(129,140,248,.18); color: var(--accent-2); }
 .side-foot { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
 .side-foot a { padding: 8px 12px; }

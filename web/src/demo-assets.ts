@@ -5,15 +5,15 @@ import { demoBrand } from "./demo-brief";
 const slot = (role: string, ...accept: string[]) => ({ role, accept });
 
 export const demoTypes: AssetType[] = [
-  { id: "article", name: "Article", plural: "Articles", icon: "newspaper", description: "Long-form pieces for your blog, written from the business profile and the content gaps.", preview: "article", files: [slot("body", "md"), slot("cover", "png", "jpg", "webp")], builtin: true },
-  { id: "post", name: "Post", plural: "Posts", icon: "message-square-text", description: "Social posts and threads, in the brand's tone of voice.", preview: "post", files: [slot("body", "md"), slot("media", "png", "mp4")], builtin: true },
-  { id: "reply", name: "Reply", plural: "Replies", icon: "reply", description: "Replies to conversations on Reddit, forums and comment threads.", preview: "post", files: [slot("body", "md")], builtin: true },
-  { id: "image", name: "Image", plural: "Images", icon: "image", description: "Illustrations, banners and graphics.", preview: "image", files: [slot("image", "png", "webp")], builtin: true },
-  { id: "meme", name: "Meme", plural: "Memes", icon: "laugh", description: "Memes and other quick, shareable images.", preview: "image", files: [slot("image", "png"), slot("caption", "md")], builtin: true },
-  { id: "video", name: "Video", plural: "Videos", icon: "clapperboard", description: "Videos and reels, made with video APIs.", preview: "video", files: [slot("video", "mp4"), slot("script", "md")], builtin: true },
-  { id: "audio", name: "Audio", plural: "Audio", icon: "audio-lines", description: "Songs, jingles, voice-overs and podcast clips.", preview: "audio", files: [slot("audio", "mp3")], builtin: true },
-  { id: "ad-campaign", name: "Ad campaign", plural: "Ad campaigns", icon: "megaphone", description: "Ad campaigns with ad groups, keywords and copy, for Google Ads, Meta and others.", preview: "campaign", files: [slot("campaign", "yaml")], builtin: true },
-  { id: "email", name: "Email", plural: "Emails", icon: "mail", description: "Newsletters and email campaigns.", preview: "article", files: [slot("body", "md")], builtin: true },
+  { id: "article", name: "Article", plural: "Articles", icon: "newspaper", description: "Long-form pieces for your blog, written from the business profile and the content gaps.", preview: "article", files: [slot("body", "md"), slot("cover", "png", "jpg", "webp")], image: "always", builtin: true },
+  { id: "post", name: "Post", plural: "Posts", icon: "message-square-text", description: "Social posts and threads, in the brand's tone of voice.", preview: "post", files: [slot("body", "md"), slot("media", "png", "mp4")], image: "usually", builtin: true },
+  { id: "reply", name: "Reply", plural: "Replies", icon: "reply", description: "Replies to conversations on Reddit, forums and comment threads.", preview: "post", files: [slot("body", "md")], image: "none", builtin: true },
+  { id: "image", name: "Image", plural: "Images", icon: "image", description: "Illustrations, banners and graphics.", preview: "image", files: [slot("image", "png", "webp")], image: "always", builtin: true },
+  { id: "meme", name: "Meme", plural: "Memes", icon: "laugh", description: "Memes and other quick, shareable images.", preview: "image", files: [slot("image", "png"), slot("caption", "md")], image: "always", builtin: true },
+  { id: "video", name: "Video", plural: "Videos", icon: "clapperboard", description: "Videos and reels, made with video APIs.", preview: "video", files: [slot("video", "mp4"), slot("script", "md")], image: "none", builtin: true },
+  { id: "audio", name: "Audio", plural: "Audio", icon: "audio-lines", description: "Songs, jingles, voice-overs and podcast clips.", preview: "audio", files: [slot("audio", "mp3")], image: "none", builtin: true },
+  { id: "ad-campaign", name: "Ad campaign", plural: "Ad campaigns", icon: "megaphone", description: "Ad campaigns with ad groups, keywords and copy, for Google Ads, Meta and others.", preview: "campaign", files: [slot("campaign", "yaml")], image: "none", builtin: true },
+  { id: "email", name: "Email", plural: "Emails", icon: "mail", description: "Newsletters and email campaigns.", preview: "article", files: [slot("body", "md")], image: "none", builtin: true },
 ];
 
 const ago = (h: number) => new Date(Date.now() - h * 36e5).toISOString();
@@ -186,7 +186,7 @@ export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T
   }
   if (route === "" && init?.method === "POST") {
     const n: NewAsset = JSON.parse(String(init.body));
-    const a: Asset = { id: n.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), type: n.type, title: n.title, status: n.status ?? "draft", tags: n.tags ?? [], summary: n.summary, created: { at: ago(0), by: "user" }, updated_at: ago(0), files: [], source: n.source, publications: [] };
+    const a: Asset = { id: n.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), type: n.type, title: n.title, status: "draft", tags: n.tags ?? [], summary: n.summary, created: { at: ago(0), by: "user" }, updated_at: ago(0), files: [], source: n.source, publications: [] };
     assets = [a, ...assets];
     return ok(a);
   }
@@ -194,16 +194,36 @@ export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T
     const type = new URLSearchParams(query).get("type");
     return ok([...assets].filter((a) => !type || a.type === type).sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
   }
-  const [, type, id] = route.split("/");
-  if (init?.method === "DELETE") {
+  const [, type, id, action] = route.split("/");
+  if (init?.method === "DELETE" && !action) {
     assets = assets.filter((a) => !(a.type === type && a.id === id));
     return ok(undefined);
   }
-  if (init?.method === "PUT") {
-    const next: Asset = { ...JSON.parse(String(init.body)), updated_at: ago(0) };
-    assets = assets.map((a) => (a.type === type && a.id === id ? next : a));
-    return ok(next);
+  const found = assets.find((a) => a.type === type && a.id === id);
+  if (!found) return Promise.reject(new Error("no asset"));
+  // Status follows the facts, as in the daemon.
+  const settle = (patch: Partial<Asset>): Asset => {
+    const n: Asset = { ...found, ...patch, updated_at: ago(0) };
+    n.status = n.archived ? "archived" : n.publications.length ? "published" : n.channel && n.publish_at ? "scheduled" : n.channel ? "ready" : "draft";
+    assets = assets.map((a) => (a.type === type && a.id === id ? n : a));
+    return n;
+  };
+  const body = init?.body ? JSON.parse(String(init.body)) : {};
+  if (action === "approve") return ok(settle({ channel: body.channel, publish_error: null }));
+  if (action === "schedule" && init?.method === "DELETE") return ok(settle({ publish_at: null, publish_error: null }));
+  if (action === "schedule") return ok(settle({ channel: body.channel || found.channel, publish_at: body.at, publish_error: null }));
+  if (action === "unpublish") return ok(settle({ publications: [] }));
+  if (action === "publish") {
+    const channel = body.channel || found.channel || "me-by-email";
+    settle({ channel, publish_at: null, publish_error: null, publications: [...found.publications, { connector: channel, account: "you@example.com", at: ago(0) }] });
+    return ok({ published: true, url: null, detail: "sent", channel_label: "Me by email" });
   }
-  const a = assets.find((a) => a.type === type && a.id === id);
-  return a ? ok(a) : Promise.reject(new Error("no asset"));
+  if (init?.method === "PATCH") return ok(settle(body));
+  if (init?.method === "PUT") return ok(settle(JSON.parse(String(init.body))));
+  return ok(found);
+}
+
+/** The demo's assets as they stand, for the To do page and the calendar. */
+export function demoAssetList() {
+  return assets;
 }

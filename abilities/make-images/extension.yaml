@@ -1,9 +1,11 @@
 # The built-in renderer: Seemo designs an image as SVG (or HTML when a browser
 # is installed) and KIQR renders it to PNG. No account, no key, no cost.
 id: kiqr-render
-name: Built-in renderer
+name: Create images with the built-in renderer
 version: 0.1.0
-summary: On-brand images designed by Seemo and rendered here. Free, always available.
+summary: On-brand images Seemo designs and KIQR renders here. Free, on from the start.
+categories: [images]
+icon: image
 transport: builtin
 provides:
   image:

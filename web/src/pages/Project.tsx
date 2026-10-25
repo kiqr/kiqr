@@ -107,8 +107,8 @@ export function ProjectPage() {
           <Stat icon={Users} n={b.audiences.length} label="Audiences" i={1} />
           <Stat icon={FileText} n={p?.last_crawl?.pages ?? 0} label="Pages read" i={2} />
           <Stat icon={ShieldCheck} n={facts} label="Facts with a source" i={3} />
-          <Stat icon={Network} n={b.topic_clusters.length} label="Topic clusters" i={4} to={`/p/${slug}/map`} />
-          <Stat icon={SearchX} n={b.content_gaps.length} label="Content gaps" i={5} to={`/p/${slug}/gaps`} />
+          <Stat icon={Network} n={b.topic_clusters.length} label="Topic clusters" i={4} to={`/p/${slug}/content`} />
+          <Stat icon={SearchX} n={b.content_gaps.length} label="Content gaps" i={5} to={`/p/${slug}/content#gaps`} />
         </div>
       )}
 
@@ -593,7 +593,7 @@ function BriefView({ slug, initial, brand, onSaved }: { slug: string; initial: B
           </Card>
         )}
 
-        <Card title="Existing topic clusters" icon={Network} i={n++} more={<Link to={`/p/${slug}/map`}>Content map <ChevronRight size={12} /></Link>}>
+        <Card title="Existing topic clusters" icon={Network} i={n++} more={<Link to={`/p/${slug}/content`}>Content map <ChevronRight size={12} /></Link>}>
           <ClusterBar clusters={data.topic_clusters} />
           <div className="clusters">
             {data.topic_clusters.map((c, i) => (
@@ -608,7 +608,7 @@ function BriefView({ slug, initial, brand, onSaved }: { slug: string; initial: B
           </div>
         </Card>
 
-        <Card title="Content gaps we found" icon={SearchX} i={n++} more={<Link to={`/p/${slug}/gaps`}>All gaps <ChevronRight size={12} /></Link>}>
+        <Card title="Content gaps we found" icon={SearchX} i={n++} more={<Link to={`/p/${slug}/content#gaps`}>All gaps <ChevronRight size={12} /></Link>}>
           <ul className="items">
             {data.content_gaps.map((g, i) => (
               <li key={i} className="it gap" style={{ animationDelay: `${i * 30}ms` }}>

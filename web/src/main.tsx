@@ -9,11 +9,13 @@ import { ProjectPage } from "./pages/Project";
 import { CrawlPage } from "./pages/Crawl";
 import { Placeholder, ProjectSettings } from "./pages/Settings";
 import { Settings } from "./pages/GlobalSettings";
-import { ContentGaps, ContentMap, Redirect } from "./pages/Content";
+import { ContentPage, Redirect } from "./pages/Content";
+import { AbilitiesPage } from "./pages/AbilitiesPage";
+import { FirstProjectAbilities } from "./pages/Settings";
 import { AssetPage, LibraryPage } from "./pages/Library";
 import { ChatsPage } from "./pages/Chats";
 import { CalendarPage, TasksPage } from "./pages/Tasks";
-import { SkillsPage } from "./pages/Skills";
+import { TodoPage } from "./pages/Todo";
 import { ChannelsPage } from "./pages/Channels";
 
 // Demo mode (previews, the kiqr.dev site) keeps routing in memory so the single
@@ -32,8 +34,9 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/new" element={<Onboarding forceNew />} />
           <Route path="/p/:slug" element={<ProjectPage />} />
           <Route path="/p/:slug/crawl" element={<CrawlPage />} />
-          <Route path="/p/:slug/map" element={<ContentMap />} />
-          <Route path="/p/:slug/gaps" element={<ContentGaps />} />
+          <Route path="/p/:slug/content" element={<ContentPage />} />
+          <Route path="/p/:slug/map" element={<Redirect to="content" />} />
+          <Route path="/p/:slug/gaps" element={<Redirect to="content#gaps" />} />
           <Route path="/p/:slug/library" element={<LibraryPage />} />
           <Route path="/p/:slug/library/:type" element={<LibraryPage />} />
           <Route path="/p/:slug/library/:type/:id" element={<AssetPage />} />
@@ -46,11 +49,16 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/p/:slug/chats/:id" element={<ChatsPage />} />
           <Route path="/p/:slug/calendar" element={<CalendarPage />} />
           <Route path="/p/:slug/tasks" element={<TasksPage />} />
-          <Route path="/p/:slug/skills" element={<SkillsPage />} />
+          <Route path="/p/:slug/todo" element={<TodoPage />} />
+          <Route path="/p/:slug/skills" element={<Redirect to="abilities" />} />
+          <Route path="/p/:slug/abilities" element={<AbilitiesPage />} />
           <Route path="/p/:slug/channels" element={<ChannelsPage />} />
           <Route path="/p/:slug/connectors" element={<Redirect to="channels" />} />
           <Route path="/p/:slug/settings" element={<ProjectSettings />} />
-          <Route path="/connections" element={<Navigate to="/settings/connections" replace />} />
+          {/* Abilities moved under each project; these older links follow. */}
+          <Route path="/connections" element={<FirstProjectAbilities />} />
+          <Route path="/settings/connections" element={<FirstProjectAbilities />} />
+          <Route path="/settings/abilities" element={<FirstProjectAbilities />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/settings/:tab" element={<Settings />} />
         </Route>

@@ -45,6 +45,11 @@ pub struct AssetType {
     pub preview: String,
     #[serde(default)]
     pub files: Vec<FileSlot>,
+    /// Whether assets of this type carry an image by default: `always` (an
+    /// article's cover), `usually` (most posts) or `none`. Seemo reads it;
+    /// images are the default for everything that can show one.
+    #[serde(default)]
+    pub image: ImageDefault,
     /// Shipped with KIQR (not saved in TYPE.yaml).
     #[serde(default, skip_deserializing)]
     pub builtin: bool,
@@ -67,6 +72,30 @@ pub struct FileSlot {
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ImageDefault {
+    Always,
+    Usually,
+    #[default]
+    None,
+}
+
+impl AssetType {
+    /// The role an image file lands in: the first slot that accepts the
+    /// extension (`cover` on an article, `media` on a post), else `media`.
+    pub fn role_for(&self, ext: &str) -> String {
+        let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+        let same = |a: &str| a.eq_ignore_ascii_case(&ext) || (ext == "jpg" && a == "jpeg") || (ext == "jpeg" && a == "jpg");
+        self.files.iter().find(|s| s.accept.iter().any(|a| same(a))).map(|s| s.role.clone()).unwrap_or_else(|| "media".into())
+    }
+}
+
+/// Where an asset stands. Nobody sets it: it follows from the facts on the
+/// asset (`channel`, `publish_at`, `publications`, `archived`), see
+/// [`Asset::derived_status`]. Draft until the user approves it for a channel
+/// (Ready); Scheduled once a publish time is set; Published when it went
+/// out; Archived when put away.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Status {
     #[default]
     Draft,
@@ -82,6 +111,7 @@ pub struct Asset {
     #[serde(rename = "type")]
     pub kind: String,
     pub title: String,
+    /// Derived; written for readers of the file and recomputed on every load and save.
     #[serde(default)]
     pub status: Status,
     #[serde(default)]
@@ -96,8 +126,47 @@ pub struct Asset {
     /// What it was made from: a content gap, a topic cluster, a brief version… Free-form.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub source: serde_json::Map<String, serde_json::Value>,
+    /// The channel the user approved it for. Set, the asset is Ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// When the daemon publishes it to that channel. Set, the asset is Scheduled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_at: Option<DateTime<Utc>>,
+    /// Why the last scheduled publish did not happen; cleared by the next publish or schedule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_error: Option<String>,
+    /// Put away. Archived assets live in the Archive and count nowhere.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
     #[serde(default)]
     pub publications: Vec<Publication>,
+}
+
+impl Asset {
+    /// The status the facts give. The one place that knows the rule.
+    pub fn derived_status(&self) -> Status {
+        if self.archived {
+            Status::Archived
+        } else if !self.publications.is_empty() {
+            Status::Published
+        } else if self.channel.is_some() && self.publish_at.is_some() {
+            Status::Scheduled
+        } else if self.channel.is_some() {
+            Status::Ready
+        } else {
+            Status::Draft
+        }
+    }
+
+    /// Bring a loaded asset to the current rule: an older file that said
+    /// `status: archived` meant `archived: true`; everything else is derived.
+    fn settle(mut self) -> Self {
+        if self.status == Status::Archived {
+            self.archived = true;
+        }
+        self.status = self.derived_status();
+        self
+    }
 }
 
 /// Who made an asset, and when. `by` is `user`, `task:<id>` or `chat:<id>`.
@@ -135,8 +204,6 @@ pub struct NewAsset {
     #[serde(rename = "type")]
     pub kind: String,
     pub title: String,
-    #[serde(default)]
-    pub status: Status,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -246,7 +313,7 @@ pub fn list(store: &Store, slug: &str) -> Result<Vec<Asset>> {
         for dir in std::fs::read_dir(kind.path()).into_iter().flatten().flatten() {
             let meta = dir.path().join("asset.yaml");
             match store.read_yaml_opt::<Asset>(&meta) {
-                Ok(Some(a)) => out.push(a),
+                Ok(Some(a)) => out.push(a.settle()),
                 Ok(None) => {}
                 Err(e) => tracing::warn!(path = %meta.display(), error = %e, "skipping an asset that doesn't parse"),
             }
@@ -272,7 +339,7 @@ pub fn summary(store: &Store, slug: &str) -> Result<Vec<TypeCount>> {
 
 pub fn load(store: &Store, slug: &str, kind: &str, id: &str) -> Result<Asset> {
     let dir = asset_dir(store, slug, kind, id)?;
-    store.read_yaml_opt(&dir.join("asset.yaml"))?.with_context(|| format!("no asset {kind}/{id}"))
+    store.read_yaml_opt::<Asset>(&dir.join("asset.yaml"))?.with_context(|| format!("no asset {kind}/{id}")).map(Asset::settle)
 }
 
 pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
@@ -295,13 +362,17 @@ pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
         id,
         kind: new.kind,
         title: title.to_string(),
-        status: new.status,
+        status: Status::Draft,
         tags: new.tags,
         summary: new.summary,
         created: Origin { at: now, by: new.by.unwrap_or_else(|| "user".into()) },
         updated_at: now,
         files: Vec::new(),
         source: new.source,
+        channel: None,
+        publish_at: None,
+        publish_error: None,
+        archived: false,
         publications: Vec::new(),
     };
     save(store, slug, &asset)?;
@@ -322,11 +393,13 @@ pub fn body_file(asset: &Asset) -> Option<&str> {
     asset.files.iter().find(|f| f.role == "body").map(|f| f.path.as_str())
 }
 
-/// Save an asset's metadata as given, stamping `updated_at`.
+/// Save an asset's metadata as given, stamping `updated_at` and the status
+/// its facts give.
 pub fn save(store: &Store, slug: &str, asset: &Asset) -> Result<Asset> {
     let dir = asset_dir(store, slug, &asset.kind, &asset.id)?;
     let mut a = asset.clone();
     a.updated_at = Utc::now();
+    a.status = a.derived_status();
     store.write_yaml(&dir.join("asset.yaml"), &a)?;
     Ok(a)
 }
@@ -450,11 +523,19 @@ mod tests {
             description: String::new(),
             preview: "audio".into(),
             files: vec![FileSlot { role: "audio".into(), accept: vec!["mp3".into()] }],
+            image: ImageDefault::None,
             builtin: false,
         };
         save_type(&store, &song).unwrap();
         let all = types(&store);
         assert_eq!(all[0].id, "article");
+        // Images are the default: an article's cover, a post's media, and the type says so.
+        assert_eq!(all[0].image, ImageDefault::Always);
+        assert_eq!(all[0].role_for("png"), "cover");
+        let post = all.iter().find(|t| t.id == "post").unwrap();
+        assert_eq!(post.image, ImageDefault::Always);
+        assert_eq!(post.role_for("jpeg"), "media");
+        assert_eq!(all.last().unwrap().role_for("png"), "media");
         assert_eq!(all.last().unwrap().plural, "Christmas songs");
 
         let a = create(
@@ -482,6 +563,28 @@ mod tests {
         assert!(load(&store, "acme", "..", "x").is_err());
         delete(&store, "acme", "article", "whitening-at-home-2").unwrap();
         assert_eq!(list(&store, "acme").unwrap().len(), 2);
+
+        // Status follows the facts; nobody sets it.
+        let mut a = load(&store, "acme", "article", "whitening-at-home").unwrap();
+        assert_eq!(a.status, Status::Draft);
+        a.channel = Some("blog".into());
+        let a = save(&store, "acme", &a).unwrap();
+        assert_eq!(a.status, Status::Ready);
+        let mut a = a;
+        a.publish_at = Some(Utc::now() + chrono::Duration::hours(1));
+        assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Scheduled);
+        a.publications.push(Publication { connector: "blog".into(), account: None, url: None, at: Utc::now(), run: None });
+        assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Published);
+        a.archived = true;
+        assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Archived);
+        assert_eq!(summary(&store, "acme").unwrap().iter().find(|c| c.kind == "article"), None);
+        // A file from before `archived` existed said so through the status.
+        let path = store.home().assets_dir("acme").join("article").join("whitening-at-home").join("asset.yaml");
+        let text = std::fs::read_to_string(&path).unwrap().replace("archived: true\n", "").replace("status: archived", "status: archived");
+        std::fs::write(&path, text).unwrap();
+        let a = load(&store, "acme", "article", "whitening-at-home").unwrap();
+        assert!(a.archived);
+        assert_eq!(a.status, Status::Archived);
 
         // Generated content stays out of the home's git history.
         let ignored = std::process::Command::new("git").args(["check-ignore", "-q", "projects/acme/assets/article/whitening-at-home/article.md"]).current_dir(&dir).status().unwrap();

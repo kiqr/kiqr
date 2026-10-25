@@ -45,7 +45,7 @@ pub fn all() -> Vec<Ability> {
             group: Group::Images,
             tool: "create_image",
             tool_label: "Making an image",
-            description: "Make an image and save it as a file on an asset (role media). Two shapes, depending on the connection behind it: the built-in renderer takes `source` (SVG, or HTML when a browser is available) and renders it; a generator takes `prompt`. `size` is a preset (x, linkedin, instagram, instagram_portrait, og, cover) or WxH. Returns the file name and URL.",
+            description: "Make an image and save it as a file on an asset (role media). Two shapes, depending on the connection behind it: the built-in renderer takes `source` (SVG, or HTML when a browser is available) and renders it; a generator takes `prompt`. `size` is a preset (x, linkedin, instagram, instagram_portrait, og, cover) or WxH. The file lands on the asset at once and returns its name and URL; the user sees the whole asset, image included, in the chat and approves it there or in the library.",
             schema: || obj(
                 json!({
                     "asset": asset_ref(),

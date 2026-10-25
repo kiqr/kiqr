@@ -114,8 +114,15 @@ pub struct UnblockingFetcher {
 }
 
 impl UnblockingFetcher {
+    /// With the machine's key from the environment.
     pub fn from_env() -> Option<Self> {
-        let api_key = std::env::var("UNBLOCKINGAPI_KEY").ok().filter(|k| !k.trim().is_empty())?;
+        Self::with_key(std::env::var("UNBLOCKINGAPI_KEY").ok())
+    }
+
+    /// With a key the caller resolved: a project's own account first, the
+    /// machine's as the fallback (`secrets::lookup`). None: no escalation.
+    pub fn with_key(key: Option<String>) -> Option<Self> {
+        let api_key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())?;
         let endpoint = std::env::var("UNBLOCKINGAPI_ENDPOINT").unwrap_or_else(|_| "https://api.unblockingapi.com/unblock".into());
         let client = reqwest::Client::builder().user_agent(USER_AGENT).timeout(Duration::from_secs(180)).build().ok()?;
         Some(Self { client, api_key, endpoint })
@@ -208,15 +215,17 @@ pub struct ReadPage {
     pub truncated: bool,
 }
 
-/// Read one page. `max_chars` caps the Markdown (0 means no cap).
-pub async fn read_page(url: &Url, escalate: bool, max_chars: usize) -> Result<ReadPage> {
+/// Read one page. `unblocking_key` is the UnblockingAPI key to escalate
+/// with when the page cannot be read (none: no escalation); `max_chars` caps
+/// the Markdown (0 means no cap).
+pub async fn read_page(url: &Url, unblocking_key: Option<String>, max_chars: usize) -> Result<ReadPage> {
     anyhow::ensure!(matches!(url.scheme(), "http" | "https"), "only http and https pages can be read");
     let local = LocalFetcher::new()?;
     let mut fetched = local.fetch(url).await?;
     let mut page = crate::markdown::parse(&fetched.final_url, &fetched.body);
     let mut hit = obstacle(&fetched, page.text_len, page.script_len);
-    if hit.is_some() && escalate {
-        if let Some(unblocking) = UnblockingFetcher::from_env() {
+    if hit.is_some() {
+        if let Some(unblocking) = UnblockingFetcher::with_key(unblocking_key) {
             match unblocking.fetch(url).await {
                 Ok(f) => {
                     page = crate::markdown::parse(&f.final_url, &f.body);

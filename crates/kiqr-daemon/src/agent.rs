@@ -120,7 +120,7 @@ impl Sink<'_> {
         match self {
             Sink::Chat { slug, turn } => {
                 *turn.steps.lock().unwrap_or_else(|e| e.into_inner()) = steps.to_vec();
-                app.bus.emit(Some(slug), EventKind::ChatTool { chat: turn.chat.clone(), tool: s.tool.clone(), label: s.label.clone(), status: status.into(), note: s.note.clone(), image: s.image.clone() });
+                app.bus.emit(Some(slug), EventKind::ChatTool { chat: turn.chat.clone(), tool: s.tool.clone(), label: s.label.clone(), status: status.into(), note: s.note.clone(), image: s.image.clone(), asset: s.asset.clone() });
             }
             Sink::Run { slug, task, run } => {
                 app.bus.emit(Some(slug), EventKind::TaskRunStep { task: task.to_string(), run: run.to_string(), label: s.label.clone(), status: status.into() });
@@ -217,7 +217,7 @@ async fn drive(app: &App, spec: &Spec, specs: &[ToolSpec], prompt: &str, sink: &
                 AgentEvent::Text(t) => parts.push(t),
                 AgentEvent::ToolStarted { id, name, input } => {
                     let short = name.strip_prefix("mcp__kiqr__").unwrap_or(&name).to_string();
-                    steps.push(Step { tool: short.clone(), label: tools::label_for(specs, &short, &input), ok: None, note: String::new(), image: None });
+                    steps.push(Step { tool: short.clone(), label: tools::label_for(specs, &short, &input), ok: None, note: String::new(), image: None, asset: None });
                     step_ids.push(id);
                     sink.step(app, &steps, steps.len() - 1);
                 }
@@ -242,6 +242,16 @@ async fn drive(app: &App, spec: &Spec, specs: &[ToolSpec], prompt: &str, sink: &
                                 }
                                 if v["mime"].as_str().is_some_and(|m| m.starts_with("image/")) {
                                     steps[i].image = v["url"].as_str().map(str::to_string);
+                                }
+                                // An asset made or changed, or one a file landed on, is shown in the chat as it will look.
+                                if steps[i].tool == "create_asset" || steps[i].tool == "update_asset" {
+                                    if let (Some(t), Some(id)) = (v["type"].as_str(), v["id"].as_str()) {
+                                        steps[i].asset = Some(kiqr_core::chat::StepAsset { kind: t.to_string(), id: id.to_string() });
+                                    }
+                                } else if v["file"].is_string() {
+                                    if let (Some(t), Some(id)) = (v["asset"]["type"].as_str(), v["asset"]["id"].as_str()) {
+                                        steps[i].asset = Some(kiqr_core::chat::StepAsset { kind: t.to_string(), id: id.to_string() });
+                                    }
                                 }
                             }
                         }
@@ -300,9 +310,6 @@ async fn drive(app: &App, spec: &Spec, specs: &[ToolSpec], prompt: &str, sink: &
     out
 }
 
-/// Skills that drive KIQR's own pipeline, not something Seemo picks up in a chat.
-pub(crate) const PIPELINE_SKILLS: &[&str] = &["extract-facts", "build-profile", "business-brief", "crawl-site", "seemo-agent"];
-
 /// What the system prompt needs about this moment.
 async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])>) -> core_agent::Context {
     let cfg = app.config.read().await.clone();
@@ -320,25 +327,23 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
             format!("{} (`{}`): {}, {}{next}", t.title, t.id, t.schedule.describe(tz), t.status.id())
         })
         .collect();
-    let skills: Vec<(String, String)> = {
-        let reg = app.registry.read().await;
-        reg.visible(&project.slug)
-            .into_iter()
-            .filter(|e| !PIPELINE_SKILLS.contains(&e.name.as_str()))
-            .filter_map(|e| {
-                let meta = e.skill.as_ref()?;
-                let mut desc = meta.description.trim().to_string();
-                if let Some(m) = &e.manifest {
-                    if !crate::ext::ready(m) {
-                        desc.push_str(&format!(" (its connection, {}, is not set up yet)", m.name));
-                    }
-                }
-                Some((e.name.clone(), kiqr_core::profile::truncate_chars(&desc, 200)))
-            })
-            .collect()
-    };
+    // The abilities with instructions, on for the machine and this project, in prompt order.
+    let abilities: Vec<(String, String, String)> = crate::market::listing(app, Some(&project.slug))
+        .await
+        .abilities
+        .iter()
+        .filter(|v| v["in_prompt"].as_bool().unwrap_or(false) && !v["machine_off"].as_bool().unwrap_or(false) && !v["paused"].as_bool().unwrap_or(false))
+        .filter(|v| v["instructions"].as_array().is_some_and(|a| !a.is_empty()))
+        .map(|v| {
+            let mut desc = v["description"].as_str().unwrap_or("").trim().to_string();
+            if !v["ready"].as_bool().unwrap_or(true) {
+                desc.push_str(" (not set up yet: say so instead of improvising)");
+            }
+            (v["id"].as_str().unwrap_or("").to_string(), v["name"].as_str().unwrap_or("").to_string(), kiqr_core::profile::truncate_chars(&desc, 200))
+        })
+        .collect();
     core_agent::Context {
-        skills,
+        abilities,
         project_name: project.name.clone(),
         project_url: project.url.clone(),
         slug: project.slug.clone(),
@@ -358,7 +363,7 @@ fn persona(app: &App) -> String {
 async fn spec_for(app: &App, project: &Project, session: Session, chat: Option<&str>, run: Option<(&str, &str)>, allowed: &[Group], task_run: Option<(&str, &[Group])>) -> Result<Spec> {
     let cfg = app.config.read().await.clone();
     let model = core_agent::claude_model(&cfg.models.chat)?;
-    let guide = kiqr_core::extract::skill_text(&app.store, "seemo-agent", core_agent::BUILTIN_GUIDE);
+    let guide = kiqr_core::extract::instructions_text(&app.store, kiqr_core::extensions::GUIDE_FOLDER, core_agent::BUILTIN_GUIDE);
     let brief = Brief::load(&app.store, &project.slug)?;
     let ctx = context(app, project, task_run).await;
     let system = core_agent::system_prompt(&persona(app), &guide, &ctx, brief.as_ref());
@@ -460,6 +465,9 @@ pub fn start_followup<'a>(app: &'a App, slug: &'a str, chat_id: &'a str, note: S
 /// Run a task now, in the background. Returns the run id, or why not.
 pub async fn start_run(app: &App, slug: &str, task_id: &str, trigger: &str) -> Result<String> {
     let mut task = Task::load(&app.store, slug, task_id)?;
+    if !app.config.read().await.core_on("tasks") {
+        return Err(anyhow!("running tasks is switched off under Settings → Abilities"));
+    }
     let key = format!("task:{task_id}");
     {
         let mut jobs = app.jobs.write().await;

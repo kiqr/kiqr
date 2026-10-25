@@ -229,7 +229,7 @@ export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComple
         /* private window */
       }
       openSeemo(c.id);
-      await api.sendMessage(slug, c.id, "Write three social media posts for the library as draft post assets, using the social-posts skill, and tell me when they are in.");
+      await api.sendMessage(slug, c.id, "Write three social media posts for the library as draft post assets, with an on-brand image on most of them, following the instructions for social media posts and images, and tell me when they are in.");
       if (DEMO) {
         window.setTimeout(() => {
           posts.reload();
