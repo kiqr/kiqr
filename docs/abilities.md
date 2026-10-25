@@ -167,7 +167,13 @@ Numbers may be numbers or numeric strings; days `YYYYMMDD` or `YYYY-MM-DD`. Use 
     image: { tool: browser_take_screenshot, args: { filename: "{{name}}.png" } }
   ```
   `expose` offers the server's own tools raw under the ability's group. `provides` maps an ability onto one of them. Image or audio content in a result becomes a file.
-- **builtin**: Rust inside KIQR (`kiqr-render`, `kiqr-smtp`).
+- **smtp**: mail through a server. The `smtp` block names it, each value a template (usually `${VAR}`); it serves `provides.email` and email channels with `to`, `subject` (else the title), `text` (Markdown, sent as plain text and HTML) and the asset's files attached.
+  ```yaml
+  transport: smtp
+  smtp: { host: "${SMTP_HOST}", port: "${SMTP_PORT}", user: "${SMTP_USER}", password: "${SMTP_PASSWORD}", from: "${SMTP_FROM}", security: "${SMTP_SECURITY}" }   # security: starttls (default), tls, none
+  provides: { email: { cost: free } }
+  ```
+- **builtin**: Rust inside KIQR, for the core renderer only (`kiqr-render`).
 
 Every ability's modal shows what it includes: instructions, keys (and where each is set), hosts it may call, the program or MCP server it runs, its tools, where it publishes, what it provides. One that runs a program is marked so and is never installed without you.
 
@@ -180,4 +186,4 @@ projects/<slug>/channels/<id>/channel.yaml
 
 Create one on the Channels page, with `kiqr channels <slug>` to list, or let Seemo propose one (`create_channel`, confirmed on a card). Publish with the asset page's Publish button, `kiqr publish <slug> <type>/<id> <channel>`, or Seemo's `publish_asset`, which always opens a card first. A task run that reaches a publish gets the card in the task's chat and waits.
 
-Email is the built-in channel kind (`kiqr-smtp`): `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` (a Gmail app password), optional `SMTP_PORT`, `SMTP_FROM`, `SMTP_SECURITY` (`starttls`, `tls`, `none`).
+Email is a channel kind like any other, declared by whichever ability sends mail: the marketplace's "Send email from your mail account" (`transport: smtp`, keys `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` (a Gmail app password), optional `SMTP_PORT`, `SMTP_FROM`, `SMTP_SECURITY`), or an HTTP sender with `provides.email`. A request that names `{{files}}` receives the asset's files as `[{name, mime, base64}]`.

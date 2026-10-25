@@ -770,6 +770,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
             let text = provide.result.text.as_ref().and_then(|p| extensions::pointer(&json, p)).and_then(|v| v.as_str().map(str::to_string)).or_else(|| if out.text.is_empty() { None } else { Some(out.text.clone()) });
             Ok(ExecOut { json, text, file })
         }
+        Transport::Smtp => crate::smtp::exec(app, slug, m, &args, &env).await,
         Transport::Builtin => crate::builtin::run(app, slug, m, ability, tool, &args).await,
     }
 }

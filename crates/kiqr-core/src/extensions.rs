@@ -26,7 +26,9 @@ pub enum Transport {
     Command,
     /// An MCP server the daemon hosts and proxies.
     Mcp,
-    /// Rust inside KIQR (`kiqr-render`, `kiqr-smtp`).
+    /// Mail over SMTP, with the server settings the manifest's `smtp` block names.
+    Smtp,
+    /// Rust inside KIQR: the core renderer (`kiqr-render`).
     Builtin,
 }
 
@@ -60,6 +62,24 @@ pub struct HttpRequest {
     pub poll_until: Option<String>,
     pub poll_value: Option<String>,
     pub poll_every_s: Option<u64>,
+}
+
+/// A mail server, for `transport: smtp`. Each value is a template, usually
+/// `${VAR}` from `.env`; a connection for one mail host can write its host
+/// and port as they are.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SmtpSpec {
+    pub host: String,
+    /// Empty: 465 with `tls`, else 587.
+    pub port: String,
+    pub user: String,
+    /// Empty: a relay that needs no password (on this machine or a private network).
+    pub password: String,
+    /// What recipients see; the user name when empty.
+    pub from: String,
+    /// `starttls` (default), `tls`, or `none` for a relay on this machine only.
+    pub security: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -157,6 +177,8 @@ pub struct Manifest {
     /// How the keys can be got with one button instead of typed in (`docs/abilities.md`, "Signing in").
     pub connect: Option<crate::connect::Connect>,
     pub hosts: Vec<String>,
+    /// The mail server, for `transport: smtp`.
+    pub smtp: Option<SmtpSpec>,
     /// ability id → how this connection provides it.
     pub provides: BTreeMap<String, Provide>,
     pub tools: Vec<ExtraTool>,
@@ -193,6 +215,7 @@ impl Default for Manifest {
             auth: vec![],
             connect: None,
             hosts: vec![],
+            smtp: None,
             provides: Default::default(),
             tools: vec![],
             channels: vec![],
@@ -450,7 +473,7 @@ impl Registry {
     }
 
     /// Which connection serves an ability for this project: the configured
-    /// one if it is ready, else a ready built-in, else the only ready one.
+    /// one if it is ready, else a ready core one (the renderer), else the first ready one.
     pub fn provider<'a>(&'a self, slug: &str, ability: &str, configured: Option<&str>, ready: impl Fn(&Manifest) -> bool) -> Option<(&'a Entry, &'a Manifest)> {
         let candidates: Vec<(&Entry, &Manifest)> = self.connections(slug).into_iter().filter(|(_, m)| m.provides.contains_key(ability) && ready(m)).collect();
         if let Some(c) = configured {
@@ -458,7 +481,7 @@ impl Registry {
                 return Some(*found);
             }
         }
-        if let Some(found) = candidates.iter().find(|(_, m)| m.transport == Transport::Builtin) {
+        if let Some(found) = candidates.iter().find(|(e, _)| e.is_core()) {
             return Some(*found);
         }
         candidates.first().copied()
@@ -556,6 +579,7 @@ pub fn validate(m: &Manifest) -> Result<()> {
     }
     match m.transport {
         Transport::Mcp if m.command.trim().is_empty() => bail!("an mcp connection needs a command"),
+        Transport::Smtp if m.smtp.as_ref().map(|s| s.host.trim().is_empty() || (s.user.trim().is_empty() && s.from.trim().is_empty())).unwrap_or(true) => bail!("an smtp connection needs an smtp block with host and user (or from)"),
         Transport::Http if m.hosts.is_empty() && (!m.provides.is_empty() || !m.tools.is_empty()) => bail!("an http connection must list the hosts it may call"),
         _ => {}
     }
@@ -599,7 +623,7 @@ fn check_provide(m: &Manifest, p: &Provide, what: &str) -> Result<()> {
                 bail!("{what} needs the server's tool name");
             }
         }
-        Transport::Builtin => {}
+        Transport::Smtp | Transport::Builtin => {}
     }
     Ok(())
 }

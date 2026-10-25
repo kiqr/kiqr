@@ -6,7 +6,7 @@
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use kiqr_core::assets::{self, Asset, Publication, Status};
 use kiqr_core::channels::{self, Channel};
 use kiqr_core::events::EventKind;
-use kiqr_core::extensions::{ChannelKind, Manifest, Transport};
+use kiqr_core::extensions::{ChannelKind, Manifest};
 use kiqr_core::project::Project;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -218,7 +218,7 @@ async fn delete_channel(State(app): State<App>, Path((slug, id)): Path<(String, 
 // -------------------------------------------------------------- publishing
 
 /// An asset's body as Markdown and its media files, for sending.
-fn asset_parts(app: &App, slug: &str, a: &Asset) -> Result<(String, Vec<(String, Vec<u8>, String)>)> {
+pub(crate) fn asset_parts(app: &App, slug: &str, a: &Asset) -> Result<(String, Vec<(String, Vec<u8>, String)>)> {
     let dir = app.store.home().assets_dir(slug).join(&a.kind).join(&a.id);
     let body = assets::body_file(a).map(|f| std::fs::read_to_string(dir.join(f)).unwrap_or_default()).unwrap_or_default();
     let mut files = Vec::new();
@@ -337,30 +337,26 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
         reg.connection(slug, &c.extension).map(|(_, m)| m.clone()).ok_or_else(|| bad(format!("the connection '{}' is gone", c.extension)))?
     };
     let k = m.channels.iter().find(|k| k.kind == c.kind).cloned().ok_or_else(|| bad(format!("{} no longer publishes '{}'", m.name, c.kind)))?;
-    let (url, account, detail) = if m.transport == Transport::Builtin && m.id == "kiqr-smtp" {
-        let to = c.destination.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let r = smtp_send(&kiqr_core::secrets::env_fn(app.store.home(), Some(slug)), &to, &subject, &body, files).await.map_err(|e| bad(format!("{e:#}")))?;
-        (None, Some(r.from), format!("sent to {to}"))
-    } else {
-        // The connection's publish tool, with the asset and the destination.
-        let provide = m.tools.iter().find(|t| t.name == k.publish).map(|t| t.provide.clone()).or_else(|| m.provides.get(&k.publish).cloned()).ok_or_else(|| bad(format!("{} has no '{}'", m.name, k.publish)))?;
-        let mut args = json!({
-            "title": a.title,
-            "text": body,
-            "html": channels::markdown_to_html(&body),
-            "summary": a.summary,
-            "tags": a.tags,
-            "asset": { "type": a.kind, "id": a.id },
-            "note": preview["note"],
-        });
-        for (dk, dv) in &c.destination {
-            args[dk] = dv.clone();
-        }
-        let out = crate::ext::execute(app, slug, &m, &provide, None, Some(&k.publish), &args).await.map_err(|e| bad(format!("{e:#}")))?;
-        let url = out.text.clone().filter(|t| t.starts_with("http")).or_else(|| out.json.get("url").and_then(|u| u.as_str()).map(str::to_string)).or_else(|| out.json.get("link").and_then(|u| u.as_str()).map(str::to_string));
-        let detail = out.text.clone().unwrap_or_else(|| kiqr_core::profile::truncate_chars(&out.json.to_string(), 200));
-        (url, None, detail)
-    };
+    // The connection's publish tool, with the asset and the destination.
+    let provide = m.tools.iter().find(|t| t.name == k.publish).map(|t| t.provide.clone()).or_else(|| m.provides.get(&k.publish).cloned()).ok_or_else(|| bad(format!("{} has no '{}'", m.name, k.publish)))?;
+    let mut args = json!({
+        "title": a.title,
+        "subject": subject,
+        "text": body,
+        "html": channels::markdown_to_html(&body),
+        "summary": a.summary,
+        "tags": a.tags,
+        "asset": { "type": a.kind, "id": a.id },
+        "note": preview["note"],
+    });
+    for (dk, dv) in &c.destination {
+        args[dk] = dv.clone();
+    }
+    with_files(&provide, &mut args, &files);
+    let out = crate::ext::execute(app, slug, &m, &provide, None, Some(&k.publish), &args).await.map_err(|e| bad(format!("{e:#}")))?;
+    let url = out.text.clone().filter(|t| t.starts_with("http")).or_else(|| out.json.get("url").and_then(|u| u.as_str()).map(str::to_string)).or_else(|| out.json.get("link").and_then(|u| u.as_str()).map(str::to_string));
+    let account = out.json.get("from").and_then(|f| f.as_str()).map(str::to_string);
+    let detail = out.text.clone().unwrap_or_else(|| kiqr_core::profile::truncate_chars(&out.json.to_string(), 200));
     let now = Utc::now();
     a.publications.push(Publication { connector: c.id.clone(), account, url: url.clone(), at: now, run: if by.starts_with("task:") { Some(by.to_string()) } else { None } });
     a.channel = Some(c.id.clone());
@@ -573,15 +569,11 @@ pub async fn do_email(app: &App, slug: &str, preview: &Value) -> Result<Value, A
         let reg = app.registry.read().await;
         reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), |m| crate::ext::ready_in(app, Some(slug), m)).map(|(_, m)| m.clone()).ok_or_else(|| bad("no mail ability is set up for this project; add an email channel under Channels"))?
     };
-    let result = if m.transport == Transport::Builtin && m.id == "kiqr-smtp" {
-        let r = smtp_send(&kiqr_core::secrets::env_fn(app.store.home(), Some(slug)), &to, &subject, &text, files).await.map_err(|e| bad(format!("{e:#}")))?;
-        json!({ "sent": true, "to": to, "from": r.from, "subject": subject, "connection": m.name })
-    } else {
-        let provide = m.provides.get("email").cloned().unwrap_or_default();
-        let args = json!({ "to": to, "subject": subject, "text": text, "html": channels::markdown_to_html(&text) });
-        let out = crate::ext::execute(app, slug, &m, &provide, kiqr_core::abilities::find("email").as_ref(), None, &args).await.map_err(|e| bad(format!("{e:#}")))?;
-        json!({ "sent": true, "to": to, "subject": subject, "connection": m.name, "response": out.json })
-    };
+    let provide = m.provides.get("email").cloned().unwrap_or_default();
+    let mut args = json!({ "to": to, "subject": subject, "text": text, "html": channels::markdown_to_html(&text), "asset": preview["asset"] });
+    with_files(&provide, &mut args, &files);
+    let out = crate::ext::execute(app, slug, &m, &provide, kiqr_core::abilities::find("email").as_ref(), None, &args).await.map_err(|e| bad(format!("{e:#}")))?;
+    let result = json!({ "sent": true, "to": to, "from": out.json.get("from"), "subject": subject, "connection": m.name, "response": out.json });
     app.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("I sent \"{subject}\" to {to}.") });
     Ok(result)
 }
@@ -593,52 +585,10 @@ async fn email_route(State(app): State<App>, Path(slug): Path<String>, Json(b): 
     Ok(Json(do_email(&app, &slug, &preview).await?))
 }
 
-pub struct Sent {
-    pub from: String,
-}
-
-/// Send one email over SMTP with the `.env` settings: Markdown text as both
-/// plain text and HTML, files attached.
-pub async fn smtp_send(env: &(impl Fn(&str) -> Option<String> + Sync), to: &str, subject: &str, text_md: &str, files: Vec<(String, Vec<u8>, String)>) -> Result<Sent> {
-    use lettre::message::{header::ContentType, Attachment, Mailbox, MultiPart, SinglePart};
-    use lettre::transport::smtp::authentication::Credentials;
-    use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-    let host = env("SMTP_HOST").ok_or_else(|| anyhow!("SMTP_HOST is not set"))?;
-    let user = env("SMTP_USER").ok_or_else(|| anyhow!("SMTP_USER is not set"))?;
-    // No password: a relay that needs none (on this machine or a private network).
-    let pass = env("SMTP_PASSWORD");
-    let port: u16 = env("SMTP_PORT").and_then(|p| p.parse().ok()).unwrap_or(587);
-    let from_s = env("SMTP_FROM").unwrap_or_else(|| user.clone());
-    let from: Mailbox = from_s.parse().with_context(|| format!("SMTP_FROM '{from_s}' is not an address"))?;
-    let mut builder = Message::builder().from(from.clone()).subject(subject);
-    for addr in to.split([',', ';']).map(str::trim).filter(|s| !s.is_empty()) {
-        let mb: Mailbox = addr.parse().with_context(|| format!("'{addr}' is not an email address"))?;
-        builder = builder.to(mb);
+/// A request that names `{{files}}` gets the asset's files, as
+/// `[{name, mime, base64}]`; nothing else carries them (they can be large).
+fn with_files(provide: &kiqr_core::extensions::Provide, args: &mut Value, files: &[(String, Vec<u8>, String)]) {
+    if serde_json::to_string(provide).is_ok_and(|t| t.contains("{{files")) {
+        args["files"] = json!(files.iter().map(|(n, b, m)| json!({ "name": n, "mime": m, "base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b) })).collect::<Vec<_>>());
     }
-    let html = format!("<div style=\"font-family:Inter,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#111\">{}</div>", channels::markdown_to_html(text_md));
-    let alternative = MultiPart::alternative_plain_html(text_md.to_string(), html);
-    let msg = if files.is_empty() {
-        builder.multipart(alternative)?
-    } else {
-        let mut mixed = MultiPart::mixed().multipart(alternative);
-        for (name, bytes, mime) in files {
-            let ct = ContentType::parse(&mime).unwrap_or(ContentType::parse("application/octet-stream").unwrap());
-            let part: SinglePart = Attachment::new(name).body(bytes, ct);
-            mixed = mixed.singlepart(part);
-        }
-        builder.multipart(mixed)?
-    };
-    let security = env("SMTP_SECURITY").map(|s| s.to_ascii_lowercase()).unwrap_or_else(|| if port == 465 { "tls".into() } else { "starttls".into() });
-    let mut builder = match security.as_str() {
-        "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(&host)?.port(port),
-        // Plain: only for a relay on this machine or a private network.
-        "none" | "plain" => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host).port(port),
-        _ => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host)?.port(port),
-    };
-    if let Some(pass) = pass {
-        builder = builder.credentials(Credentials::new(user, pass));
-    }
-    let transport = builder.build();
-    transport.send(msg).await.with_context(|| format!("sending through {host}:{port}"))?;
-    Ok(Sent { from: from.to_string() })
 }

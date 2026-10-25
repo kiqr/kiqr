@@ -16,6 +16,7 @@ mod performance;
 mod publish;
 mod scheduler;
 mod seemo;
+mod smtp;
 mod web;
 
 use anyhow::Result;
