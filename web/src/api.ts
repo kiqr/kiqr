@@ -265,6 +265,7 @@ export type Ability = {
   provides: { ability: string; label: string }[];
   channels: string[];
   sources: string[];
+  avatar?: string | null;
   tools: number;
   trust: "official" | "verified" | "community" | "local" | string;
   transport: "http" | "command" | "mcp" | "builtin" | "instructions" | string;
@@ -293,7 +294,7 @@ export type Ability = {
   error: string | null;
 };
 export type Contract = { id: string; label: string; tool: string; configured: string | null; active: { id: string; name: string } | null; candidates: { id: string; name: string; ready: boolean }[] };
-export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts: Contract[]; broken: { folder: string; scope: Scope; error: string }[]; guide: Ability | null; index: string; env_file: string; project_env_file: string | null };
+export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts: Contract[]; broken: { folder: string; scope: Scope; error: string }[]; guide: Ability | null; index: string; index_fetched?: boolean; env_file: string; project_env_file: string | null };
 /** Where a project publishes. */
 export type Channel = {
   id: string;
@@ -383,6 +384,8 @@ export const api = {
   calendar: (slug: string, from?: string, to?: string) =>
     req<CalendarItem[]>(`/api/projects/${slug}/calendar${from ? `?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}` : ""}`),
   todo: (slug: string) => req<Todo>(`/api/projects/${slug}/todo`),
+  /** Drop the cached marketplace index and read it again in the background; `marketplace_refreshed` follows. */
+  refreshMarketplace: () => req<void>("/api/abilities/refresh-index", { method: "POST", body: "{}" }),
 
   // The marketing plan and campaigns
   plan: (slug: string) => req<PlanView>(`/api/projects/${slug}/plan`),

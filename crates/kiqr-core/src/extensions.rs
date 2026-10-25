@@ -174,6 +174,8 @@ pub struct Manifest {
     pub categories: Vec<String>,
     /// A lucide icon name for the card; the ability's icon when empty.
     pub icon: String,
+    /// A 64×64 mark: a file name in the folder (`avatar.svg`) or a URL. Optional; the icon is the fallback.
+    pub avatar: String,
 }
 
 impl Default for Manifest {
@@ -198,6 +200,7 @@ impl Default for Manifest {
             homepage: String::new(),
             categories: vec![],
             icon: String::new(),
+            avatar: String::new(),
         }
     }
 }
@@ -266,16 +269,11 @@ pub struct Registry {
 }
 
 /// Folders KIQR ships: name → (SKILL.md, extension.yaml). The core ones are
-/// installed on every start; the rest wait in the marketplace until the
-/// user installs them. A user's copy of a SKILL.md wins.
+/// installed on every start. Everything else, including abilities whose code
+/// is in KIQR (email over SMTP, the analytics readers), lives in the
+/// marketplace and is installed from there. A user's copy of a SKILL.md wins.
 pub const BUILTIN_EXTENSIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("make-images", Some(include_str!("../../../abilities/make-images/SKILL.md")), Some(include_str!("../../../abilities/make-images/extension.yaml"))),
-    ("email-smtp", None, Some(include_str!("../../../abilities/email-smtp/extension.yaml"))),
-    ("fal-image", None, Some(include_str!("../../../abilities/fal-image/extension.yaml"))),
-    ("openai-image", None, Some(include_str!("../../../abilities/openai-image/extension.yaml"))),
-    ("google-analytics", None, Some(include_str!("../../../abilities/google-analytics/extension.yaml"))),
-    ("search-console", None, Some(include_str!("../../../abilities/search-console/extension.yaml"))),
-    ("plausible", None, Some(include_str!("../../../abilities/plausible/extension.yaml"))),
 ];
 
 /// On without installing: the built-in renderer (folder `make-images`, id

@@ -127,6 +127,9 @@ pub enum EventKind {
     CampaignSaved { campaign: String, title: String, status: String, created: bool },
     CampaignDeleted { campaign: String },
 
+    /// The marketplace index was read again (the UI asks on open). `fetched` is false when it could not be reached.
+    MarketplaceRefreshed { items: usize, fetched: bool },
+
     // Metrics: a source was read into a snapshot, or could not be.
     MetricsSnapshot { source: String, provider: String, rows: usize, taken_at: DateTime<Utc> },
     MetricsFailed { source: String, provider: String, error: String },
@@ -168,6 +171,7 @@ impl EventKind {
                 | EventKind::PlanSaved { .. }
                 | EventKind::CampaignSaved { .. }
                 | EventKind::CampaignDeleted { .. }
+                | EventKind::MarketplaceRefreshed { .. }
                 | EventKind::MetricsSnapshot { .. }
                 | EventKind::MetricsFailed { .. }
         )

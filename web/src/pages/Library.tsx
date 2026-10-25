@@ -4,14 +4,14 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, Bot, Download, FileText, Library as LibraryIcon, Maximize2, Rocket, SearchX, Send, Trash2, User, X } from "lucide-react";
+import { ArrowLeft, Bot, Download, FileText, Library as LibraryIcon, Maximize2, SearchX, Send, Trash2, User, X } from "lucide-react";
 import { api, useAsync, useEvents, type Asset, type AssetStatus, type AssetType } from "../api";
 import { PostCard } from "./PostCard";
 import { AssetActions, StatusChip, STATUSES, STATUS_LABEL } from "./AssetActions";
 import { Markdown } from "../markdown";
 import { assetIcon } from "../assetIcons";
 import { ago } from "./Project";
-import { EmptyLibrary, Guide } from "./LibraryEmpty";
+import { EmptyLibrary } from "./LibraryEmpty";
 import "../profile.css";
 import "../library.css";
 
@@ -46,7 +46,7 @@ export function LibraryPage() {
   const list = status ? all.filter((a) => a.status === status) : live;
   // Until the first asset exists, the library page is the getting-started page.
   const fresh = !t && !!assets.data && all.length === 0;
-  const Icon = t ? assetIcon(t.icon) : fresh ? Rocket : LibraryIcon;
+  const Icon = t ? assetIcon(t.icon) : LibraryIcon;
   const opened = open ? all.find((a) => a.type === open.type && a.id === open.id) : undefined;
 
   return (
@@ -58,19 +58,22 @@ export function LibraryPage() {
           </span>
           <div>
             <p className="cap">{t ? "Library" : "Content"}</p>
-            <h1 className="d2">{t ? t.plural : fresh ? "Getting started" : "Library"}</h1>
+            <h1 className="d2">{t ? t.plural : "Library"}</h1>
             <p>
-              {t
-                ? t.description
-                : fresh
-                  ? "A few steps from your website to your first posts. Everything you and Seemo make lands here, in your library."
-                  : "Everything you and Seemo have made for this project: articles, posts, images, videos and whatever else you dream up."}
+              {t ? (
+                t.description
+              ) : fresh ? (
+                <>
+                  Everything you and Seemo make lands here. Nothing yet: the first steps are under <Link to={`/p/${slug}/todo`}>To do</Link>.
+                </>
+              ) : (
+                "Everything you and Seemo have made for this project: articles, posts, images, videos and whatever else you dream up."
+              )}
             </p>
           </div>
         </div>
       </div>
 
-      {!t && all.length > 0 && <Guide slug={slug} hideWhenComplete />}
       {!t && live.length > 0 && <TypeStrip slug={slug} types={types} assets={live} />}
 
       {all.length > 0 && (

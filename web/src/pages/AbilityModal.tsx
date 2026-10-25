@@ -12,12 +12,11 @@ import { SecretField } from "./SecretField";
 import { Switch } from "./Switch";
 import { InstallPanel } from "./Marketplace";
 import { parseInstructions, TeachForm, type TeachDraft } from "./TeachForm";
-import { Author, iconFor, needsOf, partsOf, stateOf } from "./abilityBits";
+import { AbilityIcon, Author, needsOf, partsOf, stateOf } from "./abilityBits";
 
 type Tab = "overview" | "instructions" | "connect";
 
 export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange, onPrefer }: { slug: string; a: Ability; contracts: Contract[]; initialTab?: Tab; onClose: () => void; onChange: () => void; onPrefer: (contract: string, id: string) => void }) {
-  const Icon = iconFor(a);
   const state = stateOf(a);
   const canConnect = a.installed && a.auth.length > 0;
   const [tab, setTab] = useState<Tab>(initialTab ?? "overview");
@@ -54,8 +53,8 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
     <motion.div className="lib-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }} onClick={onClose}>
       <motion.div className="ab-modal" role="dialog" aria-label={a.name} initial={{ opacity: 0, y: 14, scale: 0.985 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.99 }} transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }} onClick={(e) => e.stopPropagation()}>
         <header className="ab-head">
-          <span className={`ic ${state.tone}`}>
-            <Icon size={22} />
+          <span className={`ic ${state.tone} ${a.avatar ? "has-avatar" : ""}`}>
+            <AbilityIcon a={a} size={a.avatar ? 46 : 22} />
           </span>
           <div className="min0">
             <h2>{a.name}</h2>

@@ -4,7 +4,9 @@
 // failed. The sidebar count is the approvals, drafts and failures.
 import { Link, useParams } from "react-router-dom";
 import { CalendarClock, CheckCircle2, MessagesSquare, Send } from "lucide-react";
+import { useState } from "react";
 import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card } from "../api";
+import { Guide } from "./LibraryEmpty";
 import { ApprovalCard } from "../chat/Conversation";
 import { AssetEmbed } from "./AssetEmbed";
 import { AssetActions, StatusChip, whenAt } from "./AssetActions";
@@ -23,14 +25,17 @@ export function TodoPage() {
   useEvents(slug, onEvent, { demo: false });
   useDemoSeemo(onEvent);
   const d = todo.data;
-  const empty = d && d.approvals.length === 0 && d.drafts.length === 0 && d.ready.length === 0 && d.scheduled.length === 0 && d.attention.length === 0;
+  // The getting-started steps sit here until every one is done or skipped; the page is "Getting started" until then.
+  const [guideDone, setGuideDone] = useState<boolean | undefined>(undefined);
+  const starting = guideDone === false;
+  const empty = d && guideDone !== false && d.approvals.length === 0 && d.drafts.length === 0 && d.ready.length === 0 && d.scheduled.length === 0 && d.attention.length === 0;
   return (
     <div className="prof todo">
       <div className="cm-head">
         <div>
           <p className="cap">For you</p>
-          <h1 className="d2">To do</h1>
-          <p className="muted">What waits for you. Seemo's questions from every chat, drafts to approve, and what is set to go out. Approve a draft for a channel; publish it now or pick a time.</p>
+          <h1 className="d2">{starting ? "Getting started" : "To do"}</h1>
+          <p className="muted">{starting ? "A few steps from your website to marketing that runs itself. Once they are done, this page is what waits for you: Seemo's questions, drafts to approve, and what is set to go out." : "What waits for you. Seemo's questions from every chat, drafts to approve, and what is set to go out. Approve a draft for a channel; publish it now or pick a time."}</p>
         </div>
         {d && d.count > 0 && (
           <div className="cm-acts">
@@ -38,6 +43,8 @@ export function TodoPage() {
           </div>
         )}
       </div>
+
+      <Guide slug={slug} hideWhenComplete onComplete={setGuideDone} />
 
       {empty && (
         <div className="pcard none">

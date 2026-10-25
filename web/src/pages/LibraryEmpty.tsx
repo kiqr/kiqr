@@ -90,7 +90,6 @@ export function EmptyLibrary({ slug }: { slug: string }) {
 
   return (
     <div className="lib-empty">
-      <Guide slug={slug} />
       <div className="lib-can-head">
         <div>
           <p className="cap">What Seemo can make</p>
@@ -173,10 +172,10 @@ function useSkipped(slug: string) {
 }
 
 /**
- * Five steps from a crawled website to marketing that runs itself. Shown on the empty
- * library, and above a filled one until every step is done or skipped (`hideWhenComplete`).
+ * Six steps from a crawled website to marketing that runs itself. Shown at the top of To do
+ * until every step is done or skipped (`hideWhenComplete`); `onComplete` tells the page.
  */
-export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComplete?: boolean }) {
+export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hideWhenComplete?: boolean; onComplete?: (done: boolean) => void }) {
   const project = useAsync(() => api.project(slug), [slug]);
   const brief = useAsync(() => api.brief(slug).catch(() => null), [slug]);
   const posts = useAsync(() => api.assets(slug, "post").catch(() => [] as Asset[]), [slug]);
@@ -303,7 +302,9 @@ export function Guide({ slug, hideWhenComplete }: { slug: string; hideWhenComple
     },
   ];
   const settled = steps.filter((s) => s.state === "done" || s.state === "skipped").length;
-  if (hideWhenComplete && (project.loading || settled === steps.length)) return null;
+  const done = !project.loading && settled === steps.length;
+  useEffect(() => onComplete?.(done), [done, onComplete]);
+  if (hideWhenComplete && (project.loading || done)) return null;
 
   return (
     <div className="pcard lib-guide">

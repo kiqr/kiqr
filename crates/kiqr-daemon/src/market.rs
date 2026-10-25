@@ -29,6 +29,8 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/abilities", get(list_project))
         .route("/api/projects/{slug}/abilities/brief", get(brief))
         .route("/api/abilities/install", post(install_source))
+        .route("/api/abilities/refresh-index", post(refresh_index))
+        .route("/api/abilities/{id}/avatar", get(avatar))
         .route("/api/abilities/{id}/install", post(install))
         .route("/api/abilities/{id}/update", post(update))
         .route("/api/abilities/{id}/pause", post(pause))
@@ -82,6 +84,9 @@ pub struct IndexItem {
     pub homepage: String,
     pub categories: Vec<String>,
     pub icon: String,
+    /// A URL to a 64×64 mark, or empty.
+    #[serde(default)]
+    pub avatar: String,
     pub cost: Option<String>,
     /// Ability contracts it provides: image, video, music, email.
     pub provides: Vec<String>,
@@ -153,6 +158,28 @@ fn source_note(repo: &str, path: Option<&str>) -> String {
 /// Where the vendor name links: the repository the ability came from (its
 /// folder inside it when the index says), KIQR's own repository for what
 /// ships with it, and only as a last resort the vendor's page.
+/// Where the avatar is: the installed folder's file, served by the daemon;
+/// else what the manifest or the index names as a URL.
+fn avatar_url(item: &IndexItem, m: Option<&Manifest>, e: Option<&extensions::Entry>, stamp: u64) -> Option<String> {
+    let named = m.map(|m| m.avatar.trim().to_string()).filter(|a| !a.is_empty()).unwrap_or_else(|| item.avatar.trim().to_string());
+    if named.is_empty() {
+        return None;
+    }
+    if named.starts_with("http://") || named.starts_with("https://") {
+        // The index's fetch time as a version, so a browser refetches a changed mark at the same URL.
+        return Some(format!("{named}{}v={stamp}", if named.contains('?') { "&" } else { "?" }));
+    }
+    let e = e?;
+    if !e.dir.join(&named).is_file() {
+        return None;
+    }
+    let project = match &e.scope {
+        extensions::Scope::Project(s) => format!("?project={s}"),
+        _ => String::new(),
+    };
+    Some(format!("/api/abilities/{}/avatar{project}", e.id()))
+}
+
 fn author_url(item: &IndexItem, author: &str) -> Option<String> {
     if author == "you" {
         return None;
@@ -182,6 +209,7 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         homepage: m.homepage.clone(),
         categories: if m.categories.is_empty() { default_categories(m) } else { m.categories.clone() },
         icon: m.icon.clone(),
+        avatar: m.avatar.clone(),
         cost,
         provides: m.provides.keys().cloned().collect(),
         channels: m.channels.iter().map(|c| c.kind.clone()).collect(),
@@ -232,6 +260,7 @@ fn core_item(c: &extensions::CoreAbility) -> IndexItem {
         homepage: c.homepage.into(),
         categories: c.categories.iter().map(|s| s.to_string()).collect(),
         icon: c.icon.into(),
+        avatar: String::new(),
         cost: Some(c.cost.into()),
         provides: vec![],
         channels: vec![],
@@ -279,6 +308,43 @@ pub async fn catalogue(app: &App) -> Vec<IndexItem> {
         }
     }
     items
+}
+
+/// The index cache's modification time in seconds, 0 when there is none.
+pub fn index_stamp(app: &App) -> u64 {
+    let cache = app.store.home().root().join("tmp").join("marketplace.json");
+    std::fs::metadata(&cache).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Drop the cached index and read it again, in the background: the UI asks
+/// for this when it opens, and listens for `marketplace_refreshed`.
+pub fn refresh_index_later(app: &App) {
+    let app = app.clone();
+    tokio::spawn(async move {
+        let url = app.config.read().await.marketplace.url.clone();
+        let _ = std::fs::remove_file(app.store.home().root().join("tmp").join("marketplace.json"));
+        tracing::info!(%url, "marketplace: reading the index again");
+        let items = remote_index(&app).await;
+        let fetched = index_fetched(&app);
+        if fetched {
+            tracing::info!(abilities = items.len(), ids = ?items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), "marketplace: index read");
+        } else {
+            tracing::warn!(%url, "marketplace: the index could not be read; only what ships with KIQR is listed");
+        }
+        app.bus.emit(None, EventKind::MarketplaceRefreshed { items: items.len(), fetched });
+    });
+}
+
+/// `POST /api/abilities/refresh-index`: 202, the fetch runs on its own.
+async fn refresh_index(State(app): State<App>) -> StatusCode {
+    refresh_index_later(&app);
+    StatusCode::ACCEPTED
+}
+
+/// Whether the marketplace index was read in the last day (its cache is on disk).
+pub fn index_fetched(app: &App) -> bool {
+    let cache = app.store.home().root().join("tmp").join("marketplace.json");
+    std::fs::metadata(&cache).and_then(|m| m.modified()).map(|t| t.elapsed().unwrap_or_default() < Duration::from_secs(86_400)).unwrap_or(false)
 }
 
 async fn remote_index(app: &App) -> Vec<IndexItem> {
@@ -345,6 +411,8 @@ struct Ctx<'a> {
     project_off: Vec<String>,
     /// (contract, ability id) active for this project.
     active: Vec<(String, String)>,
+    /// When the index was last fetched, as a cache-busting version for avatar URLs.
+    stamp: u64,
 }
 
 fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
@@ -359,6 +427,7 @@ fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
         homepage: String::new(),
         categories: if i.categories.is_empty() { vec!["writing".into()] } else { i.categories.clone() },
         icon: if i.icon.is_empty() { "book-open".into() } else { i.icon.clone() },
+        avatar: String::new(),
         cost: Some("model usage".into()),
         provides: vec![],
         channels: vec![],
@@ -451,6 +520,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "homepage": item.homepage,
         "categories": if item.categories.is_empty() { m.map(default_categories).unwrap_or_default() } else { item.categories.clone() },
         "icon": item.icon,
+        "avatar": avatar_url(item, m, e, ctx.stamp),
         "cost": item.cost,
         "provides": provides,
         "channels": m.map(|m| m.channels.iter().map(|c| c.label.clone()).collect::<Vec<_>>()).unwrap_or_else(|| item.channels.clone()),
@@ -501,7 +571,7 @@ pub(crate) async fn listing(app: &App, slug: Option<&str>) -> Listing {
     let reg = app.registry.read().await;
     let project_off = slug.map(|s| crate::ext::project_off(app, s)).unwrap_or_default();
     let active: Vec<(String, String)> = abilities::all().iter().filter_map(|a| reg.provider(slug.unwrap_or(""), a.id, cfg.abilities.get(a.id).map(String::as_str), |m| crate::ext::ready_in(app, slug, m)).map(|(_, m)| (a.id.to_string(), m.id.clone()))).collect();
-    let ctx = Ctx { app, slug, cfg: cfg.clone(), reg: &reg, project_off, active };
+    let ctx = Ctx { app, slug, cfg: cfg.clone(), reg: &reg, project_off, active, stamp: index_stamp(app) };
     let attached = extensions::attached_folders();
     let mut abilities_out: Vec<Value> = Vec::new();
     let mut market: Vec<Value> = Vec::new();
@@ -599,6 +669,7 @@ async fn list_json(app: &App, slug: Option<&str>) -> Value {
         "broken": l.broken,
         "guide": l.guide,
         "index": cfg.marketplace.url,
+        "index_fetched": index_fetched(app),
         "env_file": home.env_file().display().to_string(),
         "project_env_file": slug.map(|s| home.project_env_file(s).display().to_string()),
     })
@@ -859,4 +930,16 @@ async fn remove(State(app): State<App>, Path(id): Path<String>, Query(q): Query<
     crate::ext::remove_folder(&app, &e.dir, &id, &e.scope).await?;
     app.mcp.stop(&id).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/abilities/{id}/avatar?project=`: the mark from the installed folder.
+async fn avatar(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ListQuery>) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    let reg = app.registry.read().await;
+    let e = reg.entry(q.project.as_deref(), &id).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no such ability".into()))?;
+    let name = e.manifest.as_ref().map(|m| m.avatar.trim().to_string()).filter(|a| !a.is_empty() && !a.contains('/') && !a.starts_with('.')).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no avatar".into()))?;
+    let path = e.dir.join(&name);
+    let bytes = std::fs::read(&path).map_err(|_| ApiError(StatusCode::NOT_FOUND, "no avatar".into()))?;
+    let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
+    Ok(([(axum::http::header::CONTENT_TYPE, mime), (axum::http::header::CACHE_CONTROL, "private, max-age=3600".to_string())], bytes).into_response())
 }

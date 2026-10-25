@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 //! The KIQR daemon: one process that owns `~/.kiqr`, runs crawls and profile
 //! synthesis, serves the HTTP API and SSE events, and serves the web UI.
 
@@ -78,6 +79,9 @@ pub async fn run(home: Home) -> Result<()> {
         store.commit("abilities: install the built-in abilities").await?;
     }
     // Older versions installed every shipped ability; now the marketplace leaves that to the user.
+    // The marketplace index is cached for an hour; a start reads it fresh, so a
+    // restart is a sure way to see a change in the index.
+    let _ = std::fs::remove_file(home.root().join("tmp").join("marketplace.json"));
     let retired = kiqr_core::extensions::retire_auto_installed(&store, kiqr_core::provider::has_env)?;
     if !retired.is_empty() {
         tracing::info!(folders = ?retired, "abilities that were never set up now wait in the marketplace");

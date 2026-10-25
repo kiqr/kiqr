@@ -1198,6 +1198,7 @@ fn print_event(ev: &Event) {
         EventKind::PlanSaved { version, period, objectives, by } => format!("plan     v{version} {period}: {objectives} objectives ({by})"),
         EventKind::CampaignSaved { campaign, title, status, created } => format!("campaign {campaign} {} ({status}): {title}", if *created { "added" } else { "changed" }),
         EventKind::CampaignDeleted { campaign } => format!("campaign {campaign} removed"),
+        EventKind::MarketplaceRefreshed { items, fetched } => format!("market   index read again: {items} abilities{}", if *fetched { "" } else { " (could not be reached; shipped only)" }),
         EventKind::MetricsSnapshot { source, provider, rows, .. } => format!("metrics  {source}: {rows} rows via {provider}"),
         EventKind::MetricsFailed { source, provider, error } => format!("metrics  {source} via {provider} failed: {error}"),
     };

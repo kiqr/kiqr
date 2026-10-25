@@ -15,6 +15,7 @@ Seemo only ever sees tools, named after ability contracts, whatever installed ab
   SKILL.md          instructions: frontmatter + the text Seemo follows   (optional)
   extension.yaml    a connection: what it provides and needs            (optional)
   templates/…       files it ships                                       (optional)
+  avatar.svg        a 64×64 mark shown on its card and in the list; `avatar: avatar.svg` in the manifest  (optional)
 ```
 
 The ability's id is the manifest's `id`, else the folder name. A folder with only `SKILL.md` is instructions (what the user writes with "Teach Seemo something", or a shared recipe from the marketplace). With only `extension.yaml` it is a connection. With both it is one ability with instructions and a connection, such as "Publish to WordPress".

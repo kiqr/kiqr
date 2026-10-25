@@ -1,5 +1,6 @@
 // Small pieces shared by the Abilities page, its modal and the marketplace:
 // the icon, the vendor, the state, what an ability includes.
+import { useState } from "react";
 import { BarChart3, BookOpen, Brain, Globe, Image as ImageIcon, KeyRound, ListChecks, Mail, MessageSquareText, Music, PenTool, Plug, Send, ShieldCheck, Sparkles, Terminal, Video, Wrench, type LucideIcon } from "lucide-react";
 import type { Ability } from "../api";
 import { assetIcon } from "../assetIcons";
@@ -16,6 +17,14 @@ export function iconFor(a: Ability): LucideIcon {
   if (a.runs_program) return Terminal;
   if (a.transport === "instructions") return BookOpen;
   return Sparkles;
+}
+
+/** The ability's mark: its avatar when it has one, else its icon. */
+export function AbilityIcon({ a, size }: { a: Ability; size: number }) {
+  const [broken, setBroken] = useState(false);
+  const Icon = iconFor(a);
+  if (a.avatar && !broken) return <img className="ab-avatar" src={a.avatar} alt="" width={size} height={size} onError={() => setBroken(true)} />;
+  return <Icon size={size} />;
 }
 
 /** The vendor, linked to its GitHub page when it has one. */
@@ -80,4 +89,4 @@ export function needsOf(a: Ability): Part[] {
   return out;
 }
 
-export const RELOAD_ON = ["secret_set", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed"];
+export const RELOAD_ON = ["secret_set", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];

@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, BookOpen, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, Search, Terminal, X } from "lucide-react";
 import { api, type Ability, type Scope } from "../api";
-import { Author, iconFor } from "./abilityBits";
+import { AbilityIcon, Author } from "./abilityBits";
 
 const SHELVES: { id: string; label: string }[] = [
   { id: "all", label: "All" },
@@ -20,7 +20,7 @@ const SHELVES: { id: string; label: string }[] = [
   { id: "tools", label: "Tools" },
 ];
 
-export function Marketplace({ slug, items, index, loaded, onOpen, onChange }: { slug: string; items: Ability[]; index: string; loaded: boolean; onOpen: (a: Ability) => void; onChange: () => void }) {
+export function Marketplace({ slug, items, index, indexFetched, loaded, onOpen, onChange }: { slug: string; items: Ability[]; index: string; indexFetched?: boolean; loaded: boolean; onOpen: (a: Ability) => void; onChange: () => void }) {
   const [q, setQ] = useState("");
   const [shelf, setShelf] = useState("all");
   const [author, setAuthor] = useState("all");
@@ -77,7 +77,7 @@ export function Marketplace({ slug, items, index, loaded, onOpen, onChange }: { 
       )}
       {loaded && shown.length === 0 && (
         <p className="muted set-note">
-          {q || shelf !== "all" || author !== "all" ? "Nothing here matches." : "Everything in the index is installed."} The index at {index || "kiqr.cloud"} grows over time; your own folders install under Advanced.
+          {q || shelf !== "all" || author !== "all" ? "Nothing here matches." : indexFetched === false ? `The marketplace index at ${index || "the configured URL"} could not be reached, so only what ships with KIQR is listed.` : "Everything in the index is installed."} {indexFetched === false ? "Check the URL under Settings → General, or install from a folder or git URL under Advanced." : `The index at ${index || "kiqr.cloud"} grows over time; your own folders install under Advanced.`}
         </p>
       )}
       <div className="mk-grid">
@@ -90,7 +90,6 @@ export function Marketplace({ slug, items, index, loaded, onOpen, onChange }: { 
 }
 
 function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability; i: number; onOpen: () => void; onChange: () => void }) {
-  const Icon = iconFor(a);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,8 +109,8 @@ function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability
   return (
     <motion.article className="mk-card st-available" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.03 }} onClick={onOpen}>
       <header>
-        <span className="ic">
-          <Icon size={18} />
+        <span className={`ic ${a.avatar ? "has-avatar" : ""}`}>
+          <AbilityIcon a={a} size={a.avatar ? 40 : 18} />
         </span>
         <div className="min0">
           <h3>{a.name}</h3>

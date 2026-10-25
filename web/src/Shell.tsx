@@ -14,7 +14,6 @@ import {
   MessagesSquare,
   Network,
   Plus,
-  Rocket,
   Send,
   Sparkles,
   Settings,
@@ -23,6 +22,7 @@ import {
   Target,
   type LucideIcon,
 } from "lucide-react";
+import { DEMO } from "./demo";
 import { api, useAsync, useEvents, type AssetType, type Project, type TypeCount } from "./api";
 import { assetIcon } from "./assetIcons";
 import { SeemoWidget } from "./SeemoWidget";
@@ -41,8 +41,6 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
   // A type appears once the project has something of it; nothing is pinned.
   const shown = types.filter((t) => n(t.id) > 0);
   const total = (counts ?? []).reduce((s, c) => s + c.count, 0);
-  // Until the first asset exists, the library is where you get started.
-  const fresh = counts !== undefined && total === 0;
   return [
     // What needs you, first and on its own.
     { label: "", items: [{ sub: "todo", label: "To do", icon: Inbox, count: waiting || undefined, hot: true }] },
@@ -59,7 +57,7 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
     {
       label: "Library",
       items: [
-        { sub: "library", label: fresh ? "Getting started" : "All", icon: fresh ? Rocket : Library, count: total || undefined },
+        { sub: "library", label: "All", icon: Library, count: total || undefined },
         ...shown.map((t) => ({ sub: `library/${t.id}`, label: t.plural, icon: assetIcon(t.icon), count: n(t.id) || undefined })),
       ],
     },
@@ -108,6 +106,10 @@ function useAssetNav(slug: string | undefined) {
 
 export function Shell() {
   const { slug } = useParams();
+  // Opening the app reads the marketplace index again, in the background; pages listen for the event.
+  useEffect(() => {
+    if (!DEMO) api.refreshMarketplace().catch(() => {});
+  }, []);
   const projects = useAsync(() => api.projects(), []);
   const list = projects.data ?? [];
   const current = list.find((p) => p.slug === slug) ?? null;

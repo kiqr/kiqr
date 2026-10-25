@@ -13,7 +13,7 @@ import { Switch } from "./Switch";
 import { AbilityModal } from "./AbilityModal";
 import { Advanced, Marketplace } from "./Marketplace";
 import { TeachForm, type TeachDraft } from "./TeachForm";
-import { Author, iconFor, isOn, RELOAD_ON, stateOf } from "./abilityBits";
+import { AbilityIcon, Author, isOn, RELOAD_ON, stateOf } from "./abilityBits";
 import "../profile.css";
 import "../settings.css";
 import "../chat.css";
@@ -131,10 +131,10 @@ export function AbilitiesPage() {
         )}
         {yours.length > 0 && <Group label="Yours" items={yours} slug={slug} onOpen={open} onChange={data.reload} />}
         {fromMarket.length > 0 && <Group label="From the marketplace" items={fromMarket} slug={slug} onOpen={open} onChange={data.reload} />}
-        {builtin.length > 0 && <Group label="Built in" items={builtin} slug={slug} onOpen={open} onChange={data.reload} />}
+        {builtin.length > 0 && <Group label="Built in" items={builtin} slug={slug} cols={2} onOpen={open} onChange={data.reload} />}
       </section>
 
-      <Marketplace slug={slug} items={market} index={data.data?.index ?? ""} loaded={!!data.data} onOpen={(a) => open(a)} onChange={data.reload} />
+      <Marketplace slug={slug} items={market} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a) => open(a)} onChange={data.reload} />
 
       <Advanced slug={slug} broken={data.data?.broken ?? []} envFile={data.data?.env_file ?? "~/.kiqr/.env"} projectEnvFile={data.data?.project_env_file ?? null} index={data.data?.index ?? ""} machineFolder={(data.data?.env_file ?? "~/.kiqr/.env").replace(/\/\.env$/, "/abilities")} onDone={data.reload} onGuide={() => guide && open(guide, "instructions")} />
 
@@ -147,11 +147,11 @@ function byName(a: Ability, b: Ability) {
   return a.name.localeCompare(b.name);
 }
 
-function Group({ label, items, slug, onOpen, onChange }: { label: string; items: Ability[]; slug: string; onOpen: (a: Ability, tab?: "overview" | "instructions" | "connect") => void; onChange: () => void }) {
+function Group({ label, items, slug, cols, onOpen, onChange }: { label: string; items: Ability[]; slug: string; cols?: 2; onOpen: (a: Ability, tab?: "overview" | "instructions" | "connect") => void; onChange: () => void }) {
   return (
     <>
       <p className="cap ab-cap">{label}</p>
-      <ul className="mk-list ab-list">
+      <ul className={`mk-list ab-list ${cols === 2 ? "cols2" : ""}`}>
         {items.map((a) => (
           <Row key={a.id} slug={slug} a={a} onOpen={onOpen} onChange={onChange} />
         ))}
@@ -162,7 +162,6 @@ function Group({ label, items, slug, onOpen, onChange }: { label: string; items:
 
 /** One ability as a row: icon, name, vendor, state, what it includes, the project switch. */
 function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: (a: Ability, tab?: "overview" | "instructions" | "connect") => void; onChange: () => void }) {
-  const Icon = iconFor(a);
   const state = stateOf(a);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -183,8 +182,8 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
   return (
     <li className={`mk-row ab-row ${isOn(a) ? "on" : "off"}`}>
       <div className="main" role="button" tabIndex={0} onClick={() => onOpen(a)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen(a))}>
-        <span className="ic">
-          <Icon size={16} />
+        <span className={`ic ${a.avatar ? "has-avatar" : ""}`}>
+          <AbilityIcon a={a} size={a.avatar ? 34 : 16} />
         </span>
         <div className="min0">
           <p className="nm">
