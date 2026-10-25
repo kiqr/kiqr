@@ -38,20 +38,6 @@ pub fn install_builtin_instructions(store: &Store) -> Result<bool> {
     Ok(wrote)
 }
 
-/// `x` → `X`, `linkedin` → `LinkedIn`.
-fn network_name(n: &str) -> String {
-    match n {
-        "x" | "twitter" => "X".into(),
-        "linkedin" => "LinkedIn".into(),
-        "youtube" => "YouTube".into(),
-        "tiktok" => "TikTok".into(),
-        other => {
-            let mut c = other.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-        }
-    }
-}
-
 /// Built-in instructions as they apply: the user's copy in
 /// `~/.kiqr/abilities/<name>/SKILL.md`, else the shipped text. Frontmatter stripped.
 pub fn instructions_text(store: &Store, name: &str, builtin: &str) -> String {
@@ -228,9 +214,11 @@ impl Extractor {
 
     /// Write `count` social media posts from the business brief and add them to
     /// the library as drafts. Uses the chat model: this is Seemo writing.
-    pub async fn social_posts(&self, project: &Project, count: usize) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
+    /// `networks` are the channel kinds the project can publish to that are
+    /// networks; with none, the posts are written to work anywhere.
+    pub async fn social_posts(&self, project: &Project, count: usize, networks: Vec<crate::extensions::ChannelKind>) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
         let slug = &project.slug;
-        let result = self.social_posts_inner(project, count).await;
+        let result = self.social_posts_inner(project, count, &networks).await;
         match &result {
             Ok(made) => {
                 let n = made.len();
@@ -241,10 +229,15 @@ impl Extractor {
         result
     }
 
-    async fn social_posts_inner(&self, project: &Project, count: usize) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
+    async fn social_posts_inner(&self, project: &Project, count: usize, kinds: &[crate::extensions::ChannelKind]) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
         let slug = &project.slug;
         let brief = Brief::load(&self.store, slug)?.ok_or_else(|| anyhow::anyhow!("there is no business profile yet; crawl the site first"))?;
-        let networks: Vec<String> = crate::brand::Brand::load(&self.store, slug)?.map(|b| b.social.into_iter().map(|s| s.network.to_lowercase()).collect()).unwrap_or_default();
+        let profiles: Vec<String> = crate::brand::Brand::load(&self.store, slug)?.map(|b| b.social.into_iter().map(|s| s.network).collect()).unwrap_or_default();
+        // What the abilities that publish there say about each network.
+        let networks: Vec<serde_json::Value> = kinds
+            .iter()
+            .map(|k| serde_json::json!({ "id": k.kind, "name": k.display_name(), "text_limit": k.text_limit, "writing": k.writing, "business_profile": profiles.contains(&k.kind) }))
+            .collect();
         let (prov, model) = provider::resolve(&self.config.models.chat)?;
         let system = instructions_text(&self.store, "social-posts", BUILTIN_POSTS);
         let mut b = serde_json::to_value(&brief)?;
@@ -263,7 +256,7 @@ impl Extractor {
         #[derive(serde::Deserialize, Default)]
         #[serde(default)]
         struct PostOut {
-            network: String,
+            network: Option<String>,
             title: String,
             text: String,
             image: Option<PostImage>,
@@ -275,7 +268,9 @@ impl Extractor {
         }
         let mut made = Vec::new();
         for p in posts {
-            let network = p.network.trim().to_lowercase();
+            // Only a network the project can publish to; anything else is a post for anywhere.
+            let kind = kinds.iter().find(|k| k.kind == p.network.as_deref().unwrap_or("").trim().to_lowercase());
+            let network = kind.map(|k| k.kind.clone()).unwrap_or_default();
             let title = if p.title.trim().is_empty() { p.text.chars().take(48).collect::<String>() } else { p.title.trim().to_string() };
             let mut source = serde_json::Map::new();
             source.insert("brief_version".into(), brief.version.into());
@@ -285,7 +280,7 @@ impl Extractor {
                 crate::assets::NewAsset {
                     kind: "post".into(),
                     title,
-                    summary: if network.is_empty() { String::new() } else { format!("For {}", network_name(&network)) },
+                    summary: kind.map(|k| format!("For {}", k.display_name())).unwrap_or_default(),
                     tags: if network.is_empty() { vec![] } else { vec![network] },
                     by: Some("seemo".into()),
                     source,

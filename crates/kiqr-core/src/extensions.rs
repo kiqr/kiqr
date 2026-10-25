@@ -154,6 +154,10 @@ pub struct ExtraTool {
     pub provide: Provide,
 }
 
+/// A place content goes out: an email address, a blog, a social network.
+/// A network is a channel kind; everything KIQR knows about one (its name,
+/// where profiles live, the text limit, the image size, how a post looks
+/// there) comes from the ability that declares it, never from KIQR's code.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChannelKind {
@@ -163,6 +167,45 @@ pub struct ChannelKind {
     pub destination: BTreeMap<String, Value>,
     /// The extra tool, or the ability, that performs a publish.
     pub publish: String,
+    /// The network's name as people write it ("LinkedIn"); the label when empty.
+    pub name: String,
+    /// A lucide icon name for the channel.
+    pub icon: String,
+    /// Hosts the business's own profile lives on (`linkedin.com`): the brand
+    /// crawl recognises a profile there as this kind.
+    pub profile_hosts: Vec<String>,
+    /// Characters a post may have there.
+    pub text_limit: Option<u32>,
+    /// The image size a post there gets.
+    pub image: Option<ImageSize>,
+    /// How a post is previewed: `feed` (a social feed card), else plain.
+    pub preview: String,
+    /// How a post there is written, in a line or two ("600 to 1,300
+    /// characters, short paragraphs, at most three hashtags"); the posts job
+    /// passes it on with the network.
+    pub writing: String,
+}
+
+impl ChannelKind {
+    pub fn display_name(&self) -> &str {
+        if !self.name.is_empty() {
+            &self.name
+        } else if !self.label.is_empty() {
+            &self.label
+        } else {
+            &self.kind
+        }
+    }
+    /// A social network (as opposed to an inbox or a blog): somewhere posts go.
+    pub fn is_network(&self) -> bool {
+        !self.profile_hosts.is_empty() || self.text_limit.is_some() || self.preview == "feed"
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageSize {
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -594,6 +637,19 @@ pub fn validate(m: &Manifest) -> Result<()> {
         }
         if !m.tools.iter().any(|t| t.name == c.publish) && !m.provides.contains_key(&c.publish) {
             bail!("channel '{}' publishes with '{}', which this connection does not define", c.kind, c.publish);
+        }
+        if !crate::tools::valid_ext_id(&c.kind) {
+            bail!("channel kind '{}' must be lowercase letters, digits and dashes", c.kind);
+        }
+        for h in &c.profile_hosts {
+            if h.trim().is_empty() || h.contains('/') || h.contains(':') {
+                bail!("channel '{}': profile_hosts holds '{h}', which is not a host name", c.kind);
+            }
+        }
+        if let Some(i) = c.image {
+            if !(16..=8192).contains(&i.width) || !(16..=8192).contains(&i.height) {
+                bail!("channel '{}': the image size is out of range", c.kind);
+            }
         }
     }
     Ok(())

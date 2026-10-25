@@ -45,7 +45,7 @@ pub fn all() -> Vec<Ability> {
             group: Group::Images,
             tool: "create_image",
             tool_label: "Making an image",
-            description: "Make an image and save it as a file on an asset (role media). Two shapes, depending on the connection behind it: the built-in renderer takes `source` (SVG, or HTML when a browser is available) and renders it; a generator takes `prompt`. `size` is a preset (x, linkedin, instagram, instagram_portrait, og, cover) or WxH. The file lands on the asset at once and returns its name and URL; the user sees the whole asset, image included, in the chat and approves it there or in the library.",
+            description: "Make an image and save it as a file on an asset (role media). Two shapes, depending on the connection behind it: the built-in renderer takes `source` (SVG, or HTML when a browser is available) and renders it; a generator takes `prompt`. `size` is a channel kind the project publishes to (its network's image size; `brand_kit` lists them), a preset (landscape, square, portrait, og, cover) or WxH. The file lands on the asset at once and returns its name and URL; the user sees the whole asset, image included, in the chat and approves it there or in the library.",
             schema: || obj(
                 json!({
                     "asset": asset_ref(),
@@ -54,7 +54,7 @@ pub fn all() -> Vec<Ability> {
                     "prompt": { "type": "string", "description": "What to generate (generator connections)" },
                     "source": { "type": "string", "description": "SVG or HTML to render (built-in renderer)" },
                     "format": { "type": "string", "enum": ["svg", "html"], "description": "Which `source` is (built-in renderer; default svg)" },
-                    "size": { "type": "string", "description": "x | linkedin | instagram | instagram_portrait | og | cover | WxH" },
+                    "size": { "type": "string", "description": "a channel kind from brand_kit sizes | landscape | square | portrait | og | cover | WxH" },
                     "width": { "type": "integer" },
                     "height": { "type": "integer" },
                 }),
@@ -153,20 +153,28 @@ impl Ability {
     }
 }
 
-/// Preset sizes, pixels.
+/// The generic presets, pixels. A network's size is not here: it comes
+/// from the channel kind that declares it (see [`size_for`]).
+pub const PRESETS: &[(&str, u32, u32)] = &[("landscape", 1600, 900), ("square", 1080, 1080), ("portrait", 1080, 1350), ("og", 1200, 630), ("cover", 1600, 900)];
+
+/// A preset or `WxH`, pixels.
 pub fn size_preset(name: &str) -> Option<(u32, u32)> {
-    Some(match name.trim().to_ascii_lowercase().as_str() {
-        "x" | "twitter" => (1600, 900),
-        "linkedin" => (1200, 627),
-        "instagram" | "square" => (1080, 1080),
-        "instagram_portrait" | "portrait" => (1080, 1350),
-        "og" | "facebook" => (1200, 630),
-        "cover" | "landscape" => (1600, 900),
+    let name = name.trim().to_ascii_lowercase();
+    if let Some((_, w, h)) = PRESETS.iter().find(|(n, _, _)| *n == name) {
+        return Some((*w, *h));
+    }
+    Some(match name.as_str() {
         other => {
             let (w, h) = other.split_once('x')?;
             (w.trim().parse().ok()?, h.trim().parse().ok()?)
         }
     })
+}
+
+/// A size by name: a channel kind's own image size first, then a preset or `WxH`.
+pub fn size_for(name: &str, kinds: &[crate::extensions::ChannelKind]) -> Option<(u32, u32)> {
+    let n = name.trim().to_ascii_lowercase();
+    kinds.iter().find(|k| k.kind == n).and_then(|k| k.image).map(|i| (i.width, i.height)).or_else(|| size_preset(name))
 }
 
 #[cfg(test)]
@@ -180,7 +188,11 @@ mod tests {
             let s = a.spec("Built-in renderer", Some("free"));
             assert!(s.description.contains("Built-in renderer"));
         }
-        assert_eq!(size_preset("linkedin"), Some((1200, 627)));
+        assert_eq!(size_preset("square"), Some((1080, 1080)));
+        let network = crate::extensions::ChannelKind { kind: "somenet".into(), image: Some(crate::extensions::ImageSize { width: 1200, height: 627 }), ..Default::default() };
+        assert_eq!(size_for("somenet", &[network.clone()]), Some((1200, 627)));
+        assert_eq!(size_for("og", &[network]), Some((1200, 630)));
+        assert_eq!(size_preset("somenet"), None);
         assert_eq!(size_preset("1024x512"), Some((1024, 512)));
         assert_eq!(size_preset("tall"), None);
     }

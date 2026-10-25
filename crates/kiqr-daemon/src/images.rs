@@ -49,9 +49,17 @@ pub async fn kit(app: &App, slug: &str) -> Result<Value, ApiError> {
     let fonts: Vec<Value> = brand.fonts.iter().map(|f| json!({ "name": f, "available": app.renderer.has_family(f) })).collect();
     let font_family = brand.fonts.iter().find(|f| app.renderer.has_family(f)).cloned().unwrap_or_else(|| "Inter".into());
     let palette = palette(&brand.colors);
-    let sizes = json!({
-        "x": [1600, 900], "linkedin": [1200, 627], "instagram": [1080, 1080], "instagram_portrait": [1080, 1350], "og": [1200, 630], "cover": [1600, 900],
-    });
+    // The project's networks' own sizes, then the generic presets.
+    let mut sizes = serde_json::Map::new();
+    for k in crate::networks::installed(app, slug).await {
+        if let Some(i) = k.image {
+            sizes.entry(k.kind.clone()).or_insert(json!([i.width, i.height]));
+        }
+    }
+    for (n, w, h) in abilities::PRESETS {
+        sizes.entry(n.to_string()).or_insert(json!([w, h]));
+    }
+    let sizes = Value::Object(sizes);
     let mut notes = vec![];
     if brand.colors.is_empty() {
         notes.push("No brand colours were found on the site; the palette is a neutral default. Ask the user for theirs if the image matters.".to_string());
@@ -214,8 +222,9 @@ fn svg_size(svg: &str) -> Option<(u32, u32)> {
 async fn render_route(State(app): State<App>, Path(slug): Path<String>, headers: HeaderMap, Json(args): Json<Value>) -> ApiResult<Value> {
     let _ = Project::load(&app.store, &slug)?;
     let mut args = args;
+    let kinds = crate::networks::installed(&app, &slug).await;
     if let Some(o) = args.as_object_mut() {
-        if let Some((w, h)) = o.get("size").and_then(|v| v.as_str()).and_then(abilities::size_preset) {
+        if let Some((w, h)) = o.get("size").and_then(|v| v.as_str()).and_then(|n| abilities::size_for(n, &kinds)) {
             o.entry("width").or_insert(json!(w));
             o.entry("height").or_insert(json!(h));
         }
@@ -342,16 +351,9 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// The card size for a post's network.
-fn size_for(tags: &[String]) -> (u32, u32) {
-    let t = tags.first().map(|s| s.as_str()).unwrap_or("");
-    abilities::size_preset(match t {
-        "linkedin" => "linkedin",
-        "instagram" => "instagram",
-        "facebook" => "og",
-        _ => "x",
-    })
-    .unwrap_or((1600, 900))
+/// The card size for a post: its network's (the channel kind in its first tag), else landscape.
+fn card_size(tags: &[String], kinds: &[kiqr_core::extensions::ChannelKind]) -> (u32, u32) {
+    tags.first().and_then(|t| kinds.iter().find(|k| &k.kind == t)).and_then(|k| k.image).map(|i| (i.width, i.height)).or_else(|| abilities::size_preset("landscape")).unwrap_or((1600, 900))
 }
 
 /// Give each post the posts job wrote its card, when the instructions gave one an
@@ -368,9 +370,10 @@ pub async fn cards_for_posts(app: &App, slug: &str, made: &[(kiqr_core::assets::
         }
     };
     let allowed = vec![app.store.home().brand_files_dir(slug), app.store.home().assets_dir(slug)];
+    let kinds = crate::networks::installed(app, slug).await;
     for (a, img) in made {
         let Some(img) = img else { continue };
-        let (w, h) = size_for(&a.tags);
+        let (w, h) = card_size(&a.tags, &kinds);
         let style = if matches!(img.style.as_str(), "dark" | "light" | "accent") { img.style.as_str() } else { "dark" };
         let svg = card_svg(&kit, img.headline.trim(), img.support.trim(), style, w, h);
         match app.renderer.render_svg(&svg, w, h, &allowed) {

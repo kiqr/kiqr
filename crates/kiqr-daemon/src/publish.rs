@@ -40,7 +40,7 @@ fn bad(msg: impl Into<String>) -> ApiError {
 // ---------------------------------------------------------------- channels
 
 /// The channel kinds a project can use right now: ready connections that publish.
-async fn kinds(app: &App, slug: &str) -> Vec<(Manifest, ChannelKind)> {
+pub(crate) async fn kinds(app: &App, slug: &str) -> Vec<(Manifest, ChannelKind)> {
     let reg = app.registry.read().await;
     let off = crate::ext::project_off(app, slug);
     let mut out = Vec::new();
@@ -62,6 +62,8 @@ fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
     json!({
         "kind": k.kind,
         "label": k.label,
+        "name": k.display_name(),
+        "icon": k.icon,
         "connection": m.id,
         "connection_name": m.name,
         "ready": crate::ext::ready_in(app, Some(slug), m),

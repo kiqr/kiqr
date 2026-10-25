@@ -110,6 +110,8 @@ pub enum EventKind {
     SecretSet { name: String, set: bool, #[serde(default)] project: Option<String> },
     /// A sign-in through an ability's `connect` block ended. `project` is where
     /// the values went (None: the machine); `error` says why it failed.
+    /// What Seemo suggests installing changed (a profile found, an ability installed, one waved away).
+    SuggestionsChanged {},
     ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] project: Option<String> },
 
     // Abilities and channels.
@@ -166,6 +168,7 @@ impl EventKind {
                 | EventKind::ExtensionPaused { .. }
                 | EventKind::SecretSet { .. }
                 | EventKind::ConnectFinished { .. }
+                | EventKind::SuggestionsChanged { .. }
                 | EventKind::MediaCreated { .. }
                 | EventKind::ChannelSaved { .. }
                 | EventKind::ChannelDeleted { .. }

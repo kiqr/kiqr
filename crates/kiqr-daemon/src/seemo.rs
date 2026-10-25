@@ -976,5 +976,7 @@ async fn todo(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Val
     scheduled.sort_by_key(|a| a.publish_at);
     let attention: Vec<&assets::Asset> = all.iter().filter(|a| a.publish_error.is_some() && !a.archived && a.publications.is_empty()).collect();
     let count = approvals.len() + drafts.len() + attention.len();
-    Ok(Json(json!({ "approvals": approvals, "drafts": drafts, "ready": ready, "scheduled": scheduled, "attention": attention, "count": count })))
+    // Not counted: a suggestion is an offer, not something waiting on the user.
+    let suggestions = crate::networks::suggestions(&app, &slug).await;
+    Ok(Json(json!({ "approvals": approvals, "drafts": drafts, "ready": ready, "scheduled": scheduled, "attention": attention, "suggestions": suggestions, "count": count })))
 }

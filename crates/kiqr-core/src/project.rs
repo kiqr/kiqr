@@ -19,6 +19,9 @@ pub struct Project {
     /// Abilities switched off for this project only (ids; core ones included).
     #[serde(default)]
     pub abilities_off: Vec<String>,
+    /// Channel kinds whose suggested ability the user waved away ("not now"), never offered again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions_dismissed: Vec<String>,
 }
 
 impl Project {
@@ -69,6 +72,7 @@ impl Project {
         }
         let project = Project {
             abilities_off: vec![],
+            suggestions_dismissed: vec![],
             name: url.host_str().unwrap_or(&slug).trim_start_matches("www.").to_string(),
             slug: slug.clone(),
             url: url.to_string(),

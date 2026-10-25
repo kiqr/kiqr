@@ -4,34 +4,11 @@
 import { useEffect, useState } from "react";
 import { Bookmark, Heart, MessageCircle, Repeat2 } from "lucide-react";
 import { api, type Asset, type Brand } from "../api";
+import { networkOf, useNetworks } from "../networks";
 import { ago } from "./Project";
 
 const IMAGE = /\.(png|jpe?g|webp|gif|svg|avif)$/i;
 const VIDEO = /\.(mp4|webm|mov)$/i;
-/** How each network is named, and its length limit when it has one. */
-const NETWORKS: Record<string, { name: string; limit?: number }> = {
-  x: { name: "X", limit: 280 },
-  twitter: { name: "X", limit: 280 },
-  linkedin: { name: "LinkedIn", limit: 3000 },
-  instagram: { name: "Instagram", limit: 2200 },
-  facebook: { name: "Facebook" },
-  threads: { name: "Threads", limit: 500 },
-  tiktok: { name: "TikTok", limit: 2200 },
-  reddit: { name: "Reddit" },
-  bluesky: { name: "Bluesky", limit: 300 },
-  mastodon: { name: "Mastodon", limit: 500 },
-  pinterest: { name: "Pinterest" },
-  youtube: { name: "YouTube" },
-};
-
-export function networkOf(a: Pick<Asset, "tags" | "summary">) {
-  const tag = a.tags.map((t) => t.toLowerCase()).find((t) => NETWORKS[t]);
-  if (tag) return { id: tag, ...NETWORKS[tag] };
-  const m = /^for (\w+)/i.exec(a.summary ?? "");
-  const id = m?.[1]?.toLowerCase() ?? "";
-  return NETWORKS[id] ? { id, ...NETWORKS[id] } : null;
-}
-
 /** Links, hashtags and handles in the brand's colour, the rest as typed. */
 function Lit({ text }: { text: string }) {
   const parts = text.split(/(https?:\/\/[^\s)]+|(?<![\w/])[#@][\p{L}\p{N}_]+|\b[\w-]+\.(?:se|com|io|dev|org|net|ai|co|app)\b(?:\/\S*)?)/u);
@@ -61,14 +38,15 @@ export function PostCard({ slug, a, brand, accent, body }: { slug: string; a: As
   const content = (body !== undefined ? body : own) ?? "";
   const image = a.files.find((f) => IMAGE.test(f.path));
   const video = a.files.find((f) => VIDEO.test(f.path));
-  const net = networkOf(a);
+  const networks = useNetworks(slug);
+  const net = networkOf(a, networks);
   const name = brand?.site_name?.trim() || slug;
   const avatar = brand?.icon || brand?.logo || null;
   const handle = `@${name.toLowerCase().replace(/[^a-z0-9]+/g, "")}`;
   const n = [...content.trim()].length;
-  const over = net?.limit ? n > net.limit : false;
+  const over = net?.text_limit ? n > net.text_limit : false;
   return (
-    <article className={`post ${net?.id ?? ""}`} style={accent ? ({ "--brand": accent } as React.CSSProperties) : undefined}>
+    <article className={`post ${net ? `net-${net.kind}` : ""}`} style={accent ? ({ "--brand": accent } as React.CSSProperties) : undefined}>
       <header className="post-head">
         <span className="post-av">{avatar ? <img src={avatar} alt="" /> : name.slice(0, 1).toUpperCase()}</span>
         <div className="post-who">
@@ -89,7 +67,7 @@ export function PostCard({ slug, a, brand, accent, body }: { slug: string; a: As
         {n > 0 && (
           <span className={`count ${over ? "over" : ""}`} title={over ? `Over ${net?.name}'s limit` : "Characters"}>
             {n}
-            {net?.limit ? ` / ${net.limit}` : ""}
+            {net?.text_limit ? ` / ${net.text_limit}` : ""}
           </span>
         )}
       </footer>

@@ -66,6 +66,8 @@ pub struct Crawler {
     ai_concurrency: usize,
     ai_tx: Option<tokio::sync::mpsc::UnboundedSender<ExtractJob>>,
     control: Option<Arc<CrawlControl>>,
+    /// Where the business's profiles may live, (host, channel kind), for the brand.
+    profiles: Vec<(String, String)>,
 }
 
 /// The page limit of a running crawl. It can be changed while pages are being
@@ -179,6 +181,7 @@ impl Crawler {
             ai_concurrency: ai_concurrency.clamp(1, 10),
             ai_tx: None,
             control: None,
+            profiles: Vec::new(),
         })
     }
 
@@ -309,7 +312,7 @@ impl Crawler {
         while in_flight.join_next().await.is_some() {}
         // Brand assets come from the raw HTML already on disk, so they are
         // ready while the model is still reading.
-        match crate::brand::refresh(&self.store, &self.bus, project, true).await {
+        match crate::brand::refresh(&self.store, &self.bus, project, true, self.profiles.clone()).await {
             Ok(_) => {}
             Err(e) => tracing::warn!(%slug, error = %e, "brand collection failed"),
         }
@@ -343,12 +346,19 @@ impl Crawler {
             ai_concurrency: self.ai_concurrency,
             ai_tx: self.ai_tx.clone(),
             control: self.control.clone(),
+            profiles: self.profiles.clone(),
         }
     }
 
     /// Let the caller change the page limit while this crawler runs.
     pub fn with_control(mut self, control: Arc<CrawlControl>) -> Self {
         self.control = Some(control);
+        self
+    }
+
+    /// The hosts profiles live on, from the channel kinds abilities declare.
+    pub fn with_profiles(mut self, profiles: Vec<(String, String)>) -> Self {
+        self.profiles = profiles;
         self
     }
 

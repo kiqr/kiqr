@@ -12,6 +12,7 @@ mod market;
 mod marketing;
 mod mcp_host;
 mod metrics_src;
+mod networks;
 mod performance;
 mod publish;
 mod scheduler;

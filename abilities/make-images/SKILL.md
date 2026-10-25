@@ -11,7 +11,7 @@ Everything gets a featured image: every post, every article cover, every email h
 ## The process
 
 1. `brand_kit`: colours (most characteristic first), fonts as they will render here, the logo and icon as `file:` URLs, the site name and tagline, and the preset sizes.
-2. Pick the size for where it goes: `x` 1600×900, `linkedin` 1200×627, `instagram` 1080×1080, `instagram_portrait` 1080×1350, `og` 1200×630, `cover` 1600×900.
+2. Pick the size for where it goes: the channel kind it is for (a post's tag; `brand_kit` lists the sizes the project's networks want), else `landscape` 1600×900, `square` 1080×1080, `portrait` 1080×1350, `og` 1200×630 or `cover` 1600×900.
 3. Pick a template below and adapt it: the headline, one supporting line, the brand mark. Fewer words than you think.
 4. Call `create_image` with `asset` (the post or article it belongs to; omit it for a standalone image and give a `title`), `name` (e.g. `cover`), `format`, `source`, `size`.
 5. Read the result: the file name, its URL, which renderer ran. Mention the image in one line to the user; never paste the SVG into the chat.

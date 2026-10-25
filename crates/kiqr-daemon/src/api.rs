@@ -49,6 +49,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::seemo::routes())
         .merge(crate::ext::routes())
         .merge(crate::connect::routes())
+        .merge(crate::networks::routes())
         .merge(crate::market::routes())
         .merge(crate::images::routes())
         .merge(crate::publish::routes())
@@ -340,8 +341,13 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
                 if cfg.core_on("unblockingapi") { kiqr_core::secrets::lookup(app.store.home(), Some(&project.slug), "UNBLOCKINGAPI_KEY") } else { None },
                 extractor.clone(),
             )?
-            .with_control(control);
+            .with_control(control)
+            .with_profiles(crate::networks::profile_hosts(&app, &project.slug).await);
             crawler.run(&project, max_pages).await?;
+            // The profiles the brand found that an ability in the marketplace could publish to.
+            if let Some(line) = crate::networks::suggestion_line(&app, &project.slug).await {
+                app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: line });
+            }
             anyhow::Ok(())
         }
         .await;
@@ -466,12 +472,14 @@ pub(crate) async fn backfill_brand(app: &App, project: &Project) -> anyhow::Resu
     if let Some(b) = saved.as_ref().filter(|b| !b.outdated()) {
         return Ok(Some(b.clone()));
     }
-    Ok(brand::refresh(&app.store, &app.bus, project, true).await?.or(saved))
+    let profiles = crate::networks::profile_hosts(app, &project.slug).await;
+    Ok(brand::refresh(&app.store, &app.bus, project, true, profiles).await?.or(saved))
 }
 
 async fn rebuild_brand(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Brand> {
     let project = Project::load(&app.store, &slug)?;
-    match brand::refresh(&app.store, &app.bus, &project, false).await? {
+    let profiles = crate::networks::profile_hosts(&app, &slug).await;
+    match brand::refresh(&app.store, &app.bus, &project, false, profiles).await? {
         Some(b) => Ok(Json(b)),
         None => Err(no_brand()),
     }
@@ -612,7 +620,8 @@ async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(
     let count = g.count.clamp(1, 10);
     let app2 = app.clone();
     spawn_job(app, project, "posts", move |ex, project| async move {
-        let made = ex.social_posts(&project, count).await?;
+        let networks = crate::networks::for_posts(&app2, &project.slug).await;
+        let made = ex.social_posts(&project, count, networks).await?;
         crate::images::cards_for_posts(&app2, &project.slug, &made).await;
         Ok(())
     })

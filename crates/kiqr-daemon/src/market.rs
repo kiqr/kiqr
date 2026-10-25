@@ -90,8 +90,10 @@ pub struct IndexItem {
     pub cost: Option<String>,
     /// Ability contracts it provides: image, video, music, email.
     pub provides: Vec<String>,
-    /// Channel kinds it publishes to.
-    pub channels: Vec<String>,
+    /// Channel kinds it publishes to: a kind, or what the card and the brand
+    /// crawl need before it is installed (its name, where profiles live).
+    #[serde(deserialize_with = "index_channels")]
+    pub channels: Vec<IndexChannel>,
     /// Metrics sources it reads.
     #[serde(default)]
     pub sources: Vec<String>,
@@ -105,6 +107,40 @@ pub struct IndexItem {
     pub author: String,
     #[serde(skip_deserializing)]
     pub shipped: bool,
+}
+
+/// A channel kind as the index lists it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IndexChannel {
+    pub kind: String,
+    pub name: String,
+    pub icon: String,
+    pub profile_hosts: Vec<String>,
+}
+
+impl IndexChannel {
+    pub fn display_name(&self) -> &str {
+        if self.name.is_empty() {
+            &self.kind
+        } else {
+            &self.name
+        }
+    }
+}
+
+/// `channels: [wordpress]` or `channels: [{kind: linkedin, name: LinkedIn, profile_hosts: [linkedin.com]}]`.
+fn index_channels<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<IndexChannel>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum One {
+        Kind(String),
+        Full(IndexChannel),
+    }
+    Ok(Option::<Vec<One>>::deserialize(d)?.unwrap_or_default().into_iter().map(|o| match o {
+        One::Kind(kind) => IndexChannel { kind, ..Default::default() },
+        One::Full(c) => c,
+    }).collect())
 }
 
 /// `github.com/<author>/<repo>` → `author`.
@@ -214,7 +250,7 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         avatar: m.avatar.clone(),
         cost,
         provides: m.provides.keys().cloned().collect(),
-        channels: m.channels.iter().map(|c| c.kind.clone()).collect(),
+        channels: m.channels.iter().map(|c| IndexChannel { kind: c.kind.clone(), name: c.display_name().to_string(), icon: c.icon.clone(), profile_hosts: c.profile_hosts.clone() }).collect(),
         sources: m.sources.keys().cloned().collect(),
         auth: m.auth.clone(),
         connect: m.connect.clone(),
@@ -528,7 +564,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "avatar": avatar_url(item, m, e, ctx.stamp),
         "cost": item.cost,
         "provides": provides,
-        "channels": m.map(|m| m.channels.iter().map(|c| c.label.clone()).collect::<Vec<_>>()).unwrap_or_else(|| item.channels.clone()),
+        "channels": m.map(|m| m.channels.iter().map(|c| c.label.clone()).collect::<Vec<_>>()).unwrap_or_else(|| item.channels.iter().map(|c| c.display_name().to_string()).collect()),
         "sources": m.map(|m| m.sources.keys().cloned().collect::<Vec<_>>()).unwrap_or_else(|| item.sources.clone()),
         "tools": m.map(|m| m.tools.len() + if m.transport == Transport::Mcp { m.expose.len() } else { 0 }).unwrap_or(0),
         "trust": item.trust,
@@ -714,7 +750,8 @@ async fn brief(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Va
             })
         })
         .collect();
-    Ok(Json(json!({ "abilities": rows, "note": "Read an ability's instructions with read_instructions before doing that kind of work. Off or not ready means you cannot use it here; say so instead of improvising." })))
+    let suggestions = crate::networks::suggestions(&app, &slug).await;
+    Ok(Json(json!({ "abilities": rows, "suggestions": suggestions, "note": "Read an ability's instructions with read_instructions before doing that kind of work. Off or not ready means you cannot use it here; say so instead of improvising. `suggestions` are profiles the business has where an ability in the marketplace could publish; the user installs it under Setup → Abilities." })))
 }
 
 #[derive(Deserialize, Default)]

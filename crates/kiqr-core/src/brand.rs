@@ -43,8 +43,13 @@ pub struct Brand {
 
 /// Bump when the collection rules change, so saved brands are rebuilt from
 /// the crawl cache. 2: only the site's own pages, social profiles and images;
-/// 3: one image per picture, whatever its size.
-pub const RULES: u32 = 3;
+/// 3: one image per picture, whatever its size; 4: networks from the
+/// abilities that declare them, not a list in the code.
+pub const RULES: u32 = 4;
+
+/// Where profiles live, as (host, channel kind): from the channel kinds the
+/// installed abilities and the marketplace declare (`profile_hosts`).
+pub type ProfileHosts = [(String, String)];
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -156,7 +161,7 @@ fn host_key(u: &Url) -> String {
 }
 
 /// Extract brand hints from one page's raw HTML.
-pub fn hints(base: &Url, html: &str) -> PageBrandHints {
+pub fn hints(base: &Url, html: &str, profiles: &ProfileHosts) -> PageBrandHints {
     let doc = Html::parse_document(html);
     let mut h = PageBrandHints::default();
 
@@ -272,7 +277,7 @@ pub fn hints(base: &Url, html: &str) -> PageBrandHints {
 
     // Social links.
     for a in doc.select(&sel("a[href]")) {
-        if let Some(link) = a.value().attr("href").and_then(|href| social_link(base, href)) {
+        if let Some(link) = a.value().attr("href").and_then(|href| social_link(base, href, profiles)) {
             h.social.push((link, in_chrome(&a)));
         }
     }
@@ -431,7 +436,7 @@ fn image_ok(url: &str) -> bool {
         && !["avatar", "sprite", "pixel", "icon", "logo", "gravatar", "badge", "/track", "spacer"].iter().any(|w| l.contains(w))
 }
 
-fn social_link(base: &Url, href: &str) -> Option<SocialLink> {
+fn social_link(base: &Url, href: &str, profiles: &ProfileHosts) -> Option<SocialLink> {
     let u = base.join(href.trim()).ok()?;
     if u.scheme() != "http" && u.scheme() != "https" {
         return None;
@@ -439,16 +444,10 @@ fn social_link(base: &Url, href: &str) -> Option<SocialLink> {
     let host = host_key(&u);
     let host = host.trim_start_matches("m.").trim_start_matches("mobile.");
     let path = u.path().to_ascii_lowercase();
-    let network = match host {
-        "linkedin.com" => "linkedin",
-        "x.com" | "twitter.com" => "x",
-        "facebook.com" | "fb.com" => "facebook",
-        "instagram.com" => "instagram",
-        "youtube.com" | "youtu.be" => "youtube",
-        "github.com" => "github",
-        "tiktok.com" => "tiktok",
-        _ => return None,
-    };
+    let network = profiles.iter().find(|(h, _)| {
+        let h = h.trim().trim_start_matches("www.").to_ascii_lowercase();
+        host == h || host.ends_with(&format!(".{h}"))
+    })?.1.as_str();
     if path.trim_matches('/').is_empty() {
         return None;
     }
@@ -835,8 +834,8 @@ impl CssStats {
 
 /// Build the brand from crawled pages (URL + raw HTML) and the home page's
 /// fetched stylesheets. The home page is the one with the shortest path.
-pub fn build(pages: &[(Url, String)], css: &[String]) -> Brand {
-    let hs: Vec<(Url, PageBrandHints)> = pages.iter().map(|(u, html)| (u.clone(), hints(u, html))).collect();
+pub fn build(pages: &[(Url, String)], css: &[String], profiles: &ProfileHosts) -> Brand {
+    let hs: Vec<(Url, PageBrandHints)> = pages.iter().map(|(u, html)| (u.clone(), hints(u, html, profiles))).collect();
     build_from_hints(hs, css)
 }
 
@@ -1126,7 +1125,7 @@ pub async fn fetch_stylesheets(urls: &[Url]) -> Vec<String> {
 
 /// Build the brand from the crawl cache, fetching the home page's
 /// stylesheets. Writes nothing. `None` when there is no usable cache.
-pub async fn from_cache(store: &Store, slug: &str) -> Result<Option<Brand>> {
+pub async fn from_cache(store: &Store, slug: &str, profiles: Vec<(String, String)>) -> Result<Option<Brand>> {
     let store2 = store.clone();
     let slug2 = slug.to_string();
     let hs = tokio::task::spawn_blocking(move || -> Result<Option<Vec<(Url, PageBrandHints)>>> {
@@ -1134,7 +1133,7 @@ pub async fn from_cache(store: &Store, slug: &str) -> Result<Option<Brand>> {
         if pages.is_empty() {
             return Ok(None);
         }
-        Ok(Some(pages.iter().map(|(u, html)| (u.clone(), hints(u, html))).collect()))
+        Ok(Some(pages.iter().map(|(u, html)| (u.clone(), hints(u, html, &profiles))).collect()))
     })
     .await??;
     let Some(hs) = hs else { return Ok(None) };
@@ -1145,9 +1144,9 @@ pub async fn from_cache(store: &Store, slug: &str) -> Result<Option<Brand>> {
 
 /// Rebuild from the cache, save `profile/brand.yaml`, re-render PROFILE.md,
 /// commit and emit `brand_updated`. `automated` adds the `[auto]` prefix.
-pub async fn refresh(store: &Store, bus: &EventBus, project: &Project, automated: bool) -> Result<Option<Brand>> {
+pub async fn refresh(store: &Store, bus: &EventBus, project: &Project, automated: bool, profiles: Vec<(String, String)>) -> Result<Option<Brand>> {
     let slug = &project.slug;
-    let Some(brand) = from_cache(store, slug).await? else { return Ok(None) };
+    let Some(brand) = from_cache(store, slug, profiles).await? else { return Ok(None) };
     brand.save(store, slug)?;
     crate::profile::write_markdown(store, slug, &project.name, &project.url)?;
     let prefix = if automated { "[auto] " } else { "" };
@@ -1189,6 +1188,11 @@ pub fn render_markdown(b: &Brand) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the channel kinds of installed and listed abilities would declare.
+    fn profiles() -> Vec<(String, String)> {
+        [("linkedin.com", "linkedin"), ("x.com", "x"), ("twitter.com", "x"), ("facebook.com", "facebook"), ("fb.com", "facebook"), ("instagram.com", "instagram"), ("youtube.com", "youtube"), ("youtu.be", "youtube"), ("github.com", "github"), ("tiktok.com", "tiktok")].iter().map(|(h, k)| (h.to_string(), k.to_string())).collect()
+    }
 
     const HOME: &str = r##"<!doctype html><html><head>
 <title>Acme Rockets | Fast launches for small teams</title>
@@ -1245,7 +1249,7 @@ mod tests {
     #[test]
     fn page_hints() {
         let base = Url::parse("https://acme.test/").unwrap();
-        let h = hints(&base, HOME);
+        let h = hints(&base, HOME, &profiles());
         assert_eq!(h.img_logo.as_deref(), Some("https://acme.test/static/acme-logo.svg"));
         assert_eq!(h.google_fonts, vec!["Caveat", "Space Grotesk", "Inter"]);
         assert_eq!(h.stylesheets, vec![Url::parse("https://acme.test/assets/site.css").unwrap()]);
@@ -1257,7 +1261,7 @@ mod tests {
     #[test]
     fn builds_brand() {
         let css = vec![".x{color:#e11d48} .y{color:#e11d48} .z{color:oklch(62.7% .194 149.214)} .w{font-family:'Playfair Display',serif}".to_string()];
-        let b = build(&pages(), &css);
+        let b = build(&pages(), &css, &profiles());
         assert_eq!(b.site_name, "Acme Inc"); // no og:site_name on home, JSON-LD on another page
         assert_eq!(b.tagline, "Rockets for everyone.");
         assert_eq!(b.logo.as_deref(), Some("https://acme.test/brand/logo.png"));
@@ -1290,7 +1294,7 @@ mod tests {
     #[test]
     fn fallbacks() {
         let html = "<html><head><title>Widgets — Home</title></head><body><img src='/a.png'></body></html>";
-        let b = build(&[(Url::parse("https://w.test/").unwrap(), html.to_string())], &[]);
+        let b = build(&[(Url::parse("https://w.test/").unwrap(), html.to_string())], &[], &profiles());
         assert_eq!(b.site_name, "Widgets");
         assert_eq!(b.icon.as_deref(), Some("https://w.test/favicon.ico"));
         assert_eq!(b.logo, None);
@@ -1316,7 +1320,7 @@ mod tests {
         let page = |path: &str, body: &str| {
             let u = home.join(path).unwrap();
             let html = format!("<html><head><title>Whitening.se</title></head><body>{body}</body></html>");
-            (u.clone(), hints(&u, &html))
+            (u.clone(), hints(&u, &html, &profiles()))
         };
         let footer = r#"<footer><a href="https://www.instagram.com/whitening.se/">IG</a></footer>"#;
         let supplier = r#"<main><a href="https://www.facebook.com/DozApotek/">Doz</a><a href="https://www.youtube.com/channel/UCycShfD1GfneK-yEqJZw0MA">YT</a></main>"#;
@@ -1352,7 +1356,7 @@ mod tests {
             <img src="https://media.hellofresh.com/box.jpg" width="800" height="500" alt="HelloFresh box">
             <img src="https://img.middagskassen.se/hero.jpg" width="800" height="500" alt="Hero">
         </main></body></html>"#;
-        let b = build_from_hints(vec![(home.clone(), hints(&home, html))], &[]);
+        let b = build_from_hints(vec![(home.clone(), hints(&home, html, &profiles()))], &[]);
         let urls: Vec<&str> = b.images.iter().map(|i| i.url.as_str()).collect();
         assert_eq!(urls, vec!["https://middagskassen.se/og.png", "https://middagskassen.se/wp-content/uploads/guide.png", "https://img.middagskassen.se/hero.jpg"]);
 
@@ -1361,7 +1365,7 @@ mod tests {
         let html = r#"<html><head><title>Acme</title></head><body><header><a href="/"><img class="logo" src="https://cdn.shopify.com/s/files/1/acme/logo.png" alt="Acme logo"></a></header><main>
             <img src="https://cdn.shopify.com/s/files/1/acme/products/tee.jpg" width="900" height="900" alt="Tee">
         </main></body></html>"#;
-        let b = build_from_hints(vec![(shop.clone(), hints(&shop, html))], &[]);
+        let b = build_from_hints(vec![(shop.clone(), hints(&shop, html, &profiles()))], &[]);
         assert_eq!(b.images.len(), 1);
     }
 

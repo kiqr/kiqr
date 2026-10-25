@@ -78,6 +78,28 @@ channels:
       site: { type: string, label: Site, help: "https://myblog.com" }
 ```
 
+### Networks
+
+A network is a channel kind; KIQR's code names none. An ability that publishes to a social network says what the rest of KIQR needs to know about it, on the channel kind:
+
+```yaml
+channels:
+  - kind: linkedin
+    label: LinkedIn page
+    publish: post_update
+    name: LinkedIn                   # as people write it
+    icon: send                       # a lucide icon name
+    profile_hosts: [linkedin.com]    # the brand crawl recognises the business's profile there
+    text_limit: 3000                 # characters a post may have
+    image: { width: 1200, height: 627 }
+    preview: feed                    # previewed as a feed card
+    writing: "600 to 1,300 characters, short paragraphs, at most three hashtags."
+```
+
+With it installed, the posts job writes for that network (within its limit, following `writing`), its card is rendered at its size (`size: linkedin` in `create_image`), the preview shows its name and limit, and a post tagged `linkedin` matches a LinkedIn channel on approval. Seemo writes posts only for the networks a project can publish to; with none, the posts work anywhere.
+
+List the same fields (`kind`, `name`, `icon`, `profile_hosts`) under `channels` in the marketplace index: the brand crawl then finds the business's profile there before anything is installed, and Seemo suggests the ability ("I found your LinkedIn page; the marketplace has …") after the crawl and under To do, until the user installs it or says not now.
+
 ### Signing in
 
 A connection can offer one button instead of typed keys. `connect` names a generic flow, and everything specific to the service stays in the manifest; the values land in the same `.env` variables `auth` declares, so readiness, `${…}` and hosts work as for typed keys, and typing them stays possible.

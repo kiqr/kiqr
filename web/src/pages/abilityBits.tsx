@@ -19,6 +19,12 @@ export function iconFor(a: Ability): LucideIcon {
   return Sparkles;
 }
 
+/** A channel kind's icon, by the lucide name its ability gave it. */
+export function kindIcon(icon?: string): LucideIcon {
+  const named = icon ? NAMED_ICON[icon] ?? assetIcon(icon) : undefined;
+  return named && named !== assetIcon(undefined) ? named : Send;
+}
+
 /** The ability's mark: its avatar when it has one, else its icon. */
 export function AbilityIcon({ a, size }: { a: Ability; size: number }) {
   const [broken, setBroken] = useState(false);

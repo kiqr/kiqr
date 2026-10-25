@@ -17,7 +17,7 @@ export function ConnectButton({ slug, ability, connect, auth, scope, onDone }: {
     setWaiting(null);
     if (e.ok) onDone?.();
     else setError(String(e.error ?? "the sign-in failed"));
-  });
+  }, { demo: false });
   const missing = ask.filter((k) => !k.set && !values[k.env]?.trim());
   const start = async () => {
     setBusy(true);

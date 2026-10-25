@@ -230,7 +230,12 @@ export type Performance = { sources: PerfSource[]; metrics: PerfMetric[]; tops: 
 /** A task run coming up, or a publish the daemon will do (`kind: "publish"`, with the asset and channel). */
 export type CalendarItem = { kind?: "task" | "publish"; task?: string; asset?: { type: string; id: string; title: string }; channel?: string | null; channel_label?: string; title: string; at: string; schedule_text: string };
 /** What waits for the user: open approvals from every chat, drafts to approve, what is approved but not sent, publishes coming up, failed publishes. */
+/** A channel kind: where content can go. Installed ones carry what their ability declares; listed ones only a name. */
+export type Network = { kind: string; name: string; icon: string; network: boolean; installed: boolean; text_limit?: number | null; image?: { width: number; height: number } | null; preview?: string; ability?: string };
+/** A profile the business has where an ability in the marketplace could publish. */
+export type Suggestion = { kind: string; name: string; profile_url: string; ability: string; ability_name: string };
 export type Todo = {
+  suggestions?: Suggestion[];
   approvals: { id: string; kind: string; chat: string | null; chat_title?: string; message?: string | null; created: string; payload: Record<string, unknown> }[];
   drafts: Asset[];
   ready: Asset[];
@@ -314,7 +319,7 @@ export type Channel = {
   ready: boolean;
   destination_text: string;
 };
-export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null };
+export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -387,6 +392,9 @@ export const api = {
   calendar: (slug: string, from?: string, to?: string) =>
     req<CalendarItem[]>(`/api/projects/${slug}/calendar${from ? `?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}` : ""}`),
   todo: (slug: string) => req<Todo>(`/api/projects/${slug}/todo`),
+  /** Every channel kind the project knows: its abilities' in full, the marketplace's by name. */
+  networks: (slug: string) => req<{ networks: Network[] }>(`/api/projects/${slug}/networks`),
+  dismissSuggestion: (slug: string, kind: string) => req<{ dismissed: string }>(`/api/projects/${slug}/suggestions/${encodeURIComponent(kind)}/dismiss`, { method: "POST", body: "{}" }),
   /** Drop the cached marketplace index and read it again in the background; `marketplace_refreshed` follows. */
   refreshMarketplace: () => req<void>("/api/abilities/refresh-index", { method: "POST", body: "{}" }),
 
@@ -457,7 +465,7 @@ let demoConfig: Config = {
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (/\/(chats|approvals|tasks|calendar|channels|email|secrets|abilities|connect|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|channels|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

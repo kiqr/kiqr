@@ -2,9 +2,10 @@
 // that can publish plus a destination; publishing itself always asks first.
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Check, Loader2, Mail, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
+import { Check, Loader2, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
 import { Switch } from "./Switch";
 import { ConnectButton } from "./ConnectButton";
+import { kindIcon } from "./abilityBits";
 import { api, useAsync, useEvents, type ChannelKindInfo } from "../api";
 import { ago } from "./Project";
 import "../profile.css";
@@ -62,7 +63,7 @@ export function ChannelsPage() {
 
       <div className="channels">
         {list.map((c) => (
-          <ChannelRow key={c.id} slug={slug} c={c} onChange={data.reload} />
+          <ChannelRow key={c.id} slug={slug} c={c} onChange={data.reload} icon={kinds.find((k) => k.kind === c.kind)?.icon} />
         ))}
       </div>
 
@@ -76,7 +77,8 @@ export function ChannelsPage() {
   );
 }
 
-function ChannelRow({ slug, c, onChange }: { slug: string; c: import("../api").Channel; onChange: () => void }) {
+function ChannelRow({ slug, c, icon, onChange }: { slug: string; c: import("../api").Channel; icon?: string; onChange: () => void }) {
+  const KindIcon = kindIcon(icon);
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [trustBusy, setTrustBusy] = useState(false);
@@ -102,7 +104,7 @@ function ChannelRow({ slug, c, onChange }: { slug: string; c: import("../api").C
   return (
     <div className={`pcard channel ${c.ready ? "" : "off"}`}>
       <div className="row">
-        <span className="ic">{c.kind === "email" ? <Mail size={16} /> : <Send size={16} />}</span>
+        <span className="ic"><KindIcon size={16} /></span>
         <div className="min0">
           <h3>
             {c.label}

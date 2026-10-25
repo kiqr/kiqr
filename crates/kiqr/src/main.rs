@@ -63,7 +63,7 @@ enum Command {
         /// File name without extension (default: image)
         #[arg(long)]
         name: Option<String>,
-        /// x | linkedin | instagram | instagram_portrait | og | cover | WxH
+        /// a channel kind the project publishes to | landscape | square | portrait | og | cover | WxH
         #[arg(long)]
         size: Option<String>,
         /// Title for a new image asset
@@ -1186,6 +1186,7 @@ fn print_event(ev: &Event) {
         EventKind::ExtensionRemoved { id } => format!("ability  {id} removed"),
         EventKind::ExtensionPaused { id, paused } => format!("ability  {id} {}", if *paused { "paused" } else { "on again" }),
         EventKind::SecretSet { name, set, project } => format!("secret   {name} {}{}", if *set { "set" } else { "cleared" }, project.as_ref().map(|p| format!(" for {p}")).unwrap_or_default()),
+        EventKind::SuggestionsChanged {} => return,
         EventKind::ConnectFinished { ability, ok, error, project } => match (ok, error) {
             (true, _) => format!("connect  {ability} connected{}", project.as_ref().map(|p| format!(" for {p}")).unwrap_or_default()),
             (false, e) => format!("connect  {ability} failed: {}", e.clone().unwrap_or_default()),

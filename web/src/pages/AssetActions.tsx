@@ -7,7 +7,8 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, Archive, ArchiveRestore, CalendarClock, Check, ExternalLink, Loader2, Send, Undo2 } from "lucide-react";
 import { api, useAsync, type Asset, type AssetStatus, type Channel } from "../api";
-import { networkOf } from "./PostCard";
+import { networkOf, useNetworks } from "../networks";
+import type { Network } from "../api";
 import { ago } from "./Project";
 
 export const STATUSES: AssetStatus[] = ["draft", "ready", "scheduled", "published", "archived"];
@@ -35,11 +36,11 @@ function defaultAt() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Channels that fit a post's network first (an "x" channel for an X post); everything that can publish otherwise. */
-function fitting(a: Asset, ready: Channel[]) {
-  const net = networkOf(a);
+/** The channels of a post's network (its channel kind); everything that can publish otherwise. */
+function fitting(a: Asset, ready: Channel[], networks: Network[]) {
+  const net = networkOf(a, networks);
   if (!net) return ready;
-  const hit = ready.filter((c) => `${c.kind} ${c.label} ${c.id}`.toLowerCase().includes(net.id) || `${c.kind} ${c.label}`.toLowerCase().includes(net.name.toLowerCase()));
+  const hit = ready.filter((c) => c.kind === net.kind);
   return hit.length ? hit : ready;
 }
 
@@ -47,7 +48,8 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   const channels = useAsync(() => api.channels(slug).catch(() => ({ channels: [] as Channel[], kinds: [] })), [slug]);
   const all = channels.data?.channels ?? [];
   const ready = all.filter((c) => c.ready);
-  const choices = fitting(a, ready);
+  const networks = useNetworks(slug);
+  const choices = fitting(a, ready, networks);
   const [pick, setPick] = useState("");
   const [mode, setMode] = useState<"" | "schedule" | "channel">("");
   const [at, setAt] = useState(defaultAt);

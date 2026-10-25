@@ -1006,9 +1006,9 @@ pub(crate) async fn attach(app: &App, slug: &str, kind_default: &str, args: &Val
 
 /// Preset sizes become width and height, and an orientation word, so every
 /// connection sees the same arguments.
-fn normalize_media_args(mut args: Value) -> Value {
+fn normalize_media_args(mut args: Value, kinds: &[kiqr_core::extensions::ChannelKind]) -> Value {
     if let Some(o) = args.as_object_mut() {
-        let preset = o.get("size").and_then(|v| v.as_str()).and_then(abilities::size_preset);
+        let preset = o.get("size").and_then(|v| v.as_str()).and_then(|n| abilities::size_for(n, kinds));
         if let Some((w, h)) = preset {
             o.entry("width").or_insert(json!(w));
             o.entry("height").or_insert(json!(h));
@@ -1047,7 +1047,7 @@ async fn run_ability(State(app): State<App>, Path((slug, ability)): Path<(String
         (m.clone(), m.provides.get(a.id).cloned().unwrap_or_default())
     };
     let by = by_of(&headers, &args);
-    let args = normalize_media_args(args);
+    let args = normalize_media_args(args, &crate::networks::installed(&app, &slug).await);
     let out = execute(&app, &slug, &m, &provide, Some(&a), None, &args).await.map_err(|e| bad(format!("{e:#}")))?;
     // A file lands on the asset at once. The asset is what the user approves,
     // in the chat (where it shows as it will look) or in the library; an image

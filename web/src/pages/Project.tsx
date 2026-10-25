@@ -36,6 +36,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { api, useAsync, useEvents, type Brand, type Brief, type Field, type Project, type Section } from "../api";
+import { networkName, useNetworks } from "../networks";
 import "../profile.css";
 
 const CLUSTER = ["#5eead4", "#818cf8", "#f472b6", "#fbbf24", "#34d399", "#60a5fa", "#fb923c", "#a78bfa", "#2dd4bf", "#f87171"];
@@ -145,6 +146,7 @@ export function ProjectPage() {
 
 /** The business as it presents itself: its cover, its mark, its name and its own words. */
 function Hero({ slug, project, brand, name, meta, onRescan, crawling }: { slug: string; project: Project | null; brand: Brand | null; name: string; meta: (string | false)[]; onRescan: () => void; crawling: boolean }) {
+  const networks = useNetworks(slug);
   const font = useBrandFont(brand?.fonts ?? []);
   const [coverOk, setCoverOk] = useState(true);
   const cover = coverOk ? brand?.cover : null;
@@ -194,7 +196,7 @@ function Hero({ slug, project, brand, name, meta, onRescan, crawling }: { slug: 
             ))}
             {brand?.social.map((s) => (
               <a key={s.network} className="chip glass" href={s.url} target="_blank" rel="noreferrer">
-                {SOCIAL[s.network] ?? s.network} <ExternalLink size={10} />
+                {networkName(s.network, networks)} <ExternalLink size={10} />
               </a>
             ))}
           </div>
@@ -203,8 +205,6 @@ function Hero({ slug, project, brand, name, meta, onRescan, crawling }: { slug: 
     </header>
   );
 }
-
-const SOCIAL: Record<string, string> = { linkedin: "LinkedIn", x: "X", facebook: "Facebook", instagram: "Instagram", youtube: "YouTube", github: "GitHub", tiktok: "TikTok" };
 
 /** The site's icon, or its initial on its own colours when it has none. */
 function Mark({ brand, name, size = 76 }: { brand: Brand | null; name: string; size?: number }) {

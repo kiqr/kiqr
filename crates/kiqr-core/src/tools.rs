@@ -451,7 +451,7 @@ pub fn catalogue() -> Vec<Tool> {
             name: "create_asset",
             group: WriteAssets,
             label: "Adding to the library",
-            description: "Save a new asset in the library as a draft: a post, an article, a reply, an email… `text` becomes its body file (Markdown). Use `summary` for a one-line description (for a post: the network, e.g. 'For LinkedIn') and `tags` for the network or topic. Everything gets a featured image: follow up with `create_image` on the new asset right away (the Create images instructions say how). The asset shows in the chat as it will look; the user approves it there or in the library, so never ask for approval in text.",
+            description: "Save a new asset in the library as a draft: a post, an article, a reply, an email… `text` becomes its body file (Markdown). Use `summary` for a one-line description (for a post: the network, e.g. 'For <network name>') and `tags` with the network's channel kind first (one from list_channels kinds), then topics. Everything gets a featured image: follow up with `create_image` on the new asset right away (the Create images instructions say how). The asset shows in the chat as it will look; the user approves it there or in the library, so never ask for approval in text.",
             call: Call::Http { method: "POST", path: "/api/projects/{slug}/assets", body: Body::Args },
             schema: || obj(
                 json!({

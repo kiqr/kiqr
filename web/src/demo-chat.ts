@@ -280,6 +280,14 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
   }
   if (path === "/api/abilities/install" && method === "POST") return Promise.resolve(demoAbilities.abilities[8] as T);
   if (/\/abilities(\?|$)/.test(path)) return Promise.resolve(demoAbilities as T);
+  // Demo fixtures: the networks a demo project's abilities would declare.
+  if (path.endsWith("/networks")) return Promise.resolve({ networks: [
+    { kind: "linkedin", name: "LinkedIn", icon: "", network: true, installed: true, text_limit: 3000, image: { width: 1200, height: 627 }, preview: "feed" },
+    { kind: "x", name: "X", icon: "", network: true, installed: true, text_limit: 280, image: { width: 1600, height: 900 }, preview: "feed" },
+    { kind: "instagram", name: "Instagram", icon: "", network: true, installed: true, text_limit: 2200, image: { width: 1080, height: 1080 }, preview: "feed" },
+    { kind: "email", name: "Email", icon: "mail", network: false, installed: true },
+  ] } as T);
+  if (/\/suggestions\//.test(path)) return Promise.resolve({ dismissed: path.split("/").slice(-2, -1)[0] } as T);
   if (/\/connect\//.test(path)) return Promise.resolve({ url: "about:blank", callback: false, fields: [] } as T);
   if (/\/secrets\//.test(path)) return Promise.resolve({ name: path.split("/").pop(), set: !!body.value } as T);
   if (path.endsWith("/channels")) {

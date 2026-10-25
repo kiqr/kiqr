@@ -3,9 +3,9 @@
 // approved but not sent, publishes coming up, and scheduled publishes that
 // failed. The sidebar count is the approvals, drafts and failures.
 import { Link, useParams } from "react-router-dom";
-import { CalendarClock, CheckCircle2, MessagesSquare, Send } from "lucide-react";
+import { CalendarClock, CheckCircle2, Download, ExternalLink, MessagesSquare, Send, Sparkles } from "lucide-react";
 import { useState } from "react";
-import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card } from "../api";
+import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card, type Suggestion } from "../api";
 import { Guide } from "./LibraryEmpty";
 import { ApprovalCard } from "../chat/Conversation";
 import { AssetEmbed } from "./AssetEmbed";
@@ -15,7 +15,7 @@ import "../profile.css";
 import "../chat.css";
 import "../library.css";
 
-export const TODO_EVENTS = ["asset_saved", "asset_deleted", "asset_published", "asset_approved", "asset_unpublished", "approval_requested", "approval_resolved", "chat_deleted"];
+export const TODO_EVENTS = ["suggestions_changed", "brand_updated", "extension_installed", "extension_removed", "asset_saved", "asset_deleted", "asset_published", "asset_approved", "asset_unpublished", "approval_requested", "approval_resolved", "chat_deleted"];
 
 export function TodoPage() {
   const { slug = "" } = useParams();
@@ -132,7 +132,49 @@ export function TodoPage() {
           </p>
         </section>
       )}
+
+      {d && (d.suggestions?.length ?? 0) > 0 && (
+        <section className="todo-sec">
+          <h2>
+            <Sparkles size={15} /> Seemo suggests <span className="n">{d.suggestions!.length}</span>
+          </h2>
+          <ul className="todo-rows">
+            {d.suggestions!.map((s) => (
+              <SuggestionRow key={s.kind} slug={slug} s={s} onChange={todo.reload} />
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
+  );
+}
+
+/** A profile the business has where an ability in the marketplace could publish. */
+function SuggestionRow({ slug, s, onChange }: { slug: string; s: Suggestion; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <li className="todo-row sugg">
+      <span className="what">
+        <span className="ic">
+          <Sparkles size={15} />
+        </span>
+        <span className="min0">
+          <b>
+            I found your{" "}
+            <a href={s.profile_url} target="_blank" rel="noreferrer">
+              {s.name} page <ExternalLink size={11} />
+            </a>
+          </b>
+          <small>The marketplace has “{s.ability_name}”. With it I can write and publish there.</small>
+        </span>
+      </span>
+      <Link className="btn p sm" to={`/p/${slug}/abilities#ability=${encodeURIComponent(s.ability)}`}>
+        <Download size={13} /> Install
+      </Link>
+      <button className="btn t sm" disabled={busy} onClick={() => (setBusy(true), api.dismissSuggestion(slug, s.kind).then(onChange, () => setBusy(false)))}>
+        Not now
+      </button>
+    </li>
   );
 }
 
