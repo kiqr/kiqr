@@ -263,6 +263,7 @@ fn connection_view(app: &App, e: &Entry, m: &Manifest) -> Value {
         "categories": m.categories,
         "icon": m.icon,
         "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": provider::has_env(&a.env) })).collect::<Vec<_>>(),
+        "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "provides": m.provides.iter().map(|(id, p)| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or(""), "cost": p.cost })).collect::<Vec<_>>(),
         "tools": m.tools.iter().map(|t| json!({ "name": t.name, "label": t.label, "cost": t.provide.cost })).collect::<Vec<_>>(),
         "channels": m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "destination": c.destination })).collect::<Vec<_>>(),
@@ -366,7 +367,7 @@ pub(crate) async fn known_secret(app: &App, name: &str) -> bool {
     if crate::api::SECRETS.contains(&name) {
         return true;
     }
-    let uses = |m: &Manifest| m.auth.iter().any(|a| a.env == name) || m.env.contains(&name.to_string()) || m.tools.iter().any(|t| t.provide.command.as_ref().is_some_and(|c| c.env.contains(&name.to_string())));
+    let uses = |m: &Manifest| m.auth.iter().any(|a| a.env == name) || m.connect.as_ref().is_some_and(|c| c.writes().iter().any(|w| w == name)) || m.env.contains(&name.to_string()) || m.tools.iter().any(|t| t.provide.command.as_ref().is_some_and(|c| c.env.contains(&name.to_string())));
     let reg = app.registry.read().await;
     reg.entries.iter().filter_map(|e| e.manifest.as_ref()).any(uses) || extensions::shipped_all().iter().any(|(_, m)| uses(m))
 }
@@ -733,7 +734,10 @@ pub struct ExecOut {
 /// come from the project's `.env`, then the machine's.
 pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value) -> Result<ExecOut> {
     let args = provide.mapped_args(args);
-    let env = kiqr_core::secrets::env_fn(app.store.home(), Some(slug));
+    let stored = kiqr_core::secrets::env_fn(app.store.home(), Some(slug));
+    // Tokens a sign-in flow mints or refreshes for this call come first.
+    let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, m).await?);
+    let env = move |k: &str| minted.get(k).cloned().or_else(|| stored(k));
     match m.transport {
         Transport::Http => {
             let req = provide.request.as_ref().ok_or_else(|| anyhow!("{} has no request for this", m.name))?;

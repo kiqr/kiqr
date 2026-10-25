@@ -67,6 +67,7 @@ fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
         "ready": crate::ext::ready_in(app, Some(slug), m),
         "destination": k.destination,
         "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": kiqr_core::secrets::scope_of(home, Some(slug), &a.env) })).collect::<Vec<_>>(),
+        "connect": kiqr_core::connect::view(m.connect.as_ref()),
     })
 }
 

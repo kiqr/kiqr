@@ -5,6 +5,7 @@
 mod agent;
 mod api;
 mod builtin;
+mod connect;
 mod ext;
 mod images;
 mod market;
@@ -51,6 +52,8 @@ pub struct App {
     pub renderer: Arc<kiqr_core::render::Renderer>,
     /// MCP servers the daemon hosts for `transport: mcp` connections.
     pub mcp: Arc<mcp_host::McpHost>,
+    /// Sign-ins waiting for their callback, and tokens minted for service accounts.
+    pub connects: connect::Shared,
 }
 
 impl App {
@@ -109,6 +112,7 @@ pub async fn run(home: Home) -> Result<()> {
         registry: Arc::new(RwLock::new(kiqr_core::extensions::Registry::load(&home, &config.core_off))),
         renderer: Arc::new(kiqr_core::render::Renderer::new(home.render_dir())),
         mcp: Arc::new(mcp_host::McpHost::default()),
+        connects: Default::default(),
     };
     match app.renderer.chrome() {
         Some(c) => tracing::info!("images: SVG via resvg, HTML via {}", c.display()),

@@ -8,6 +8,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, Check, Download, FolderOpen, Globe, Loader2, Pencil, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { api, type Ability, type Contract } from "../api";
 import { Markdown } from "../markdown";
+import { ConnectButton } from "./ConnectButton";
 import { SecretField } from "./SecretField";
 import { Switch } from "./Switch";
 import { InstallPanel } from "./Marketplace";
@@ -409,6 +410,12 @@ function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Abi
           <Globe size={12} /> Every project
         </button>
       </div>
+      {a.connect && (
+        <>
+          <ConnectButton key={scope} slug={slug} ability={a.id} connect={a.connect} auth={a.auth.map((k) => ({ ...k, set: scope === "project" ? (k.set === "project" ? "project" : null) : k.set === "global" ? "global" : null }))} scope={scope} onDone={onChange} />
+          <p className="ab-or">Or enter the keys yourself</p>
+        </>
+      )}
       <div className="set-keys">
         {a.auth.map((k) => (
           <SecretField key={`${scope}-${k.env}`} name={k.env} label={k.label || k.env} help={k.help} set={scope === "project" ? (k.set === "project" ? "project" : null) : k.set === "global" ? "global" : null} optional={k.optional || (scope === "project" && !!k.set)} slug={scope === "project" ? slug : undefined} onSaved={onChange} />

@@ -171,11 +171,14 @@ export function InstallPanel({ a, busy, error, onCancel, onInstall }: { a: Abili
   const perProject = a.channels.length > 0;
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const required = perProject ? [] : a.auth.filter((k) => !k.optional);
-  const ok = required.every((k) => (secrets[k.env] ?? "").trim() || k.set);
+  // One that signs in with a button is connected after it is installed, from its Connect tab.
+  const ok = !!a.connect || required.every((k) => (secrets[k.env] ?? "").trim() || k.set);
   return (
     <motion.div className="mk-install" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }} onClick={(e) => e.stopPropagation()}>
       {perProject ? (
         <p className="muted sm">Installed once for this machine. Each project connects its own account when it adds a channel for it.</p>
+      ) : a.connect ? (
+        <p className="muted sm">Installed once for this machine. Then sign in from its Connect tab with “{a.connect.label}”, or type the keys below.</p>
       ) : a.auth.length > 0 ? (
         <p className="muted sm">Installed once for this machine. The keys below are this project's; other projects add theirs, or a key for every project, from the ability's Connect tab.</p>
       ) : a.instructions.length > 0 || a.transport === "instructions" ? (

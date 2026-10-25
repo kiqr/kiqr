@@ -154,6 +154,8 @@ pub struct Manifest {
     pub summary: String,
     pub transport: Transport,
     pub auth: Vec<AuthKey>,
+    /// How the keys can be got with one button instead of typed in (`docs/abilities.md`, "Signing in").
+    pub connect: Option<crate::connect::Connect>,
     pub hosts: Vec<String>,
     /// ability id → how this connection provides it.
     pub provides: BTreeMap<String, Provide>,
@@ -187,6 +189,7 @@ impl Default for Manifest {
             summary: String::new(),
             transport: Transport::Http,
             auth: vec![],
+            connect: None,
             hosts: vec![],
             provides: Default::default(),
             tools: vec![],
@@ -515,6 +518,9 @@ pub fn validate(m: &Manifest) -> Result<()> {
         if !is_var && (h.trim().is_empty() || h.contains('/') || h.contains(':')) {
             bail!("hosts holds '{h}', which is not a host name");
         }
+    }
+    if let Some(c) = &m.connect {
+        crate::connect::validate(m, c)?;
     }
     let mut names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
     names.sort_unstable();

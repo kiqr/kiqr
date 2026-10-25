@@ -11,6 +11,7 @@ pub mod brand;
 pub mod channels;
 pub mod chat;
 pub mod config;
+pub mod connect;
 pub mod crawl;
 pub mod events;
 pub mod extensions;

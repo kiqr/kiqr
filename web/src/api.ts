@@ -244,6 +244,8 @@ export type ToolGroup = { id: string; label: string; tools: string[] };
 export type Scope = { scope: "global" } | { scope: "project"; project: string };
 /** A key an ability needs, and whether it is set: for this project, for the machine, or not. */
 export type MarketAuth = { env: string; label: string; help: string; optional: boolean; set: "project" | "global" | null };
+/** How an ability signs in with one button (its manifest's `connect`): what to ask first, what comes back. */
+export type ConnectInfo = { label: string; flow: "redirect" | "oauth2"; needs: string[]; returns: string[]; https_only: boolean };
 /** One instructions file of an ability, and where its text is overridden. */
 export type InstructionFile = { file: string; label: string; project_copy: boolean; machine_copy: boolean };
 /** One ability: what Seemo can do. Core ones are code; the rest are folders with instructions (SKILL.md), a connection (extension.yaml), or both. */
@@ -288,6 +290,7 @@ export type Ability = {
   ready: boolean;
   missing: string[];
   auth: MarketAuth[];
+  connect?: ConnectInfo | null;
   active_for: string[];
   instructions: InstructionFile[];
   in_prompt: boolean;
@@ -311,7 +314,7 @@ export type Channel = {
   ready: boolean;
   destination_text: string;
 };
-export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[] };
+export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -424,6 +427,9 @@ export const api = {
   /** The same for one project: its own .env wins over the machine's. */
   setProjectSecret: (slug: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
 
+  /** Start signing in: saves what was asked first, returns the page to open; `callback: false` means the user pastes what it shows. */
+  startConnect: (slug: string, id: string, b: { scope: "project" | "global"; origin: string; values: Record<string, string> }) => req<{ url: string; callback: boolean; fields: string[] }>(`/api/projects/${slug}/connect/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(b) }),
+
   // Channels and publishing
   channels: (slug: string) => req<{ channels: Channel[]; kinds: ChannelKindInfo[] }>(`/api/projects/${slug}/channels`),
   createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string> }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
@@ -451,7 +457,7 @@ let demoConfig: Config = {
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (/\/(chats|approvals|tasks|calendar|channels|email|secrets|abilities|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|channels|email|secrets|abilities|connect|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

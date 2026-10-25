@@ -78,6 +78,28 @@ channels:
       site: { type: string, label: Site, help: "https://myblog.com" }
 ```
 
+### Signing in
+
+A connection can offer one button instead of typed keys. `connect` names a generic flow, and everything specific to the service stays in the manifest; the values land in the same `.env` variables `auth` declares, so readiness, `${…}` and hosts work as for typed keys, and typing them stays possible.
+
+```yaml
+connect:
+  label: Connect with WordPress
+  flow: redirect                 # redirect | oauth2 | service_account
+  needs: [WP_SITE]               # asked first; the page lives on it
+  url: "${WP_SITE}/wp-admin/authorize-application.php?app_name=KIQR&app_id={{app_id}}"
+  callback_params: [success_url, reject_url]   # where KIQR's callback URL goes
+  callback: https                # the service only calls back over https
+  returns: { WP_SITE: site_url, WP_USER: user_login, WP_APP_PASSWORD: password }
+  denied: { param: success, equals: "false" }
+```
+
+- **redirect**: the browser opens `url`; the service comes back to KIQR's callback (`/api/connect/callback`, under the address the UI runs on) with the values as query parameters, mapped by `returns`. `callback: https` means the service refuses a plain-http callback; KIQR then opens the page without one and the user pastes what it shows.
+- **oauth2**: authorization code with PKCE. `authorize_url`, `token_url`, `client_id` (and `client_secret` when the provider wants one, both usually `${VAR}`), `scopes`, extra `params`. The access token goes to `token_env` (declared in `auth`), the refresh token to `refresh_env`, the expiry to `<token_env>_EXPIRES_AT`; KIQR refreshes before a call when it is about to run out.
+- **service_account**: no browser. `key_file` names the variable holding the path of a JSON key (`client_email`, `private_key`); KIQR signs a JWT for `scopes`, exchanges it at `token_url`, and offers the token to requests as `${<token_env>}` (not declared in `auth`, never stored), minted again when it runs out.
+
+Every URL's host must be in `hosts` (or come from a `${VAR}` host). Variables in `needs` and `returns` must be declared in `auth`.
+
 ### Placeholders
 
 - `{{arg}}` and `{{arg|default}}`: the tool's arguments. A string that is exactly one placeholder takes the argument's own JSON value (numbers stay numbers).

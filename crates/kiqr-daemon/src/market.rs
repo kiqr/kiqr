@@ -96,6 +96,8 @@ pub struct IndexItem {
     #[serde(default)]
     pub sources: Vec<String>,
     pub auth: Vec<AuthKey>,
+    /// How the keys can be got with one button (the manifest's `connect`).
+    pub connect: Option<kiqr_core::connect::Connect>,
     /// `official` (KIQR's own), `verified`, `community`.
     pub trust: String,
     pub transport: String,
@@ -215,6 +217,7 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         channels: m.channels.iter().map(|c| c.kind.clone()).collect(),
         sources: m.sources.clone(),
         auth: m.auth.clone(),
+        connect: m.connect.clone(),
         trust: "official".into(),
         transport: serde_json::to_value(m.transport).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         author: String::new(),
@@ -266,6 +269,7 @@ fn core_item(c: &extensions::CoreAbility) -> IndexItem {
         channels: vec![],
         sources: vec![],
         auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false }).collect(),
+        connect: None,
         trust: "official".into(),
         transport: "builtin".into(),
         author: "KIQR".into(),
@@ -433,6 +437,7 @@ fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
         channels: vec![],
         sources: vec![],
         auth: vec![],
+        connect: None,
         trust: if e.builtin { "official".into() } else { "local".into() },
         transport: "instructions".into(),
         author: if !i.author.trim().is_empty() { i.author.clone() } else if e.builtin { "KIQR".into() } else { String::new() },
@@ -545,6 +550,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "ready": ready,
         "missing": missing,
         "auth": auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": kiqr_core::secrets::scope_of(home, ctx.slug, &a.env) })).collect::<Vec<_>>(),
+        "connect": kiqr_core::connect::view(m.and_then(|m| m.connect.as_ref()).or(item.connect.as_ref())),
         "active_for": ctx.active.iter().filter(|(_, id)| *id == item.id).map(|(a, _)| a.clone()).collect::<Vec<_>>(),
         "instructions": files,
         "in_prompt": in_prompt,

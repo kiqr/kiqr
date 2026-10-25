@@ -48,6 +48,7 @@ pub fn router(app: App) -> Router {
         .route("/api/events", get(events))
         .merge(crate::seemo::routes())
         .merge(crate::ext::routes())
+        .merge(crate::connect::routes())
         .merge(crate::market::routes())
         .merge(crate::images::routes())
         .merge(crate::publish::routes())

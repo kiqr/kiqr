@@ -108,6 +108,9 @@ pub enum EventKind {
     ExtensionPaused { id: String, paused: bool },
     /// A secret was set or cleared in `.env`. Name only, never the value.
     SecretSet { name: String, set: bool, #[serde(default)] project: Option<String> },
+    /// A sign-in through an ability's `connect` block ended. `project` is where
+    /// the values went (None: the machine); `error` says why it failed.
+    ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] project: Option<String> },
 
     // Abilities and channels.
     /// An ability made a file into an asset: `ability` is image, video or music.
@@ -162,6 +165,7 @@ impl EventKind {
                 | EventKind::ExtensionRemoved { .. }
                 | EventKind::ExtensionPaused { .. }
                 | EventKind::SecretSet { .. }
+                | EventKind::ConnectFinished { .. }
                 | EventKind::MediaCreated { .. }
                 | EventKind::ChannelSaved { .. }
                 | EventKind::ChannelDeleted { .. }

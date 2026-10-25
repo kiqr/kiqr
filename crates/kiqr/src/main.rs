@@ -1186,6 +1186,10 @@ fn print_event(ev: &Event) {
         EventKind::ExtensionRemoved { id } => format!("ability  {id} removed"),
         EventKind::ExtensionPaused { id, paused } => format!("ability  {id} {}", if *paused { "paused" } else { "on again" }),
         EventKind::SecretSet { name, set, project } => format!("secret   {name} {}{}", if *set { "set" } else { "cleared" }, project.as_ref().map(|p| format!(" for {p}")).unwrap_or_default()),
+        EventKind::ConnectFinished { ability, ok, error, project } => match (ok, error) {
+            (true, _) => format!("connect  {ability} connected{}", project.as_ref().map(|p| format!(" for {p}")).unwrap_or_default()),
+            (false, e) => format!("connect  {ability} failed: {}", e.clone().unwrap_or_default()),
+        },
         EventKind::MediaCreated { ability, asset_type, id, file, provider } => format!("{ability:<8} {asset_type}/{id}/{file} via {provider}"),
         EventKind::ChannelSaved { channel, label, kind } => format!("channel  {channel} \"{label}\" ({kind})"),
         EventKind::ChannelDeleted { channel } => format!("channel  {channel} removed"),

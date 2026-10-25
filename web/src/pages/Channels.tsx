@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Check, Loader2, Mail, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
 import { Switch } from "./Switch";
+import { ConnectButton } from "./ConnectButton";
 import { api, useAsync, useEvents, type ChannelKindInfo } from "../api";
 import { ago } from "./Project";
 import "../profile.css";
@@ -146,7 +147,9 @@ function ChannelRow({ slug, c, onChange }: { slug: string; c: import("../api").C
 }
 
 function ChannelForm({ slug, kinds, onDone }: { slug: string; kinds: ChannelKindInfo[]; onDone: () => void }) {
-  const [kind, setKind] = useState(kinds[0]);
+  const [picked, setKind] = useState(kinds[0]);
+  // The page reloads the kinds when a key lands (typed or signed in); read the fresh copy.
+  const kind = kinds.find((k) => k.connection === picked?.connection && k.kind === picked?.kind) ?? picked;
   const [label, setLabel] = useState("");
   const [dest, setDest] = useState<Record<string, string>>({});
   const [keys, setKeys] = useState<Record<string, string>>({});
@@ -180,12 +183,13 @@ function ChannelForm({ slug, kinds, onDone }: { slug: string; kinds: ChannelKind
         <div className="scope">
           <span className="nm">Kind</span>
           {kinds.map((k) => (
-            <button key={`${k.connection}-${k.kind}`} className={`chip ${kind === k ? "acc" : ""}`} onClick={() => (setKind(k), setDest({}), setKeys({}))}>
+            <button key={`${k.connection}-${k.kind}`} className={`chip ${kind?.connection === k.connection && kind?.kind === k.kind ? "acc" : ""}`} onClick={() => (setKind(k), setDest({}), setKeys({}))}>
               {k.label} via {k.connection_name}
             </button>
           ))}
         </div>
       )}
+      {needed.length > 0 && kind?.connect && <ConnectButton slug={slug} ability={kind.connection} connect={kind.connect} auth={kind.auth ?? []} scope="project" />}
       {needed.length > 0 && (
         <>
           <p className="muted sm">
