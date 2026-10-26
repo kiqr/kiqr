@@ -87,7 +87,7 @@ fn check_options(m: &Manifest, k: &ChannelKind, given: &serde_json::Map<String, 
 /// A kind a new channel could use. Each channel brings its own account: the
 /// keys it asks for, or those of another channel of the same ability (`accounts`).
 fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
-    let accounts: Vec<Value> = kiqr_core::connections::Connection::of(&app.store, slug, &m.id).iter().filter(|c| crate::accounts::ready(app, slug, c, m)).map(|c| json!({ "id": c.id, "label": c.label })).collect();
+    let accounts: Vec<Value> = kiqr_core::connections::Connection::of(&app.store, slug, m.service()).iter().filter(|c| crate::accounts::ready(app, slug, c, m)).map(|c| json!({ "id": c.id, "label": c.label })).collect();
     json!({
         "kind": k.kind,
         "label": k.label,

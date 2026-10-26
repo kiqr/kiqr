@@ -69,7 +69,7 @@ pub fn missing_in(app: &App, slug: Option<&str>, m: &Manifest) -> Vec<String> {
     }
     let Some(slug) = slug.filter(|s| !s.is_empty()) else { return all };
     let home = app.store.home();
-    let conns = Connection::of(&app.store, slug, &m.id);
+    let conns = Connection::of(&app.store, slug, m.service());
     if conns.iter().any(|c| c.missing(home, slug, m).is_empty()) {
         return vec![];
     }
@@ -80,15 +80,15 @@ pub fn missing_in(app: &App, slug: Option<&str>, m: &Manifest) -> Vec<String> {
 /// ability's default. None for an ability that needs no keys and has none.
 pub fn pick_connection(app: &App, slug: &str, m: &Manifest, name: Option<&str>) -> Result<Option<Connection>> {
     if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
-        return match Connection::find(&app.store, slug, &m.id, n) {
+        return match Connection::find(&app.store, slug, m.service(), n) {
             Some(c) => Ok(Some(c)),
             None => {
-                let have: Vec<String> = Connection::of(&app.store, slug, &m.id).into_iter().map(|c| c.label).collect();
+                let have: Vec<String> = Connection::of(&app.store, slug, m.service()).into_iter().map(|c| c.label).collect();
                 bail!("{} has no account '{n}' in this project{}", m.name, if have.is_empty() { String::new() } else { format!(" (there is {})", have.join(", ")) })
             }
         };
     }
-    let found = Connection::default_of(&app.store, slug, &m.id);
+    let found = Connection::default_of(&app.store, slug, m.service());
     if found.is_none() && !extensions::missing_keys(m, |_| false).is_empty() {
         bail!("{} is not connected in this project yet; add an account under Setup → Abilities", m.name);
     }
@@ -181,7 +181,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         }
         if let Some((_, m)) = reg.provider(slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(app, Some(slug), m)) {
             let cost = m.provides.get(a.id).and_then(|p| p.cost.as_deref());
-            out.push(with_connection_arg(a.spec(&m.name, cost), &Connection::of(&app.store, slug, &m.id)));
+            out.push(with_connection_arg(a.spec(&m.name, cost), &Connection::of(&app.store, slug, m.service())));
         }
     }
     for (_, m) in reg.connections(slug) {
@@ -228,7 +228,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
                 cost: t.provide.cost.clone(),
             });
             let last = out.pop().expect("just pushed");
-            out.push(with_connection_arg(last, &Connection::of(&app.store, slug, &m.id)));
+            out.push(with_connection_arg(last, &Connection::of(&app.store, slug, m.service())));
         }
     }
     out
@@ -452,9 +452,11 @@ pub(crate) async fn set_secret(app: &App, slug: Option<&str>, name: &str, value:
 pub(crate) async fn set_connection_secret(app: &App, slug: &str, conn: &str, name: &str, value: &str) -> Result<bool, ApiError> {
     let value = check_secret(app, name, value).await?;
     let c = Connection::load(&app.store, slug, conn).map_err(|e| not_found(e.to_string()))?;
+    // Any ability of the account's service may name the key; they agree on names.
     let m = {
         let reg = app.registry.read().await;
-        reg.entry(Some(slug), &c.ability).and_then(|e| e.manifest.clone())
+        let all = reg.of_service(slug, c.service());
+        all.iter().find(|m| kiqr_core::connections::key_names(m).iter().any(|n| n == name)).or_else(|| all.first()).map(|m| (*m).clone())
     }
     .ok_or_else(|| bad(format!("the ability '{}' is not installed", c.ability)))?;
     if !kiqr_core::connections::key_names(&m).iter().any(|n| n == name) {
@@ -466,7 +468,7 @@ pub(crate) async fn set_connection_secret(app: &App, slug: &str, conn: &str, nam
         }
     }
     kiqr_core::secrets::write_env(&c.env_file(app.store.home(), slug), name, &value).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    app.mcp.stop(&format!("{}#{}", c.ability, c.id)).await;
+    app.mcp.stop_connection(&c.id).await;
     app.bus.emit(Some(slug), EventKind::SecretSet { name: name.to_string(), set: !value.is_empty(), project: Some(slug.to_string()) });
     Ok(!value.is_empty())
 }
@@ -869,7 +871,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
 
 /// The launch for a project's default connection of a hosted program.
 pub fn launch_for(app: &App, slug: &str, m: &Manifest) -> crate::mcp_host::Launch {
-    let conn = Connection::default_of(&app.store, slug, &m.id);
+    let conn = Connection::default_of(&app.store, slug, m.service());
     let env = kiqr_core::connections::env_for(app.store.home(), slug, conn.as_ref(), m);
     mcp_env(m, conn.as_ref(), &env)
 }

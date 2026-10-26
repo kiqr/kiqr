@@ -274,6 +274,11 @@ pub struct Manifest {
     pub version: String,
     pub summary: String,
     pub transport: Transport,
+    /// The service whose accounts this ability uses. Abilities that name the
+    /// same service share its accounts and channels (one sign-in, one browser
+    /// profile, one daily cap) and agree on its key names. Empty: the ability's
+    /// own id, so its accounts are its own.
+    pub service: String,
     pub auth: Vec<AuthKey>,
     /// How the keys can be got with one button instead of typed in (`docs/abilities.md`, "Signing in").
     pub connect: Option<crate::connect::Connect>,
@@ -305,6 +310,13 @@ pub struct Manifest {
     pub avatar: String,
 }
 
+impl Manifest {
+    /// The service whose accounts this ability uses: `service`, else its own id.
+    pub fn service(&self) -> &str {
+        if self.service.is_empty() { &self.id } else { &self.service }
+    }
+}
+
 impl Default for Manifest {
     fn default() -> Self {
         Self {
@@ -313,6 +325,7 @@ impl Default for Manifest {
             version: "0.1.0".into(),
             summary: String::new(),
             transport: Transport::Http,
+            service: String::new(),
             auth: vec![],
             connect: None,
             hosts: vec![],
@@ -564,6 +577,12 @@ impl Registry {
         self.visible(slug).into_iter().filter(|e| !e.paused).filter_map(|e| e.manifest.as_ref().filter(|_| e.error.is_none()).map(|m| (e, m))).collect()
     }
 
+    /// The working manifests a project sees for a service (`Manifest::service`),
+    /// paused ones included: every ability that uses the service's accounts.
+    pub fn of_service(&self, slug: &str, service: &str) -> Vec<&Manifest> {
+        self.visible(slug).into_iter().filter(|e| e.error.is_none()).filter_map(|e| e.manifest.as_ref()).filter(|m| m.service() == service).collect()
+    }
+
     /// Every installed folder with this ability id, paused or not, any scope.
     pub fn installed(&self, id: &str) -> Vec<&Entry> {
         self.entries.iter().filter(|e| e.id() == id).collect()
@@ -632,6 +651,9 @@ pub fn validate(m: &Manifest) -> Result<()> {
     }
     if m.name.trim().is_empty() {
         bail!("name is missing");
+    }
+    if !m.service.is_empty() && !crate::tools::valid_ext_id(&m.service) {
+        bail!("service must be lowercase letters, digits and dashes (got '{}')", m.service);
     }
     for a in &m.auth {
         if !valid_env_name(&a.env) {

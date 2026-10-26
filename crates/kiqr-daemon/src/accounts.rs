@@ -43,9 +43,18 @@ pub fn ready(app: &App, slug: &str, c: &Connection, m: &Manifest) -> bool {
     c.missing(app.store.home(), slug, m).is_empty() && (m.transport != Transport::Mcp || crate::ext::on_path(&m.command))
 }
 
+/// The manifest an account is read with: the ability it was made with, else
+/// another installed ability of its service.
+pub async fn manifest_for(app: &App, slug: &str, c: &Connection) -> Option<Manifest> {
+    if let Some(m) = manifest(app, slug, &c.ability).await {
+        return Some(m);
+    }
+    app.registry.read().await.of_service(slug, c.service()).first().map(|m| (*m).clone())
+}
+
 /// One connection for the UI and for Seemo: never its values, only which are set.
 pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
-    let m = manifest(app, slug, &c.ability).await;
+    let m = manifest_for(app, slug, c).await;
     let keys = c.keys(app.store.home(), slug);
     let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
     v["channel"] = json!(c.is_channel());
@@ -103,10 +112,10 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
         return Err(bad(format!("{} does not publish '{kind}'", m.name)));
     }
     let same = match b.same_as.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(s) => Some(Connection::find(&app.store, slug, &m.id, s).ok_or_else(|| bad(format!("{} has no account '{s}' here to share", m.name)))?),
+        Some(s) => Some(Connection::find(&app.store, slug, m.service(), s).ok_or_else(|| bad(format!("{} has no account '{s}' here to share", m.name)))?),
         None => None,
     };
-    let siblings = Connection::of(&app.store, slug, &m.id);
+    let siblings = Connection::of(&app.store, slug, m.service());
     let base = b.label.trim().to_string();
     let base = if base.is_empty() { m.name.clone() } else { base };
     // Labels name accounts in Seemo's tools, so they stay unique per ability.
@@ -120,6 +129,7 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
         id: connections::new_id(&app.store, slug, &label),
         label,
         ability: m.id.clone(),
+        service: m.service.clone(),
         default: siblings.is_empty(),
         created_by: by.to_string(),
         kind,
@@ -157,7 +167,7 @@ pub struct Patch {
 pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connection, ApiError> {
     let mut c = Connection::load(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
     if let Some(l) = p.label.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        if Connection::of(&app.store, slug, &c.ability).iter().any(|o| o.id != c.id && o.label.eq_ignore_ascii_case(&l)) {
+        if Connection::of(&app.store, slug, c.service()).iter().any(|o| o.id != c.id && o.label.eq_ignore_ascii_case(&l)) {
             return Err(bad(format!("another account is already called '{l}'")));
         }
         c.label = l;
@@ -180,7 +190,7 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connect
 
 pub async fn delete(app: &App, slug: &str, id: &str) -> Result<(), ApiError> {
     let c = Connection::delete(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    app.mcp.stop(&format!("{}#{}", c.ability, c.id)).await;
+    app.mcp.stop_connection(&c.id).await;
     app.store.commit(&format!("{}({slug}): remove {}", if c.is_channel() { "channel" } else { "account" }, c.label)).await?;
     app.bus.emit(Some(slug), EventKind::ConnectionDeleted { connection: c.id, ability: c.ability });
     Ok(())
@@ -194,8 +204,13 @@ struct ListQuery {
 
 async fn list(State(app): State<App>, Path(slug): Path<String>, Query(q): Query<ListQuery>) -> ApiResult<Value> {
     let _ = Project::load(&app.store, &slug)?;
+    // An ability's accounts are its service's, shared with the other abilities of it.
+    let service = match q.ability.as_deref() {
+        Some(a) => Some(manifest(&app, &slug, a).await.map(|m| m.service().to_string()).unwrap_or_else(|| a.to_string())),
+        None => None,
+    };
     let mut out = Vec::new();
-    for c in Connection::list(&app.store, &slug)?.iter().filter(|c| q.ability.as_deref().is_none_or(|a| c.ability == a)) {
+    for c in Connection::list(&app.store, &slug)?.iter().filter(|c| service.as_deref().is_none_or(|s| c.service() == s)) {
         out.push(view(&app, &slug, c).await);
     }
     Ok(Json(json!({ "connections": out })))

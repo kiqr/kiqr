@@ -1,5 +1,7 @@
-//! Connections: one named setup of an installed ability inside a project,
-//! with its own keys. A project can have as many as it wants (two WordPress
+//! Connections: one named account of a service inside a project, with its
+//! own keys. Every installed ability of that service (its manifest's
+//! `service`, else its id) uses the project's accounts of it: one sign-in for
+//! all of them. A project can have as many as it wants (two WordPress
 //! sites, two analytics properties). A connection whose ability publishes is
 //! a channel: it also has a kind, a destination, "asks first" and a count of
 //! what went out. Installing an ability only puts its code on the machine;
@@ -24,10 +26,14 @@ use std::path::PathBuf;
 pub struct Connection {
     pub id: String,
     pub label: String,
-    /// The installed ability this is a setup of.
+    /// The installed ability this was made with.
     #[serde(alias = "extension")]
     pub ability: String,
-    /// The one a call uses when nothing names a connection; one per ability.
+    /// The service it is an account of; every ability of that service uses it.
+    /// Empty in older homes: the ability's id.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub service: String,
+    /// The one a call uses when nothing names a connection; one per service.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub default: bool,
     /// `user`, or `chat:<id>`.
@@ -53,6 +59,7 @@ impl Default for Connection {
             id: String::new(),
             label: String::new(),
             ability: String::new(),
+            service: String::new(),
             default: false,
             created_by: "user".into(),
             created_at: Utc::now(),
@@ -68,6 +75,11 @@ impl Default for Connection {
 impl Connection {
     pub fn is_channel(&self) -> bool {
         !self.kind.is_empty()
+    }
+
+    /// The service it is an account of: `service`, else the ability it was made with.
+    pub fn service(&self) -> &str {
+        if self.service.is_empty() { &self.ability } else { &self.service }
     }
 
     /// Every connection of a project, by label.
@@ -91,9 +103,9 @@ impl Connection {
         Ok(Self::list(store, slug)?.into_iter().filter(Connection::is_channel).collect())
     }
 
-    /// One ability's connections, the default first.
-    pub fn of(store: &Store, slug: &str, ability: &str) -> Vec<Connection> {
-        let mut v: Vec<Connection> = Self::list(store, slug).unwrap_or_default().into_iter().filter(|c| c.ability == ability).collect();
+    /// One service's connections (`Manifest::service`), the default first.
+    pub fn of(store: &Store, slug: &str, service: &str) -> Vec<Connection> {
+        let mut v: Vec<Connection> = Self::list(store, slug).unwrap_or_default().into_iter().filter(|c| c.service() == service).collect();
         v.sort_by_key(|c| !c.default);
         v
     }
@@ -115,12 +127,12 @@ impl Connection {
         store.write_yaml(&store.home().connections_dir(slug).join(&self.id).join("connection.yaml"), self)
     }
 
-    /// Remove it, keys included. The next one of the same ability becomes the default.
+    /// Remove it, keys included. The next one of the same service becomes the default.
     pub fn delete(store: &Store, slug: &str, id: &str) -> Result<Connection> {
         let c = Self::load(store, slug, id)?;
         std::fs::remove_dir_all(store.home().connections_dir(slug).join(id))?;
         if c.default {
-            if let Some(mut next) = Self::of(store, slug, &c.ability).into_iter().next() {
+            if let Some(mut next) = Self::of(store, slug, c.service()).into_iter().next() {
                 next.default = true;
                 next.save(store, slug)?;
             }
@@ -128,10 +140,10 @@ impl Connection {
         Ok(c)
     }
 
-    /// Make this one the ability's default, and no other.
+    /// Make this one the service's default, and no other.
     pub fn make_default(store: &Store, slug: &str, id: &str) -> Result<()> {
         let c = Self::load(store, slug, id)?;
-        for mut o in Self::of(store, slug, &c.ability) {
+        for mut o in Self::of(store, slug, c.service()) {
             let want = o.id == c.id;
             if o.default != want {
                 o.default = want;
@@ -141,15 +153,15 @@ impl Connection {
         Ok(())
     }
 
-    /// The default of an ability, else its first.
-    pub fn default_of(store: &Store, slug: &str, ability: &str) -> Option<Connection> {
-        Self::of(store, slug, ability).into_iter().next()
+    /// The default of a service, else its first.
+    pub fn default_of(store: &Store, slug: &str, service: &str) -> Option<Connection> {
+        Self::of(store, slug, service).into_iter().next()
     }
 
-    /// An ability's connection by id or label (any case).
-    pub fn find(store: &Store, slug: &str, ability: &str, name: &str) -> Option<Connection> {
+    /// A service's connection by id or label (any case).
+    pub fn find(store: &Store, slug: &str, service: &str, name: &str) -> Option<Connection> {
         let n = name.trim();
-        Self::of(store, slug, ability).into_iter().find(|c| c.id == n || c.label.eq_ignore_ascii_case(n))
+        Self::of(store, slug, service).into_iter().find(|c| c.id == n || c.label.eq_ignore_ascii_case(n))
     }
 
     pub fn env_file(&self, home: &Home, slug: &str) -> PathBuf {
@@ -226,7 +238,7 @@ pub fn valid_id(id: &str) -> bool {
 fn first_account(store: &Store, slug: &str, m: &Manifest) -> Connection {
     let kind = m.channels.first().filter(|k| k.destination.values().all(|spec| spec["optional"].as_bool().unwrap_or(false))).map(|k| k.kind.clone()).unwrap_or_default();
     let label = m.channels.first().filter(|_| !kind.is_empty()).map(|k| k.label.clone()).unwrap_or_else(|| m.name.clone());
-    Connection { id: new_id(store, slug, &label), label, ability: m.id.clone(), default: true, created_by: "kiqr".into(), kind, ..Default::default() }
+    Connection { id: new_id(store, slug, &label), label, ability: m.id.clone(), service: m.service.clone(), default: true, created_by: "kiqr".into(), kind, ..Default::default() }
 }
 
 /// A unique id from a label: `email-to-jane`, `email-to-jane-2`.
@@ -286,7 +298,7 @@ pub fn migrate(store: &Store, manifests: &[Manifest]) -> Result<Option<Migrated>
                 if c.kind.is_empty() || !valid_id(&c.id) {
                     continue;
                 }
-                c.default = !Connection::of(store, slug, &c.ability).iter().any(|o| o.default);
+                c.default = !Connection::of(store, slug, c.service()).iter().any(|o| o.default);
                 c.save(store, slug)?;
                 if let Some(m) = manifests.iter().find(|m| m.id == c.ability) {
                     copy_keys(&c, m)?;
@@ -297,7 +309,7 @@ pub fn migrate(store: &Store, manifests: &[Manifest]) -> Result<Option<Migrated>
         }
         // 2. Abilities with keys and nothing yet.
         for m in manifests.iter().filter(|m| !m.auth.is_empty()) {
-            if !Connection::of(store, slug, &m.id).is_empty() {
+            if !Connection::of(store, slug, m.service()).is_empty() {
                 continue;
             }
             if !crate::extensions::missing_keys(m, |k| secrets::has(home, Some(slug), k)).is_empty() {
@@ -337,7 +349,7 @@ pub fn adopt(store: &Store, m: &Manifest) -> Result<Vec<String>> {
         let slug = p.slug.as_str();
         let env_path = home.project_env_file(slug);
         let own = secrets::read_env_file(&env_path);
-        if !Connection::of(store, slug, &m.id).is_empty() || !crate::extensions::missing_keys(m, |k| own.contains_key(k)).is_empty() {
+        if !Connection::of(store, slug, m.service()).is_empty() || !crate::extensions::missing_keys(m, |k| own.contains_key(k)).is_empty() {
             continue;
         }
         let c = first_account(store, slug, m);
@@ -420,6 +432,30 @@ mod tests {
         assert_eq!(Connection::default_of(&store, "acme", "blog").unwrap().id, "news-2");
         Connection::delete(&store, "acme", "news-2").unwrap();
         assert!(Connection::load(&store, "acme", "news").unwrap().default);
+
+        // Two abilities of one service share its accounts: one sign-in for both.
+        let reader = manifest("id: social-read\nname: Read posts\nservice: social\ntransport: http\nauth:\n  - { env: SOCIAL_TOKEN }\nhosts: [api.social.test]\ntools:\n  - name: read_posts\n    request: { method: GET, url: \"https://api.social.test/feed\" }\n");
+        let replier = manifest("id: social-reply\nname: Reply\nservice: social\ntransport: http\nauth:\n  - { env: SOCIAL_TOKEN }\nhosts: [api.social.test]\ntools:\n  - name: reply\n    request: { method: POST, url: \"https://api.social.test/reply\" }\n");
+        assert_eq!((reader.service(), wp.service()), ("social", "blog"));
+        let me = Connection { id: new_id(&store, "acme", "Me"), label: "Me".into(), ability: reader.id.clone(), service: reader.service.clone(), default: true, ..Default::default() };
+        me.save(&store, "acme").unwrap();
+        secrets::write_env(&me.env_file(&home, "acme"), "SOCIAL_TOKEN", "t1").unwrap();
+        let found = Connection::default_of(&store, "acme", replier.service()).unwrap();
+        assert_eq!(found.id, "me");
+        assert!(found.missing(&home, "acme", &replier).is_empty());
+        assert_eq!(env_for(&home, "acme", Some(&found), &replier)("SOCIAL_TOKEN").as_deref(), Some("t1"));
+        assert_eq!(Connection::find(&store, "acme", "social", "ME").map(|c| c.id), Some("me".into()));
+        assert!(Connection::of(&store, "acme", "social-read").is_empty(), "an ability with a service is found by the service, not its id");
+        let work = Connection { id: new_id(&store, "acme", "Work"), label: "Work".into(), ability: replier.id.clone(), service: replier.service.clone(), ..Default::default() };
+        work.save(&store, "acme").unwrap();
+        Connection::make_default(&store, "acme", "work").unwrap();
+        assert_eq!(Connection::default_of(&store, "acme", "social").unwrap().id, "work");
+        assert!(!Connection::load(&store, "acme", "me").unwrap().default);
+        assert!(Connection::load(&store, "acme", "news").unwrap().default, "defaults are per service");
+        Connection::delete(&store, "acme", "work").unwrap();
+        assert!(Connection::load(&store, "acme", "me").unwrap().default);
+        // Older records with no service are the ability's own.
+        assert_eq!(Connection::load(&store, "acme", "news").unwrap().service(), "blog");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -86,6 +86,19 @@ impl McpHost {
         }
     }
 
+    /// Stop every ability's server for one connection (`*#connection`): an
+    /// account is shared by the abilities of its service.
+    pub async fn stop_connection(&self, connection: &str) {
+        let gone: Vec<Arc<Server>> = {
+            let mut all = self.servers.lock().await;
+            let keys: Vec<String> = all.keys().filter(|k| k.rsplit_once('#').is_some_and(|(_, c)| c == connection)).cloned().collect();
+            keys.iter().filter_map(|k| all.remove(k)).collect()
+        };
+        for s in gone {
+            s.kill().await;
+        }
+    }
+
     pub async fn running(&self) -> Vec<String> {
         self.servers.lock().await.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(k, _)| k.clone()).collect()
     }

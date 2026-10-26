@@ -505,7 +505,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
     };
     // This project's accounts of it: never their values, only whether they are complete.
     let accounts: Vec<Value> = match (m, ctx.slug) {
-        (Some(m), Some(slug)) if core.is_none() => kiqr_core::connections::Connection::of(&ctx.app.store, slug, &m.id)
+        (Some(m), Some(slug)) if core.is_none() => kiqr_core::connections::Connection::of(&ctx.app.store, slug, m.service())
             .iter()
             .map(|c| {
                 let keys = c.keys(home, slug);
@@ -855,7 +855,7 @@ async fn adopt_keys(app: &App, id: &str) -> Result<(), ApiError> {
     if !adopted.is_empty() {
         app.store.commit(&format!("[auto] accounts: {} keeps the {} keys it had", adopted.join(", "), m.name)).await?;
         for slug in &adopted {
-            if let Some(c) = kiqr_core::connections::Connection::default_of(&app.store, slug, &m.id) {
+            if let Some(c) = kiqr_core::connections::Connection::default_of(&app.store, slug, m.service()) {
                 app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id, label: c.label, ability: c.ability, kind: c.kind });
             }
         }

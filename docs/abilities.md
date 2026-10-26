@@ -29,14 +29,15 @@ Switches: an ability is switched on and off per project, in its `project.yaml` (
 An installed ability holds no keys. A project adds **accounts** of it (the code calls them connections), each with a name and its own keys:
 
 ```
-projects/<slug>/connections/<id>/connection.yaml   committed: id, label, ability, default, created_by, created_at
+projects/<slug>/connections/<id>/connection.yaml   committed: id, label, ability, service, default, created_by, created_at
                                                    and for a channel: kind, destination, asks_first, publications, last_published
 projects/<slug>/connections/<id>/.env              the keys, never committed, mode 0600
 ```
 
-- A call goes through one account: the one named, else the ability's **default** (the first one added, or the one the user starred). The names an ability declares (`auth`, what `connect` writes, `env`, a command's `env`) are read from that account only, never from the project's or the machine's `.env`; KIQR's own keys (the model providers, UnblockingAPI) stay in `.env` as before.
-- With more than one account of an ability in a project, its tools get an optional `connection` argument (an enum of the account names), and `send_email` takes `from`. Seemo leaves it out for the default.
-- A hosted program (`transport: mcp`) runs once per account, started with that account's keys.
+- An account is an account of a **service**: the manifest's `service`, else the ability's own id. Every installed ability that names the same service uses the same accounts (one sign-in for "Read posts", "Reply to posts" and "Improve the profile"), so abilities sharing a service must agree on its key names. `ability` on the record is the one it was made with; a record without `service` (older homes) belongs to that ability's own id.
+- A call goes through one account: the one named, else the service's **default** (the first one added, or the one the user starred). The names an ability declares (`auth`, what `connect` writes, `env`, a command's `env`) are read from that account only, never from the project's or the machine's `.env`; KIQR's own keys (the model providers, UnblockingAPI) stay in `.env` as before.
+- With more than one account of a service in a project, its tools get an optional `connection` argument (an enum of the account names), and `send_email` takes `from`. Seemo leaves it out for the default.
+- A hosted program (`transport: mcp`) runs once per ability and account, started with that account's keys; changing a key on an account or removing it stops every ability's program for it.
 - A channel is an account with a `kind`. A new one can start with the keys of another account of the same ability (`same_as`: the same mail account to another address); the keys are copied, so changing one later does not change the other.
 - `kiqr accounts ls|add|set|default|rm`; routes under `/api/projects/{slug}/connections`, channels under `/channels` as before.
 - Homes from before accounts are moved once at start: each channel keeps its id with a copy of its ability's keys, an ability a project had keys for becomes its first account (a channel when its kind needs no destination), the ability's keys leave the project's `.env`, and an ability switched off for the machine becomes switched off in every project. Installing an ability later does the same for keys a project's `.env` still holds.
@@ -73,6 +74,7 @@ transport: http                # http | command | mcp | builtin
 auth:                          # keys by variable name; values live on the project's accounts; `placeholder` shows what a value looks like inside the empty field, `help` sits under it (where to get it), `options: [a, b]` makes it a choice from a list
   - { env: WP_USER, label: User name }
   - { env: WP_APP_PASSWORD, label: Application password, help: https://example.com/wp-admin/profile.php }
+service: wordpress             # optional: abilities naming the same service share its accounts (and agree on its key names); default: the id
 hosts: [myblog.com]            # the only hosts an http ability may call (subdomains included); "${WP_SITE}" makes it the project's own site
 tools:                         # the ability's own tools, offered under its own group ("Use Publish articles to WordPress")
   - name: publish_article
