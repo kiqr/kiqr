@@ -611,6 +611,8 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "missing": missing,
         "auth": auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": if core.is_some() { json!(kiqr_core::secrets::scope_of(home, ctx.slug, &a.env)) } else { Value::Null } })).collect::<Vec<_>>(),
         "connect": kiqr_core::connect::view(m.and_then(|m| m.connect.as_ref()).or(item.connect.as_ref())),
+        // A core ability KIQR signs in to (UnblockingAPI): this project's own sign-in, the machine's, or none.
+        "signed_in": core.and_then(|c| crate::signins::signin_scope(home, ctx.slug, c.id)),
         "accounts": accounts,
         "kinds": m.map(|m| m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "name": c.display_name(), "destination": c.destination, "does": c.roles() })).collect::<Vec<_>>()).unwrap_or_default(),
         "service": m.map(|m| m.service().to_string()),

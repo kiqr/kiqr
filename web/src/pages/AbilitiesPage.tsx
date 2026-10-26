@@ -13,7 +13,7 @@ import { Switch } from "./Switch";
 import { AbilityModal } from "./AbilityModal";
 import { Advanced, Marketplace } from "./Marketplace";
 import { TeachForm, type TeachDraft } from "./TeachForm";
-import { AbilityIcon, Author, isOn, RELOAD_ON, stateOf } from "./abilityBits";
+import { AbilityIcon, Author, isOn, OneClick, oneClick, RELOAD_ON, stateOf } from "./abilityBits";
 import "../profile.css";
 import "../settings.css";
 import "../chat.css";
@@ -203,6 +203,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
         <div className="min0">
           <p className="nm">
             {a.name}
+            {oneClick(a) && <OneClick />}
             <span className={`chip ${state.tone} sm`}>
               <b /> {state.text}
             </span>

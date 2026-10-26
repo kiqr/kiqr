@@ -302,6 +302,8 @@ export type Ability = {
   missing: string[];
   auth: MarketAuth[];
   connect?: ConnectInfo | null;
+  /** A core ability KIQR signs in to: this project's own sign-in, the machine's, or none. */
+  signed_in?: "project" | "machine" | null;
   /** This project's accounts of it; empty for one that needs no keys. */
   accounts?: AccountSummary[];
   /** The kinds of channel it publishes to. */
@@ -314,7 +316,7 @@ export type Ability = {
 export type Contract = { id: string; label: string; tool: string; configured: string | null; active: { id: string; name: string } | null; candidates: { id: string; name: string; ready: boolean }[] };
 export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts: Contract[]; broken: { folder: string; scope: Scope; error: string }[]; guide: Ability | null; index: string; index_fetched?: boolean; env_file: string; project_env_file: string | null };
 /** One of KIQR's own sign-ins: kiqr.cloud, UnblockingAPI. `waiting` while a device code is shown. */
-export type SignIn = { id: string; name: string; signed_in: boolean; account: string | null; waiting: { user_code: string; verification_uri: string; verification_uri_complete?: string | null } | null };
+export type SignIn = { id: string; name: string; signed_in: boolean; account: string | null; per_project?: boolean; scope?: "project" | "machine" | null; waiting: { user_code: string; verification_uri: string; verification_uri_complete?: string | null } | null };
 /** A key on one account: set or not, never its value. */
 export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean };
 /** One account of an ability in this project, with its own keys. With a `kind` it is a channel: where the project publishes. */
@@ -474,10 +476,10 @@ export const api = {
     req<{ url: string; callback: boolean; connection: string; fields: string[] }>(`/api/projects/${slug}/connect/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(b) }),
 
   // KIQR's own sign-ins: kiqr.cloud, and UnblockingAPI by account
-  signIns: () => req<{ signins: SignIn[]; cloud_url: string }>("/api/signins"),
+  signIns: (slug?: string) => req<{ signins: SignIn[]; cloud_url: string }>(`/api/signins${slug ? `?project=${encodeURIComponent(slug)}` : ""}`),
   /** `redirect`: open `url`. `device`: show the code and where to enter it; the daemon waits for the approval. */
-  startSignIn: (id: string, origin: string) => req<{ mode: "redirect"; url: string } | { mode: "device"; user_code: string; verification_uri: string; verification_uri_complete?: string | null }>(`/api/signins/${id}/start`, { method: "POST", body: JSON.stringify({ origin }) }),
-  signOut: (id: string) => req<{ signed_in: boolean }>(`/api/signins/${id}`, { method: "DELETE" }),
+  startSignIn: (id: string, origin: string, project?: string) => req<{ mode: "redirect"; url: string } | { mode: "device"; user_code: string; verification_uri: string; verification_uri_complete?: string | null }>(`/api/signins/${id}/start`, { method: "POST", body: JSON.stringify({ origin, project }) }),
+  signOut: (id: string, project?: string) => req<{ signed_in: boolean }>(`/api/signins/${id}${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "DELETE" }),
 
   // Accounts: one setup of an ability in a project, with its own keys
   accounts: (slug: string, ability?: string) => req<{ connections: Account[] }>(`/api/projects/${slug}/connections${ability ? `?ability=${encodeURIComponent(ability)}` : ""}`),

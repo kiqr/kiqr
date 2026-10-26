@@ -57,9 +57,19 @@ fn bad(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 
+/// Where a sign-in's tokens live: the machine's `.env` (every project), or
+/// one project's `.env`. kiqr.cloud is always the machine's (it links the
+/// agent); UnblockingAPI may be either, and a project's own wins.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Place {
+    Machine,
+    Project(String),
+}
+
 /// A browser sign-in waiting for its callback.
 struct Pending {
     id: &'static str,
+    place: Place,
     server: Server,
     client_id: String,
     redirect_uri: String,
@@ -117,28 +127,61 @@ fn put_env(app: &App, s: &SignIn, what: &str, value: Option<&str>) -> Result<()>
     Ok(())
 }
 
-fn save_tokens(app: &App, s: &SignIn, t: &Tokens) -> Result<()> {
-    put_env(app, s, "TOKEN", Some(&t.access))?;
-    put_env(app, s, "REFRESH_TOKEN", t.refresh.as_deref())?;
-    put_env(app, s, "TOKEN_EXPIRES_AT", t.expires_at.map(|e| e.to_string()).as_deref())?;
+/// One sign-in value where it lives.
+fn read(home: &kiqr_core::paths::Home, s: &SignIn, what: &str, place: &Place) -> Option<String> {
+    match place {
+        Place::Machine => get_env(s, what),
+        Place::Project(slug) => kiqr_core::secrets::read_env_file(&home.project_env_file(slug)).remove(&env_name(s, what)).filter(|v| !v.is_empty()),
+    }
+}
+
+fn write(app: &App, s: &SignIn, what: &str, value: Option<&str>, place: &Place) -> Result<()> {
+    match place {
+        Place::Machine => put_env(app, s, what, value),
+        Place::Project(slug) => kiqr_core::secrets::write_env(&app.store.home().project_env_file(slug), &env_name(s, what), value.unwrap_or("")),
+    }
+}
+
+fn save_tokens(app: &App, s: &SignIn, t: &Tokens, place: &Place) -> Result<()> {
+    write(app, s, "TOKEN", Some(&t.access), place)?;
+    write(app, s, "REFRESH_TOKEN", t.refresh.as_deref(), place)?;
+    write(app, s, "TOKEN_EXPIRES_AT", t.expires_at.map(|e| e.to_string()).as_deref(), place)?;
     Ok(())
 }
 
-fn clear(app: &App, s: &SignIn) -> Result<()> {
+fn clear(app: &App, s: &SignIn, place: &Place) -> Result<()> {
     for what in ["TOKEN", "REFRESH_TOKEN", "TOKEN_EXPIRES_AT", "ACCOUNT"] {
-        put_env(app, s, what, None)?;
+        write(app, s, what, None, place)?;
     }
     Ok(())
 }
 
+/// Signed in for every project (the machine's sign-in).
 pub fn signed_in(s: &SignIn) -> bool {
     get_env(s, "TOKEN").is_some()
+}
+
+fn signed_in_at(home: &kiqr_core::paths::Home, s: &SignIn, place: &Place) -> bool {
+    read(home, s, "TOKEN", place).is_some()
+}
+
+/// Where a core ability's sign-in for this project comes from: `project`
+/// (its own), `machine` (every project's), or none.
+pub fn signin_scope(home: &kiqr_core::paths::Home, slug: Option<&str>, ability: &str) -> Option<&'static str> {
+    let s = SIGNINS.iter().find(|s| s.id == ability)?;
+    if slug.is_some_and(|slug| signed_in_at(home, s, &Place::Project(slug.to_string()))) {
+        Some("project")
+    } else if signed_in(s) {
+        Some("machine")
+    } else {
+        None
+    }
 }
 
 /// Whether a core ability's key is there: set (the project's or the
 /// machine's), or stood in for by a sign-in (UnblockingAPI by account).
 pub fn has_core_key(home: &kiqr_core::paths::Home, slug: Option<&str>, env: &str) -> bool {
-    kiqr_core::secrets::has(home, slug, env) || (env == "UNBLOCKINGAPI_KEY" && SIGNINS.iter().find(|s| s.id == UNBLOCKINGAPI).is_some_and(signed_in))
+    kiqr_core::secrets::has(home, slug, env) || (env == "UNBLOCKINGAPI_KEY" && signin_scope(home, slug, UNBLOCKINGAPI).is_some())
 }
 
 fn now() -> i64 {
@@ -209,24 +252,31 @@ async fn client_id(app: &App, s: &'static SignIn, srv: &Server) -> Result<String
 
 // ----------------------------------------------------------------- tokens
 
-/// A valid access token, refreshed when it runs out within five minutes.
-/// None when not signed in; a refresh the service refuses signs out.
+/// The machine's valid access token for a sign-in (see `token_at`).
 pub async fn token(app: &App, id: &str) -> Option<String> {
+    token_at(app, id, &Place::Machine).await
+}
+
+/// A valid access token where the sign-in lives, refreshed when it runs out
+/// within five minutes. None when not signed in there; a refresh the service
+/// refuses signs that place out.
+pub async fn token_at(app: &App, id: &str, place: &Place) -> Option<String> {
     let s = SIGNINS.iter().find(|s| s.id == id)?;
-    let access = get_env(s, "TOKEN")?;
-    let expires = get_env(s, "TOKEN_EXPIRES_AT").and_then(|e| e.parse::<i64>().ok());
+    let home = app.store.home();
+    let access = read(home, s, "TOKEN", place)?;
+    let expires = read(home, s, "TOKEN_EXPIRES_AT", place).and_then(|e| e.parse::<i64>().ok());
     if expires.is_none_or(|e| e - 300 > now()) {
         return Some(access);
     }
     let _guard = app.signins.refreshing.lock().await;
     // Another call may have refreshed while this one waited.
-    if let Some(e) = get_env(s, "TOKEN_EXPIRES_AT").and_then(|e| e.parse::<i64>().ok()) {
+    if let Some(e) = read(home, s, "TOKEN_EXPIRES_AT", place).and_then(|e| e.parse::<i64>().ok()) {
         if e - 300 > now() {
-            return get_env(s, "TOKEN");
+            return read(home, s, "TOKEN", place);
         }
     }
     let result: Result<Tokens> = async {
-        let refresh = get_env(s, "REFRESH_TOKEN").ok_or_else(|| anyhow!("no refresh token"))?;
+        let refresh = read(home, s, "REFRESH_TOKEN", place).ok_or_else(|| anyhow!("no refresh token"))?;
         let srv = server(app, s).await?;
         let cid = get_env(s, "CLIENT_ID").ok_or_else(|| anyhow!("no client id"))?;
         oauth::refresh(&srv, &cid, &refresh, now()).await
@@ -234,28 +284,37 @@ pub async fn token(app: &App, id: &str) -> Option<String> {
     .await;
     match result {
         Ok(t) => {
-            let _ = save_tokens(app, s, &t);
+            let _ = save_tokens(app, s, &t, place);
             Some(t.access)
         }
         Err(e) => {
             tracing::warn!(signin = s.id, error = %e, "refresh failed; signed out");
-            let _ = clear(app, s);
+            let _ = clear(app, s, place);
             app.bus.emit(None, EventKind::SignInChanged { id: s.id.into(), signed_in: false, error: Some(format!("{e:#}")) });
             None
         }
     }
 }
 
-/// How this project reaches UnblockingAPI: its own key, the machine's key, or
-/// the machine's sign-in. None when the ability is off or nothing is set.
+/// How this project reaches UnblockingAPI, its own first: its key, its
+/// sign-in, then the machine's key, the machine's sign-in. None when the
+/// ability is off or nothing is set.
 pub async fn unblocking_auth(app: &App, slug: &str) -> Option<kiqr_core::fetch::UnblockingAuth> {
+    use kiqr_core::fetch::UnblockingAuth;
     if !app.config.read().await.core_on("unblockingapi") {
         return None;
     }
-    if let Some(k) = kiqr_core::fetch::UnblockingAuth::key(kiqr_core::secrets::lookup(app.store.home(), Some(slug), "UNBLOCKINGAPI_KEY")) {
+    let home = app.store.home();
+    if let Some(k) = UnblockingAuth::key(kiqr_core::secrets::read_env_file(&home.project_env_file(slug)).remove("UNBLOCKINGAPI_KEY")) {
         return Some(k);
     }
-    token(app, UNBLOCKINGAPI).await.map(kiqr_core::fetch::UnblockingAuth::Token)
+    if let Some(t) = token_at(app, UNBLOCKINGAPI, &Place::Project(slug.to_string())).await {
+        return Some(UnblockingAuth::Token(t));
+    }
+    if let Some(k) = UnblockingAuth::key(std::env::var("UNBLOCKINGAPI_KEY").ok()) {
+        return Some(k);
+    }
+    token(app, UNBLOCKINGAPI).await.map(UnblockingAuth::Token)
 }
 
 /// A relay on kiqr.cloud back to `return_to` (one of this KIQR's callbacks):
@@ -293,10 +352,10 @@ async fn fetch_account(app: &App, s: &SignIn, access: &str) -> Option<String> {
     v["email"].as_str().map(str::to_string)
 }
 
-async fn finish(app: &App, s: &'static SignIn, t: Tokens) -> Result<()> {
-    save_tokens(app, s, &t)?;
+async fn finish(app: &App, s: &'static SignIn, t: Tokens, place: &Place) -> Result<()> {
+    save_tokens(app, s, &t, place)?;
     if let Some(account) = fetch_account(app, s, &t.access).await {
-        put_env(app, s, "ACCOUNT", Some(&account))?;
+        write(app, s, "ACCOUNT", Some(&account), place)?;
     }
     app.bus.emit(None, EventKind::SignInChanged { id: s.id.into(), signed_in: true, error: None });
     Ok(())
@@ -304,16 +363,28 @@ async fn finish(app: &App, s: &'static SignIn, t: Tokens) -> Result<()> {
 
 // ----------------------------------------------------------------- routes
 
-async fn list(State(app): State<App>) -> ApiResult<Value> {
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ProjectQuery {
+    project: Option<String>,
+}
+
+/// `?project=` adds whether that project has its own sign-in (`here`).
+async fn list(State(app): State<App>, Query(q): Query<ProjectQuery>) -> ApiResult<Value> {
     let devices = app.signins.devices.lock().await.clone();
+    let home = app.store.home();
+    let here = q.project.filter(|p| !p.is_empty()).map(Place::Project);
     let rows: Vec<Value> = SIGNINS
         .iter()
         .map(|s| {
+            let own = here.as_ref().is_some_and(|p| signed_in_at(home, s, p));
             json!({
                 "id": s.id,
                 "name": s.name,
-                "signed_in": signed_in(s),
-                "account": get_env(s, "ACCOUNT"),
+                "per_project": s.id != CLOUD,
+                "signed_in": signed_in(s) || own,
+                "scope": if own { Some("project") } else if signed_in(s) { Some("machine") } else { None },
+                "account": here.as_ref().filter(|_| own).and_then(|p| read(home, s, "ACCOUNT", p)).or_else(|| get_env(s, "ACCOUNT")),
                 "waiting": devices.get(s.id),
             })
         })
@@ -325,10 +396,21 @@ async fn list(State(app): State<App>) -> ApiResult<Value> {
 struct StartBody {
     /// The UI's origin (`window.location.origin`), or the daemon's for the CLI.
     origin: String,
+    /// Sign in for this project only; none signs in for every project.
+    #[serde(default)]
+    project: Option<String>,
 }
 
 async fn start(State(app): State<App>, Path(id): Path<String>, Json(b): Json<StartBody>) -> ApiResult<Value> {
     let s = find(&id)?;
+    let place = match b.project.filter(|p| !p.is_empty()) {
+        Some(_) if s.id == CLOUD => return Err(bad("kiqr.cloud links the whole KIQR agent, not one project")),
+        Some(slug) => {
+            kiqr_core::project::Project::load(&app.store, &slug)?;
+            Place::Project(slug)
+        }
+        None => Place::Machine,
+    };
     let origin = url::Url::parse(b.origin.trim()).map_err(|_| bad("origin is not a URL"))?;
     if !matches!(origin.scheme(), "http" | "https") {
         return Err(bad("origin must be http or https"));
@@ -343,7 +425,7 @@ async fn start(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Sta
         let d = oauth::device_start(&srv, &cid, s.scope).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
         let view = DeviceView { user_code: d.user_code.clone(), verification_uri: d.verification_uri.clone(), verification_uri_complete: d.verification_uri_complete.clone() };
         app.signins.devices.lock().await.insert(s.id, view.clone());
-        tokio::spawn(poll_device(app.clone(), s, srv, cid, d));
+        tokio::spawn(poll_device(app.clone(), s, srv, cid, d, place));
         return Ok(Json(json!({ "mode": "device", "user_code": view.user_code, "verification_uri": view.verification_uri, "verification_uri_complete": view.verification_uri_complete })));
     }
 
@@ -362,12 +444,12 @@ async fn start(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Sta
     {
         let mut p = app.signins.pending.lock().await;
         p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
-        p.insert(state, Pending { id: s.id, server: srv, client_id: cid, redirect_uri, verifier, created: Instant::now() });
+        p.insert(state, Pending { id: s.id, place, server: srv, client_id: cid, redirect_uri, verifier, created: Instant::now() });
     }
     Ok(Json(json!({ "mode": "redirect", "url": url })))
 }
 
-async fn poll_device(app: App, s: &'static SignIn, srv: Server, cid: String, d: oauth::DeviceCode) {
+async fn poll_device(app: App, s: &'static SignIn, srv: Server, cid: String, d: oauth::DeviceCode, place: Place) {
     let mut interval = d.interval.unwrap_or(5).max(1);
     let deadline = Instant::now() + Duration::from_secs(d.expires_in.clamp(60, 1800));
     let outcome = loop {
@@ -385,7 +467,7 @@ async fn poll_device(app: App, s: &'static SignIn, srv: Server, cid: String, d: 
     };
     app.signins.devices.lock().await.remove(s.id);
     let result = match outcome {
-        Ok(t) => finish(&app, s, t).await,
+        Ok(t) => finish(&app, s, t, &place).await,
         Err(e) => Err(e),
     };
     if let Err(e) = result {
@@ -407,7 +489,7 @@ async fn callback(State(app): State<App>, Query(q): Query<BTreeMap<String, Strin
         }
         let code = q.get("code").ok_or_else(|| anyhow!("no code came back"))?;
         let t = oauth::exchange_code(&p.server, &p.client_id, code, &p.redirect_uri, &p.verifier, now()).await?;
-        finish(&app, s, t).await
+        finish(&app, s, t, &p.place).await
     }
     .await;
     match result {
@@ -419,16 +501,18 @@ async fn callback(State(app): State<App>, Query(q): Query<BTreeMap<String, Strin
     }
 }
 
-async fn sign_out(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Value> {
+/// `?project=` signs that project's own sign-in out; none, the machine's.
+async fn sign_out(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ProjectQuery>) -> ApiResult<Value> {
     let s = find(&id)?;
+    let place = q.project.filter(|p| !p.is_empty()).map(Place::Project).unwrap_or(Place::Machine);
     if let (Ok(srv), Some(cid)) = (server(&app, s).await, get_env(s, "CLIENT_ID")) {
         for what in ["REFRESH_TOKEN", "TOKEN"] {
-            if let Some(t) = get_env(s, what) {
+            if let Some(t) = read(app.store.home(), s, what, &place) {
                 oauth::revoke(&srv, &cid, &t).await;
             }
         }
     }
-    clear(&app, s).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    clear(&app, s, &place).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     app.bus.emit(None, EventKind::SignInChanged { id: s.id.into(), signed_in: false, error: None });
     Ok(Json(json!({ "id": s.id, "signed_in": false })))
 }

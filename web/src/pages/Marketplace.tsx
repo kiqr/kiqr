@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, RefreshCw, Search, Terminal, X } from "lucide-react";
 import { api, type Ability, type Scope } from "../api";
-import { AbilityIcon, Author } from "./abilityBits";
+import { AbilityIcon, Author, OneClick, oneClick } from "./abilityBits";
 
 const SHELVES: { id: string; label: string }[] = [
   { id: "all", label: "All" },
@@ -129,7 +129,9 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
           <AbilityIcon a={a} size={a.avatar ? 40 : 18} />
         </span>
         <div className="min0">
-          <h3>{a.name}</h3>
+          <h3>
+            {a.name} {oneClick(a) && <OneClick />}
+          </h3>
           <p className="by">
             by <Author a={a} />
             {a.trust === "verified" && <span className="chip ok sm"> verified</span>}

@@ -3,3 +3,7 @@
 .signin-hero .t { font-size: 15px; font-weight: 600; margin: 0; }
 .signin-hero .muted { margin: 0 0 4px; }
 .signin-hero .btn.p { padding: 10px 18px; font-size: 14px; align-self: flex-start; }
+.scope-pick { display: inline-flex; gap: 6px; }
+.scope-pick .chip { cursor: pointer; }
+/* abilities that connect with a button instead of keys */
+.oneclick { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font: 600 11px var(--sans); color: var(--accent-ink); background: var(--accent); white-space: nowrap; }

@@ -15,7 +15,7 @@ import { SignInById } from "./SignIns";
 import { Switch } from "./Switch";
 import { InstallPanel } from "./Marketplace";
 import { parseInstructions, TeachForm, type TeachDraft } from "./TeachForm";
-import { AbilityIcon, Author, needsOf, partsOf, stateOf } from "./abilityBits";
+import { AbilityIcon, Author, needsOf, OneClick, oneClick, partsOf, stateOf } from "./abilityBits";
 
 type Tab = "overview" | "instructions" | "connect";
 
@@ -62,7 +62,9 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
             <AbilityIcon a={a} size={a.avatar ? 46 : 22} />
           </span>
           <div className="min0">
-            <h2>{a.name}</h2>
+            <h2>
+              {a.name} {oneClick(a) && <OneClick />}
+            </h2>
             <p className="by">
               by <Author a={a} />
               {a.version && <span> · v{a.version}</span>}
@@ -402,11 +404,11 @@ function Instructions({ slug, a, onChange }: { slug: string; a: Ability; onChang
 
 /** Core abilities whose service KIQR signs in to (KIQR's own sign-ins), with what the panel says. */
 const SIGN_IN: Record<string, { title: string; text: string; button: string }> = {
-  unblockingapi: { title: "Sign in with your UnblockingAPI account", text: "One click, no API key to copy. KIQR reads blocked pages through your account, and you can sign it out any time.", button: "Sign in with UnblockingAPI" },
+  unblockingapi: { title: "Sign in with your UnblockingAPI account", text: "One click, no API key to copy. KIQR reads blocked pages through your account. Sign in for this project, or for every project on this computer; this project's own sign-in wins.", button: "Sign in with UnblockingAPI" },
 };
 
 /** Signing in first, prominently; the key only for those who want it. */
-function CoreSignIn({ a, onChange }: { a: Ability; onChange: () => void }) {
+function CoreSignIn({ slug, a, onChange }: { slug: string; a: Ability; onChange: () => void }) {
   const copy = SIGN_IN[a.id];
   const hasKey = a.auth.some((k) => !!k.set);
   const [keys, setKeys] = useState(hasKey);
@@ -415,7 +417,7 @@ function CoreSignIn({ a, onChange }: { a: Ability; onChange: () => void }) {
       <div className="signin-hero">
         <p className="t">{copy.title}</p>
         <p className="muted sm">{copy.text}</p>
-        <SignInById id={a.id} label={copy.button} />
+        <SignInById id={a.id} label={copy.button} slug={slug} />
       </div>
       {keys ? (
         <>
@@ -441,7 +443,7 @@ function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Abi
   return (
     <div className="ab-con">
       {a.core && SIGN_IN[a.id] ? (
-        <CoreSignIn a={a} onChange={onChange} />
+        <CoreSignIn slug={slug} a={a} onChange={onChange} />
       ) : a.core ? (
         <>
           <div className="set-keys">

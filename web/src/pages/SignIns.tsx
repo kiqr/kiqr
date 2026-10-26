@@ -7,16 +7,22 @@ import { Check, ExternalLink, Loader2, LogIn, LogOut } from "lucide-react";
 import { api, useAsync, useEvents, type SignIn } from "../api";
 import "../signin.css";
 
-/** One sign-in: who it is signed in as, or the button (and the code, in device mode). */
-export function SignInRow({ s, onChange, label }: { s: SignIn; onChange: () => void; label?: string }) {
+/**
+ * One sign-in: who it is signed in as, or the button (and the code, in device
+ * mode). With `slug`, a sign-in that can belong to one project asks which:
+ * this project (the default) or every project.
+ */
+export function SignInRow({ s, onChange, label, slug }: { s: SignIn; onChange: () => void; label?: string; slug?: string }) {
   const [busy, setBusy] = useState(false);
+  const choose = !!slug && !!s.per_project;
+  const [forProject, setForProject] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
   const start = async () => {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.startSignIn(s.id, window.location.origin);
+      const r = await api.startSignIn(s.id, window.location.origin, choose && forProject ? slug : undefined);
       if (r.mode === "redirect") {
         window.open(r.url, "_blank", "noopener");
         setOpened(true);
@@ -31,7 +37,7 @@ export function SignInRow({ s, onChange, label }: { s: SignIn; onChange: () => v
   const out = async () => {
     setBusy(true);
     try {
-      await api.signOut(s.id);
+      await api.signOut(s.id, s.scope === "project" ? slug : undefined);
       onChange();
     } finally {
       setBusy(false);
@@ -43,6 +49,7 @@ export function SignInRow({ s, onChange, label }: { s: SignIn; onChange: () => v
         <span className="row">
           <span className="chip ok">
             <Check size={12} /> Signed in{s.account ? ` as ${s.account}` : ""}
+            {choose && (s.scope === "project" ? " · this project" : " · every project")}
           </span>
           <button className="btn t sm" disabled={busy} onClick={() => void out()}>
             <LogOut size={13} /> Sign out
@@ -61,6 +68,16 @@ export function SignInRow({ s, onChange, label }: { s: SignIn; onChange: () => v
         </span>
       ) : (
         <span className="row">
+          {choose && (
+            <span className="scope-pick" role="radiogroup" aria-label="For which projects">
+              <button className={`chip ${forProject ? "acc" : ""}`} role="radio" aria-checked={forProject} onClick={() => setForProject(true)}>
+                This project
+              </button>
+              <button className={`chip ${!forProject ? "acc" : ""}`} role="radio" aria-checked={!forProject} onClick={() => setForProject(false)}>
+                Every project
+              </button>
+            </span>
+          )}
           <button className="btn p sm" disabled={busy} onClick={() => void start()}>
             {busy ? <Loader2 size={13} className="spin" /> : <LogIn size={13} />} {label ?? `Sign in to ${s.name}`}
           </button>
@@ -76,16 +93,16 @@ export function SignInRow({ s, onChange, label }: { s: SignIn; onChange: () => v
   );
 }
 
-/** The sign-ins KIQR knows, kept fresh as they change. */
-export function useSignIns() {
-  const data = useAsync(() => api.signIns(), []);
+/** The sign-ins KIQR knows (as one project sees them), kept fresh as they change. */
+export function useSignIns(slug?: string) {
+  const data = useAsync(() => api.signIns(slug), [slug]);
   useEvents(null, (e) => e.type === "sign_in_changed" && data.reload(), { demo: false });
   return data;
 }
 
 /** One sign-in by id, for a page that shows just that one. */
-export function SignInById({ id, label }: { id: string; label?: string }) {
-  const data = useSignIns();
+export function SignInById({ id, label, slug }: { id: string; label?: string; slug?: string }) {
+  const data = useSignIns(slug);
   const s = data.data?.signins.find((x) => x.id === id);
-  return s ? <SignInRow s={s} onChange={data.reload} label={label} /> : null;
+  return s ? <SignInRow s={s} onChange={data.reload} label={label} slug={slug} /> : null;
 }

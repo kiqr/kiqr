@@ -1,8 +1,9 @@
 // Small pieces shared by the Abilities page, its modal and the marketplace:
 // the icon, the vendor, the state, what an ability includes.
 import { useState } from "react";
-import { BarChart3, BookOpen, Brain, Globe, Image as ImageIcon, KeyRound, ListChecks, Mail, MessageSquareText, Music, PenTool, Plug, Send, ShieldCheck, Sparkles, Terminal, Video, Wrench, type LucideIcon } from "lucide-react";
+import { BarChart3, BookOpen, Zap, Brain, Globe, Image as ImageIcon, KeyRound, ListChecks, Mail, MessageSquareText, Music, PenTool, Plug, Send, ShieldCheck, Sparkles, Terminal, Video, Wrench, type LucideIcon } from "lucide-react";
 import type { Ability } from "../api";
+import "../signin.css";
 import { assetIcon } from "../assetIcons";
 
 const ABILITY_ICON: Record<string, LucideIcon> = { image: ImageIcon, video: Video, music: Music, email: Mail, publish: Send, web: Globe };
@@ -57,6 +58,7 @@ export function stateOf(a: Ability): State {
   if (!a.ready) return { id: a.missing.length ? "missing" : "setup", text: a.missing.length ? (a.kinds?.length ? "no channel yet" : "not connected") : "needs setup", tone: "warn" };
   const n = a.accounts?.length ?? 0;
   if (n > 0) return { id: "own", text: a.kinds?.length ? (n === 1 ? "1 channel" : `${n} channels`) : n === 1 ? "connected" : `${n} accounts`, tone: "ok" };
+  if (a.signed_in) return { id: "own", text: a.signed_in === "project" ? "signed in here" : "signed in", tone: "ok" };
   if (a.auth.length) return { id: "machine", text: "machine key", tone: "ok" };
   return { id: "on", text: "on", tone: "ok" };
 }
@@ -106,3 +108,18 @@ export function needsOf(a: Ability): Part[] {
 }
 
 export const RELOAD_ON = ["secret_set", "connect_finished", "sign_in_changed", "connection_saved", "connection_deleted", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];
+
+/** Connects with a button instead of keys: its manifest has a sign-in, or KIQR signs in to it. */
+export function oneClick(a: Ability): boolean {
+  return !!a.connect || ONE_CLICK_CORE.includes(a.id);
+}
+const ONE_CLICK_CORE = ["unblockingapi"];
+
+/** The label on abilities that connect with one click. */
+export function OneClick() {
+  return (
+    <span className="oneclick" title="Connects with a button: sign in and approve, no keys to copy">
+      <Zap size={10} /> 1-click
+    </span>
+  );
+}
