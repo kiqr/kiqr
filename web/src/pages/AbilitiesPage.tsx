@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence } from "motion/react";
-import { AlertTriangle, BookOpen, KeyRound, Plug, Plus, Send, Sparkles, Terminal } from "lucide-react";
+import { AlertTriangle, BookOpen, KeyRound, Loader2, Plug, Plus, RefreshCw, Send, Sparkles, Terminal } from "lucide-react";
 import { api, useAsync, useEvents, type Ability } from "../api";
 import { Switch } from "./Switch";
 import { AbilityModal } from "./AbilityModal";
@@ -134,7 +134,7 @@ export function AbilitiesPage() {
         {builtin.length > 0 && <Group label="Built in" items={builtin} slug={slug} cols={2} onOpen={open} onChange={data.reload} />}
       </section>
 
-      <Marketplace slug={slug} items={market} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a, tab) => open(a, tab)} onChange={data.reload} />
+      <Marketplace slug={slug} items={[...market, ...fromMarket]} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a, tab) => open(a, tab)} onChange={data.reload} />
 
       <Advanced slug={slug} broken={data.data?.broken ?? []} envFile={data.data?.env_file ?? "~/.kiqr/.env"} projectEnvFile={data.data?.project_env_file ?? null} index={data.data?.index ?? ""} machineFolder={(data.data?.env_file ?? "~/.kiqr/.env").replace(/\/\.env$/, "/abilities")} onDone={data.reload} onGuide={() => guide && open(guide, "instructions")} />
 
@@ -164,6 +164,7 @@ function Group({ label, items, slug, cols, onOpen, onChange }: { label: string; 
 function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: (a: Ability, tab?: "overview" | "instructions" | "connect") => void; onChange: () => void }) {
   const state = stateOf(a);
   const [busy, setBusy] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const toggle = async (want: boolean) => {
     setBusy(true);
@@ -179,7 +180,20 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
       setBusy(false);
     }
   };
+  const update = async () => {
+    setUpdating(true);
+    setError(null);
+    try {
+      await api.updateAbility(a.id, a.scope?.scope === "project" ? slug : undefined);
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setUpdating(false);
+    }
+  };
   const needs = !a.ready && a.installed;
+  const newer = a.installed && a.updatable && !!a.latest && a.latest !== a.version;
   return (
     <li className={`mk-row ab-row ${isOn(a) ? "on" : "off"}`}>
       <div className="main" role="button" tabIndex={0} onClick={() => onOpen(a)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen(a))}>
@@ -195,7 +209,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
           </p>
           <p className="ds">
             by <Author a={a} />
-            {a.version && a.latest && a.latest !== a.version && <span className="warn"> · update available</span>}
+            {a.version && a.latest && a.latest !== a.version && !newer && <span className="warn"> · update available</span>}
             <span className="ab-parts">
               {a.instructions.length > 0 && (
                 <button className="part" title="Read or edit how Seemo does this" onClick={(e) => (e.stopPropagation(), onOpen(a, "instructions"))}>
@@ -231,6 +245,11 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
           </p>
         </div>
         <div className="acts" onClick={(e) => e.stopPropagation()}>
+          {newer && (
+            <button className="btn p sm" disabled={updating} onClick={() => void update()} title={`Version ${a.version} is installed`}>
+              {updating ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Update to {a.latest}
+            </button>
+          )}
           <span title={a.paused || a.machine_off ? "Off for this project" : needs ? (a.channels.length ? "No channel yet; opens it so you can add one" : "Not connected yet; opens it so you can") : "On for this project"}>
             {/* A switch that cannot flip yet still does something: it opens the ability where the missing step is. */}
             <Switch on={!a.paused && !a.machine_off && a.ready} disabled={busy} onChange={(want) => (!a.ready ? onOpen(a, a.auth.length ? "connect" : "overview") : void toggle(want))} />

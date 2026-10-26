@@ -130,9 +130,9 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
                 <span>On for this project</span>
               </label>
               <span className="grow" />
-              {(a.git || (a.source === "shipped" && !a.core)) && (
-                <button className="btn t sm" disabled={!!busy} onClick={() => run("update", () => api.updateAbility(a.id))} title={a.git ? "Fetch the repository again" : "Refresh from this release"}>
-                  {busy === "update" ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Update
+              {a.updatable && (
+                <button className={`btn sm ${a.latest && a.latest !== a.version ? "p" : "t"}`} disabled={!!busy} onClick={() => run("update", () => api.updateAbility(a.id, a.scope?.scope === "project" ? slug : undefined))} title={a.source === "shipped" ? "Refresh from this release" : "Fetch it again from where it came from"}>
+                  {busy === "update" ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} {a.latest && a.latest !== a.version ? `Update to ${a.latest}` : "Update"}
                 </button>
               )}
               {!a.core &&

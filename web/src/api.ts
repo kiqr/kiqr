@@ -292,6 +292,8 @@ export type Ability = {
   scope: Scope | null;
   folder: string | null;
   git: boolean;
+  /** Installed from a repository or shipped with KIQR, so Update can refresh it. */
+  updatable?: boolean;
   /** A core ability switched off in config.yaml for every project. Installed abilities are switched per project only. */
   machine_off: boolean;
   /** Switched off for this project. */

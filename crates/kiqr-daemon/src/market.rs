@@ -602,6 +602,9 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "scope": e.map(|e| json!(e.scope)).unwrap_or_else(|| if core.is_some() { json!({ "scope": "global" }) } else { Value::Null }),
         "folder": e.map(|e| e.dir.display().to_string()),
         "git": e.is_some_and(|e| e.git),
+        // What `update` can refresh: the repository it came from (its source note, its own git, else the
+        // index's repository for it, for folders installed before the note was kept), or a shipped copy.
+        "updatable": !is_core && e.is_some_and(|e| e.source.is_some() || e.git || item.repo.is_some() || extensions::shipped(&item.id).is_some()),
         "machine_off": machine_off,
         "paused": ctx.project_off.iter().any(|x| x == &item.id),
         "ready": ready,
@@ -899,7 +902,13 @@ async fn update(State(app): State<App>, Path(id): Path<String>, Query(q): Query<
         let reg = app.registry.read().await;
         find_installed(&reg, &id, &q.project)?
     };
-    let detail = if let Some(src) = e.source.clone() {
+    // No source note (installed before it was kept): the index's repository for this id.
+    let source = match (&e.source, e.git) {
+        (Some(s), _) => Some(s.clone()),
+        (None, true) => None,
+        (None, false) => catalogue(&app).await.into_iter().find(|i| i.id == id).and_then(|i| i.repo.map(|r| source_note(&r, i.path.as_deref()).trim().to_string())),
+    };
+    let detail = if let Some(src) = source {
         // Fetch the repository again and replace the folder's files; the switch and the source note stay.
         let (repo, path) = match src.split_once('#') {
             Some((r, p)) if safe_path(p) => (r.to_string(), Some(p.to_string())),

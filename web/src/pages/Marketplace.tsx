@@ -1,9 +1,10 @@
 // The marketplace: what Seemo could do, from the index kiqr.cloud hosts plus
-// what ships with KIQR. Installing is for the machine; the keys typed on
+// what ships with KIQR, installed or not (an installed one says so and offers
+// its update). Installing is for the machine; the keys typed on
 // install are this project's. Advanced: a folder or git URL, broken folders.
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertTriangle, BookOpen, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, Search, Terminal, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, RefreshCw, Search, Terminal, X } from "lucide-react";
 import { api, type Ability, type Scope } from "../api";
 import { AbilityIcon, Author } from "./abilityBits";
 
@@ -93,6 +94,19 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const newer = a.installed && !!a.updatable && !!a.latest && a.latest !== a.version;
+  const update = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateAbility(a.id, a.scope?.scope === "project" ? a.scope.project : undefined);
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const install = async () => {
     setBusy(true);
     setError(null);
@@ -109,7 +123,7 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
     }
   };
   return (
-    <motion.article className="mk-card st-available" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.03 }} onClick={() => onOpen()}>
+    <motion.article className={`mk-card ${a.installed ? "st-installed" : "st-available"}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.03 }} onClick={() => onOpen()}>
       <header>
         <span className={`ic ${a.avatar ? "has-avatar" : ""}`}>
           <AbilityIcon a={a} size={a.avatar ? 40 : 18} />
@@ -120,6 +134,7 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
             by <Author a={a} />
             {a.trust === "verified" && <span className="chip ok sm"> verified</span>}
             {a.version && <span> · v{a.version}</span>}
+            {newer && <span className="warn"> · v{a.latest} available</span>}
             {a.cost && <span> · {a.cost}</span>}
           </p>
         </div>
@@ -150,11 +165,29 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
         )}
         {a.hosts.length > 0 && <span className="chip dimmed">calls {a.hosts.join(", ")}</span>}
       </p>
+      {error && a.installed && (
+        <p className="err" onClick={(e) => e.stopPropagation()}>
+          <AlertTriangle size={13} /> {error}
+        </p>
+      )}
       <AnimatePresence>{open && <InstallPanel a={a} busy={busy} error={error} onCancel={() => setOpen(false)} onInstall={() => void install()} />}</AnimatePresence>
       <footer onClick={(e) => e.stopPropagation()}>
-        <button className={`mk-install-btn ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)}>
-          <Download size={14} /> {open ? "Cancel" : "Install"}
-        </button>
+        {a.installed ? (
+          <>
+            <span className="chip ok">
+              <Check size={12} /> Installed
+            </span>
+            {newer && (
+              <button className="mk-install-btn" disabled={busy} onClick={() => void update()}>
+                {busy ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Update to {a.latest}
+              </button>
+            )}
+          </>
+        ) : (
+          <button className={`mk-install-btn ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)}>
+            <Download size={14} /> {open ? "Cancel" : "Install"}
+          </button>
+        )}
         <button className="btn t sm" onClick={() => onOpen()}>
           Details
         </button>

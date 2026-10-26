@@ -126,9 +126,10 @@ select.input { appearance: auto; }
 .mk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .mk-card { display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: var(--r-lg); border: 1px solid var(--line); background: color-mix(in oklab, var(--panel) 80%, transparent); transition: border-color 200ms, transform 250ms cubic-bezier(.2,.8,.2,1); }
 .mk-card:hover { border-color: var(--line-2); transform: translateY(-1px); }
+.mk-card .by .warn { color: var(--warn); }
 .mk-card header { display: flex; align-items: flex-start; gap: 12px; }
 .mk-card header .ic { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; flex: none; color: var(--accent-2); background: rgba(129,140,248,.12); border: 1px solid rgba(129,140,248,.25); }
-.mk-card.st-on header .ic, .mk-card.st-core header .ic { color: var(--ok); background: var(--ok-soft); border-color: rgba(52,211,153,.3); }
+.mk-card.st-on header .ic, .mk-card.st-core header .ic, .mk-card.st-installed header .ic { color: var(--ok); background: var(--ok-soft); border-color: rgba(52,211,153,.3); }
 .mk-card.st-setup header .ic, .mk-card.st-noprogram header .ic { color: var(--warn); background: var(--warn-soft); border-color: rgba(251,191,36,.3); }
 .mk-card.st-paused header .ic { color: var(--muted); background: var(--panel-2); border-color: var(--line-2); }
 .mk-card h3 { font: 600 14.5px/1.3 var(--sans); }
