@@ -223,7 +223,11 @@ pub struct ChannelKind {
     pub label: String,
     /// Destination fields: name → {type, label, help}.
     pub destination: BTreeMap<String, Value>,
-    /// The extra tool, or the ability, that performs a publish.
+    /// What this ability does on channels of the kind: `publish`, `read`,
+    /// `reply`, `manage` (`ROLES`). Empty: `publish`. Several abilities of a
+    /// service may act on one channel; exactly one publishes to it.
+    pub does: Vec<String>,
+    /// The extra tool, or the ability, that performs a publish. Needed when it publishes.
     pub publish: String,
     /// The network's name as people write it ("LinkedIn"); the label when empty.
     pub name: String,
@@ -244,7 +248,19 @@ pub struct ChannelKind {
     pub writing: String,
 }
 
+/// What an ability may do on a channel.
+pub const ROLES: &[&str] = &["publish", "read", "reply", "manage"];
+
 impl ChannelKind {
+    /// `does`, else `publish`.
+    pub fn roles(&self) -> Vec<&str> {
+        if self.does.is_empty() { vec!["publish"] } else { self.does.iter().map(String::as_str).collect() }
+    }
+
+    pub fn publishes(&self) -> bool {
+        self.roles().contains(&"publish")
+    }
+
     pub fn display_name(&self) -> &str {
         if !self.name.is_empty() {
             &self.name
@@ -712,10 +728,16 @@ pub fn validate(m: &Manifest) -> Result<()> {
         }
     }
     for c in &m.channels {
-        if c.kind.trim().is_empty() || c.publish.trim().is_empty() {
-            bail!("a channel needs a kind and a publish tool");
+        if c.kind.trim().is_empty() {
+            bail!("a channel needs a kind");
         }
-        if !m.tools.iter().any(|t| t.name == c.publish) && !m.provides.contains_key(&c.publish) {
+        if let Some(r) = c.does.iter().find(|r| !ROLES.contains(&r.as_str())) {
+            bail!("channel '{}' does '{r}', which is not one of {}", c.kind, ROLES.join(", "));
+        }
+        if c.publishes() && c.publish.trim().is_empty() {
+            bail!("channel '{}' publishes, so it needs a publish tool", c.kind);
+        }
+        if !c.publish.trim().is_empty() && !m.tools.iter().any(|t| t.name == c.publish) && !m.provides.contains_key(&c.publish) {
             bail!("channel '{}' publishes with '{}', which this connection does not define", c.kind, c.publish);
         }
         if !crate::tools::valid_ext_id(&c.kind) {

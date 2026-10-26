@@ -10,7 +10,7 @@
 //! `projects/<slug>/connections/<id>/connection.yaml`, committed, and
 //! `projects/<slug>/connections/<id>/.env`, the keys, never committed.
 
-use crate::extensions::Manifest;
+use crate::extensions::{ChannelKind, Manifest};
 use crate::paths::Home;
 use crate::secrets;
 use crate::Store;
@@ -45,6 +45,10 @@ pub struct Connection {
     /// Destination fields as the kind declares them: `to`, `subject`…
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub destination: BTreeMap<String, Value>,
+    /// The ability that publishes here, when the user picked one of several
+    /// (`pick_publisher`). Empty: the one it was made with, else the first on.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub publisher: String,
     /// A publish Seemo proposes shows a card and waits for a yes. Off, Seemo
     /// publishes here on its own and the card only records what went out.
     pub asks_first: bool,
@@ -65,6 +69,7 @@ impl Default for Connection {
             created_at: Utc::now(),
             kind: String::new(),
             destination: BTreeMap::new(),
+            publisher: String::new(),
             asks_first: true,
             publications: 0,
             last_published: None,
@@ -184,6 +189,20 @@ impl Connection {
         let pick = |k: &str| self.destination.get(k).and_then(|v| v.as_str()).map(str::to_string);
         pick("to").or_else(|| pick("site")).or_else(|| pick("url")).or_else(|| pick("account")).or_else(|| self.destination.values().find_map(|v| v.as_str().map(str::to_string))).unwrap_or_default()
     }
+}
+
+/// The abilities that may publish to a channel, out of the (ability, kind)
+/// pairs a project has on: those of its service that declare its kind and publish.
+pub fn publishers<'a>(c: &Connection, on: &'a [(Manifest, ChannelKind)]) -> Vec<&'a (Manifest, ChannelKind)> {
+    on.iter().filter(|(m, k)| m.service() == c.service() && k.kind == c.kind && k.publishes()).collect()
+}
+
+/// The one that publishes: the channel's `publisher`, else the ability it was
+/// made with, else the first that can. None when no ability on publishes there.
+pub fn pick_publisher<'a>(c: &Connection, on: &'a [(Manifest, ChannelKind)]) -> Option<&'a (Manifest, ChannelKind)> {
+    let all = publishers(c, on);
+    let by = |id: &str| all.iter().copied().find(|(m, _)| !id.is_empty() && m.id == id);
+    by(&c.publisher).or_else(|| by(&c.ability)).or_else(|| all.first().copied())
 }
 
 pub fn env_file(home: &Home, slug: &str, id: &str) -> PathBuf {
@@ -454,6 +473,26 @@ mod tests {
         assert!(Connection::load(&store, "acme", "news").unwrap().default, "defaults are per service");
         Connection::delete(&store, "acme", "work").unwrap();
         assert!(Connection::load(&store, "acme", "me").unwrap().default);
+        // Several abilities on one channel: exactly one publishes, the user's pick first.
+        let poster = |id: &str| manifest(&format!("id: {id}\nname: {id}\nservice: social\ntransport: http\nhosts: [api.social.test]\nchannels:\n  - {{ kind: page, label: Page, publish: post }}\ntools:\n  - name: post\n    request: {{ method: POST, url: \"https://api.social.test/p\" }}\n"));
+        let watcher = manifest("id: social-watch\nname: Watch\nservice: social\ntransport: http\nhosts: [api.social.test]\nchannels:\n  - { kind: page, label: Page, does: [read, reply] }\ntools:\n  - name: read_page\n    request: { method: GET, url: \"https://api.social.test/r\" }\n");
+        let other = manifest("id: elsewhere\nname: Elsewhere\ntransport: http\nhosts: [api.else.test]\nchannels:\n  - { kind: page, label: Page, publish: post }\ntools:\n  - name: post\n    request: { method: POST, url: \"https://api.else.test/p\" }\n");
+        assert_eq!(watcher.channels[0].roles(), vec!["read", "reply"]);
+        assert!(!watcher.channels[0].publishes() && poster("x").channels[0].publishes());
+        let on: Vec<(Manifest, ChannelKind)> = [watcher.clone(), poster("social-b"), other, poster("social-a")].into_iter().flat_map(|m| m.channels.clone().into_iter().map(move |k| (m.clone(), k))).collect();
+        let mut page = Connection { id: "page".into(), label: "Page".into(), ability: "social-a".into(), service: "social".into(), kind: "page".into(), ..Default::default() };
+        let ids = |v: Vec<&(Manifest, ChannelKind)>| v.into_iter().map(|(m, _)| m.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(publishers(&page, &on)), vec!["social-b", "social-a"], "readers and other services never publish here");
+        assert_eq!(pick_publisher(&page, &on).unwrap().0.id, "social-a", "the one it was made with");
+        page.publisher = "social-b".into();
+        assert_eq!(pick_publisher(&page, &on).unwrap().0.id, "social-b", "the user's pick");
+        page.publisher = "gone".into();
+        page.ability = "social-watch".into();
+        assert_eq!(pick_publisher(&page, &on).unwrap().0.id, "social-b", "else the first that can");
+        assert!(pick_publisher(&page, &on[..1]).is_none());
+        assert!(crate::extensions::parse_manifest("id: bad\nname: Bad\ntransport: http\nhosts: [a.test]\nchannels:\n  - { kind: page, label: Page, does: [shout] }\n").is_err());
+        assert!(crate::extensions::parse_manifest("id: bad\nname: Bad\ntransport: http\nhosts: [a.test]\nchannels:\n  - { kind: page, label: Page }\n").is_err(), "publishing needs a publish tool");
+
         // Older records with no service are the ability's own.
         assert_eq!(Connection::load(&store, "acme", "news").unwrap().service(), "blog");
         let _ = std::fs::remove_dir_all(&dir);

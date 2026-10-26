@@ -30,11 +30,11 @@ pub async fn installed(app: &App, slug: &str) -> Vec<ChannelKind> {
     crate::publish::kinds(app, slug).await.into_iter().map(|(_, k)| k).collect()
 }
 
-/// The networks this project can write posts for: the kinds it can publish
-/// to that are networks (not an inbox or a blog), once each.
+/// The networks this project can write posts for: the kinds an ability on
+/// here publishes to that are networks (not an inbox or a blog), once each.
 pub async fn for_posts(app: &App, slug: &str) -> Vec<ChannelKind> {
     let mut out: Vec<ChannelKind> = Vec::new();
-    for k in installed(app, slug).await.into_iter().filter(ChannelKind::is_network) {
+    for k in installed(app, slug).await.into_iter().filter(|k| k.is_network() && k.publishes()) {
         if !out.iter().any(|o| o.kind == k.kind) {
             out.push(k);
         }
@@ -67,16 +67,22 @@ pub async fn profile_hosts(app: &App, slug: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Every network the project knows of: installed ones in full, listed ones by name.
+/// Every network the project knows of: installed ones in full (one entry per
+/// kind, with what the abilities that declare it do there), listed ones by name.
 pub async fn view(app: &App, slug: &str) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    for k in installed(app, slug).await {
+    let on = crate::publish::kinds(app, slug).await;
+    for (_, k) in &on {
         if seen.contains(&k.kind) {
             continue;
         }
         seen.push(k.kind.clone());
-        out.push(json!({ "kind": k.kind, "name": k.display_name(), "icon": k.icon, "network": k.is_network(), "text_limit": k.text_limit, "image": k.image, "preview": k.preview, "installed": true }));
+        let same: Vec<&(kiqr_core::extensions::Manifest, ChannelKind)> = on.iter().filter(|(_, o)| o.kind == k.kind).collect();
+        let mut does: Vec<&str> = same.iter().flat_map(|(_, o)| o.roles()).collect();
+        does.sort_unstable();
+        does.dedup();
+        out.push(json!({ "kind": k.kind, "name": k.display_name(), "icon": k.icon, "network": k.is_network(), "text_limit": k.text_limit, "image": k.image, "preview": k.preview, "installed": true, "does": does, "abilities": same.iter().map(|(m, o)| json!({ "id": m.id, "name": m.name, "service": m.service(), "does": o.roles() })).collect::<Vec<_>>() }));
     }
     for item in crate::market::catalogue(app).await {
         for c in &item.channels {

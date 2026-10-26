@@ -267,6 +267,16 @@ Every ability's modal shows what it includes: instructions, keys (and where each
 
 A channel is an account with a kind (see Accounts): `projects/<slug>/connections/<id>/`, with its own keys.
 
+Several abilities may work on one channel: every ability of the channel's service that declares its kind, each with what it does there (`does` on the kind: `publish`, `read`, `reply`, `manage`; `publish` when left out, which then needs a `publish` tool). One that only reads or replies leaves out `publish`:
+
+```yaml
+service: demo
+channels:
+  - { kind: demo-page, label: Demo page, destination: { page: { label: Page } }, does: [read, reply] }
+```
+
+Exactly one ability publishes to a channel: its `publisher` (`connection.yaml`, set with `PUT …/channels/{id} {publisher}` from those that can), else the ability it was made with, else the first that is on here. A call any ability of the service makes through a channel (its tool's `connection` argument names it) gets the channel's destination fields for what the call left out. The channel view lists `publisher`, `publishers` and `used_by` (each ability with what it does there); the kinds a new channel can use come once per service and kind, with the abilities behind it.
+
 Create one on the Channels page or in the ability's Channels tab, with `kiqr channels <slug>` to list, or let Seemo propose one (`create_channel`, confirmed on a card). Publish with the asset page's Publish button, `kiqr publish <slug> <type>/<id> <channel>`, or Seemo's `publish_asset`, which always opens a card first. A task run that reaches a publish gets the card in the task's chat and waits.
 
 Email is a channel kind like any other, declared by whichever ability sends mail: the marketplace's "Send email from your mail account" (`transport: smtp`, keys `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` (a Gmail app password), optional `SMTP_PORT`, `SMTP_FROM`, `SMTP_SECURITY`), or an HTTP sender with `provides.email`.

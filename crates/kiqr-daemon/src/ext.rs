@@ -315,7 +315,8 @@ fn connection_view(app: &App, e: &Entry, m: &Manifest) -> Value {
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "provides": m.provides.iter().map(|(id, p)| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or(""), "cost": p.cost })).collect::<Vec<_>>(),
         "tools": m.tools.iter().map(|t| json!({ "name": t.name, "label": t.label, "cost": t.provide.cost })).collect::<Vec<_>>(),
-        "channels": m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "destination": c.destination })).collect::<Vec<_>>(),
+        "channels": m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "destination": c.destination, "does": c.roles() })).collect::<Vec<_>>(),
+        "service": m.service(),
         "hosts": m.hosts,
         "command": if m.transport == Transport::Mcp { Some(format!("{} {}", m.command, m.args.join(" ")).trim().to_string()) } else { None },
         "env": m.env,
@@ -825,6 +826,13 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
     let mut args = provide.mapped_args(args);
     if let Some(o) = args.as_object_mut() {
         o.remove("connection");
+        // Through a channel of a kind this ability declares (any ability of its service, not only
+        // the one that publishes): the channel's destination fills what the call left out.
+        if let Some(c) = conn.as_ref().filter(|c| c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind)) {
+            for (k, v) in &c.destination {
+                o.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
     }
     let files = call_files(app, slug, provide, &mut args)?;
     let stored = kiqr_core::connections::env_for(app.store.home(), slug, conn.as_ref(), m);

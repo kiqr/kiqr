@@ -56,6 +56,14 @@ pub(crate) async fn kinds(app: &App, slug: &str) -> Vec<(Manifest, ChannelKind)>
     out
 }
 
+/// The ability that publishes to a channel here (`connections::pick_publisher`),
+/// with its kind. Several abilities of the channel's service may act on it;
+/// one publishes.
+pub(crate) async fn publisher(app: &App, slug: &str, c: &Channel) -> Result<(Manifest, ChannelKind), ApiError> {
+    let on = kinds(app, slug).await;
+    kiqr_core::connections::pick_publisher(c, &on).cloned().ok_or_else(|| bad(format!("no ability publishes to the channel '{}' here; switch one on under Setup → Abilities", c.label)))
+}
+
 /// What the publisher sets itself on every publish; never an option.
 const PUBLISH_ARGS: &[&str] = &["title", "subject", "text", "html", "summary", "tags", "asset", "note", "files"];
 
@@ -115,7 +123,20 @@ async fn list_channels(State(app): State<App>, Path(slug): Path<String>) -> ApiR
     for c in Channel::channels(&app.store, &slug)? {
         list.push(channel_view(&app, &slug, &c).await);
     }
-    let kinds: Vec<Value> = kinds(&app, &slug).await.iter().map(|(m, k)| kind_view(&app, &slug, m, k)).collect();
+    // One entry per service and kind: several abilities may declare it, and the one that publishes speaks for it.
+    let all = kinds(&app, &slug).await;
+    let mut kinds: Vec<Value> = Vec::new();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for (m, k) in all.iter().filter(|(_, k)| k.publishes()).chain(all.iter().filter(|(_, k)| !k.publishes())) {
+        let key = (m.service().to_string(), k.kind.clone());
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        let mut v = kind_view(&app, &slug, m, k);
+        v["used_by"] = json!(all.iter().filter(|(o, ok)| o.service() == m.service() && ok.kind == k.kind).map(|(o, ok)| json!({ "id": o.id, "name": o.name, "does": ok.roles() })).collect::<Vec<_>>());
+        kinds.push(v);
+    }
     Ok(Json(json!({ "channels": list, "kinds": kinds })))
 }
 
@@ -140,7 +161,9 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
         return Err(bad("a channel needs a kind (email, or one a connection declares)"));
     }
     let all = kinds(app, slug).await;
-    let Some((m, k)) = all.iter().find(|(m, k)| k.kind == kind && b.connection.as_deref().is_none_or(|c| c == m.id)).map(|x| (&x.0, &x.1)) else {
+    // An ability that publishes the kind first; one that only reads or replies can still have a channel.
+    let fits = |(m, k): &&(Manifest, ChannelKind)| k.kind == kind && b.connection.as_deref().is_none_or(|c| c == m.id);
+    let Some((m, k)) = all.iter().filter(fits).find(|(_, k)| k.publishes()).or_else(|| all.iter().find(fits)).map(|x| (&x.0, &x.1)) else {
         let have: Vec<String> = all.iter().map(|(_, k)| k.kind.clone()).collect();
         return Err(bad(if have.is_empty() { "nothing can publish yet; install an ability that publishes under Setup → Abilities".to_string() } else { format!("nothing publishes '{kind}'; available: {}", have.join(", ")) }));
     };
@@ -162,7 +185,7 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
     }
     // Its account: another one's keys, or the ones given; else the user adds them on the channel.
     let same = match b.same_as.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(s) => Some(Channel::find(&app.store, slug, &m.id, s).ok_or_else(|| bad(format!("{} has no account '{s}' in this project to share", m.name)))?),
+        Some(s) => Some(Channel::find(&app.store, slug, m.service(), s).ok_or_else(|| bad(format!("{} has no account '{s}' in this project to share", m.name)))?),
         None => None,
     };
     let ready = match &same {
@@ -303,15 +326,12 @@ pub async fn publish_preview(app: &App, slug: &str, b: &PublishBody) -> Result<V
     }
     let (body, files) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
     let subject = c.destination.get("subject").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string).unwrap_or_else(|| a.title.clone());
-    let options = {
-        let reg = app.registry.read().await;
-        match reg.connection(slug, &c.ability).and_then(|(_, m)| m.channels.iter().find(|k| k.kind == c.kind).map(|k| (m.clone(), k.clone()))) {
-            Some((m, k)) => check_options(&m, &k, &b.options)?,
-            None => serde_json::Map::new(),
-        }
-    };
+    let (pm, pk) = publisher(app, slug, &c).await?;
+    let options = check_options(&pm, &pk, &b.options)?;
     Ok(json!({
         "options": options,
+        "publisher": pm.id,
+        "publisher_name": pm.name,
         "asset": { "type": a.kind, "id": a.id, "title": a.title, "status": a.status },
         "channel": c.id,
         "channel_label": c.label,
@@ -355,11 +375,7 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     let campaign = a.source.get("campaign").and_then(|v| v.as_str()).map(str::to_string);
     let body = channels::add_utm(&body, &site_host, &c.kind, campaign.as_deref());
     let subject = preview["subject"].as_str().unwrap_or(&a.title).to_string();
-    let m = {
-        let reg = app.registry.read().await;
-        reg.connection(slug, &c.ability).map(|(_, m)| m.clone()).ok_or_else(|| bad(format!("the ability '{}' is not installed or is off here", c.ability)))?
-    };
-    let k = m.channels.iter().find(|k| k.kind == c.kind).cloned().ok_or_else(|| bad(format!("{} no longer publishes '{}'", m.name, c.kind)))?;
+    let (m, k) = publisher(app, slug, &c).await?;
     // The connection's publish tool, with the asset and the destination.
     let provide = m.tools.iter().find(|t| t.name == k.publish).map(|t| t.provide.clone()).or_else(|| m.provides.get(&k.publish).cloned()).ok_or_else(|| bad(format!("{} has no '{}'", m.name, k.publish)))?;
     let mut args = json!({
@@ -475,11 +491,8 @@ async fn schedule_route(State(app): State<App>, Path((slug, kind, id)): Path<(St
     let c = ready_channel(&app, &slug, channel_of(&a, &b.channel)?).await?;
     let mut a = a;
     a.publish_options = {
-        let reg = app.registry.read().await;
-        match reg.connection(&slug, &c.ability).and_then(|(_, m)| m.channels.iter().find(|k| k.kind == c.kind).map(|k| (m.clone(), k.clone()))) {
-            Some((m, k)) => check_options(&m, &k, &b.options)?,
-            None => serde_json::Map::new(),
-        }
+        let (m, k) = publisher(&app, &slug, &c).await?;
+        check_options(&m, &k, &b.options)?
     };
     Ok(Json(set_schedule(&app, &slug, a, &c, Some(b.at)).await?))
 }

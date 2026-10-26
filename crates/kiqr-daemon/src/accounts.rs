@@ -60,6 +60,28 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
     v["channel"] = json!(c.is_channel());
     v["default"] = json!(c.default);
     v["destination_text"] = json!(c.destination_text());
+    // Every ability of its service that is on here uses it; on a channel, with what each does there.
+    let on = crate::publish::kinds(app, slug).await;
+    let mut used_by: Vec<Value> = Vec::new();
+    {
+        let reg = app.registry.read().await;
+        let off = crate::ext::project_off(app, slug);
+        for (_, o) in reg.connections(slug).into_iter().filter(|(_, o)| o.service() == c.service() && !off.contains(&o.id)) {
+            let does: Vec<&str> = o.channels.iter().filter(|k| c.is_channel() && k.kind == c.kind).flat_map(|k| k.roles()).collect();
+            if c.is_channel() && does.is_empty() {
+                continue;
+            }
+            used_by.push(json!({ "id": o.id, "name": o.name, "does": does }));
+        }
+    }
+    v["service"] = json!(c.service());
+    v["used_by"] = json!(used_by);
+    if c.is_channel() {
+        let p = connections::pick_publisher(c, &on);
+        v["publisher"] = json!(p.map(|(pm, _)| pm.id.clone()));
+        v["publisher_name"] = json!(p.map(|(pm, _)| pm.name.clone()));
+        v["publishers"] = json!(connections::publishers(c, &on).iter().map(|(pm, _)| json!({ "id": pm.id, "name": pm.name })).collect::<Vec<_>>());
+    }
     match &m {
         Some(m) => {
             v["ability_name"] = json!(m.name);
@@ -162,6 +184,8 @@ pub struct Patch {
     pub destination: Option<serde_json::Map<String, Value>>,
     /// false lets Seemo publish through this channel without a card.
     pub asks_first: Option<bool>,
+    /// The ability that publishes to this channel, of those that can; empty goes back to the default.
+    pub publisher: Option<String>,
 }
 
 pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connection, ApiError> {
@@ -181,6 +205,18 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connect
     }
     if let Some(a) = p.asks_first {
         c.asks_first = a;
+    }
+    if let Some(id) = p.publisher.map(|s| s.trim().to_string()) {
+        if !c.is_channel() {
+            return Err(bad("only a channel has a publisher"));
+        }
+        let on = crate::publish::kinds(app, slug).await;
+        let can = connections::publishers(&c, &on);
+        if !id.is_empty() && !can.iter().any(|(m, _)| m.id == id) {
+            let names: Vec<&str> = can.iter().map(|(m, _)| m.id.as_str()).collect();
+            return Err(bad(if names.is_empty() { format!("no ability publishes to '{}' here", c.label) } else { format!("'{id}' does not publish here; one of {}", names.join(", ")) }));
+        }
+        c.publisher = id;
     }
     c.save(&app.store, slug)?;
     app.store.commit(&format!("{}({slug}): {}", if c.is_channel() { "channel" } else { "account" }, c.label)).await?;
