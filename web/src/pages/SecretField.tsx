@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import { api } from "../api";
+import { FieldInput } from "./FieldInput";
 
 /** A help line: a bare URL becomes "where to get it"; a sentence keeps its words, with any URL in it linked. */
 export function Hint({ text }: { text: string }) {
@@ -27,7 +28,7 @@ export function Hint({ text }: { text: string }) {
   );
 }
 
-export function SecretField({ name, label, help, set, optional, slug, account, onSaved }: { name: string; label: string; help?: string; set: boolean | string | null; optional?: boolean; slug?: string; account?: string; onSaved?: () => void }) {
+export function SecretField({ name, label, help, set, optional, options, slug, account, onSaved }: { name: string; label: string; help?: string; set: boolean | string | null; optional?: boolean; options?: string[]; slug?: string; account?: string; onSaved?: () => void }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(!!set);
@@ -61,7 +62,7 @@ export function SecretField({ name, label, help, set, optional, slug, account, o
       </span>
       {editing ? (
         <span className="in">
-          <input className="input mono" type="password" autoComplete="off" spellCheck={false} placeholder={done ? "new value" : "paste it here"} value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && value.trim() && void save()} />
+          <FieldInput mono secret options={options} placeholder={done ? "new value" : "paste it here"} value={value} onChange={setValue} onEnter={() => value.trim() && void save()} ariaLabel={label} />
           <button className="btn g sm" disabled={busy || !value.trim()} onClick={() => void save()}>
             {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Save
           </button>

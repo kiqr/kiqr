@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, Archive, ArchiveRestore, CalendarClock, Check, ExternalLink, Loader2, Send, Undo2 } from "lucide-react";
+import { FieldInput } from "./FieldInput";
 import { api, useAsync, type Asset, type AssetStatus, type Channel } from "../api";
 import { networkOf, useNetworks } from "../networks";
 import type { Network } from "../api";
@@ -159,11 +160,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
             <>
               {offered.map(([name, spec]) => (
                 <span key={name} className="pub-opt" title={spec.description}>
-                  {(spec.enum ?? []).map((v) => (
-                    <button key={v} className={`chip sm ${(opts[name] ?? spec.enum?.[0]) === v ? "acc" : ""}`} onClick={() => setOpts({ ...opts, [name]: v })}>
-                      {v}
-                    </button>
-                  ))}
+                  <FieldInput options={spec.enum} value={opts[name] ?? spec.enum?.[0] ?? ""} onChange={(v) => setOpts({ ...opts, [name]: v })} ariaLabel={name} />
                 </span>
               ))}
               <button className="btn p sm" disabled={!!busy} onClick={() => void run("publish", () => api.publishAsset(slug, a, "", "", opts))}>

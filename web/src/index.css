@@ -170,3 +170,4 @@ select.input { width: auto; }
 .sect header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; } .sect header p { color: var(--dim); font-size: 13px; }
 .pub-opt { display: inline-flex; gap: 4px; }
 .pub-opt .chip { cursor: pointer; }
+.model-pick { display: inline-flex; gap: 6px; flex-wrap: wrap; min-width: 0; }

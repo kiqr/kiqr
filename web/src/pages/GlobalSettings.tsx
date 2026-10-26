@@ -164,6 +164,29 @@ const TASKS: { id: keyof Config["models"]; name: string; text: string; icon: Luc
   { id: "synthesize", name: "Building the profile", text: "Turns the facts into the business profile, brand voice and content gaps.", icon: Sparkles },
   { id: "chat", name: "Seemo", text: "Talks with you, writes your assets and runs scheduled tasks.", icon: Terminal },
 ];
+/** A model: one of the known ones from a list, or any other `provider/model` typed after "Other model…". */
+function ModelPick({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [other, setOther] = useState(!!value && !PRESETS.includes(value));
+  return (
+    <span className="model-pick">
+      <select className="input mono" value={other ? "__other" : value} onChange={(e) => (e.target.value === "__other" ? setOther(true) : (setOther(false), onChange(e.target.value)))} aria-label="Model">
+        {!value && (
+          <option value="" disabled>
+            Choose…
+          </option>
+        )}
+        {PRESETS.map((p) => (
+          <option key={p} value={p}>
+            {p}
+          </option>
+        ))}
+        <option value="__other">Other model…</option>
+      </select>
+      {other && <input className="input mono" value={value} spellCheck={false} placeholder="provider/model" onChange={(e) => onChange(e.target.value.trim())} aria-label="Other model" />}
+    </span>
+  );
+}
+
 const PRESETS = [
   "claude-cli/haiku",
   "claude-cli/sonnet",
@@ -228,7 +251,7 @@ function Models({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (
                   <p className="ds">{t.text}</p>
                 </div>
                 <div className="pick">
-                  <input className="input mono" list="kiqr-models" value={value} spellCheck={false} onChange={(e) => setDraft({ ...draft, models: { ...draft.models, [t.id]: e.target.value.trim() } })} />
+                  <ModelPick value={value} onChange={(v) => setDraft({ ...draft, models: { ...draft.models, [t.id]: v } })} />
                   <span className={`chip ${state === "ok" ? "ok" : "warn"}`}>
                     <b />
                     {state === "ok" ? "ready" : state}
@@ -237,11 +260,6 @@ function Models({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (
               </div>
             );
           })}
-          <datalist id="kiqr-models">
-            {PRESETS.map((p) => (
-              <option key={p} value={p} />
-            ))}
-          </datalist>
         </div>
       </Card>
       <Card icon={Terminal} title="On this machine" text="What KIQR found. Command-line tools use your existing subscription; nothing to configure.">

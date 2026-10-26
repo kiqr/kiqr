@@ -59,7 +59,7 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
             v["connection_name"] = json!(m.name);
             v["ready"] = json!(ready(app, slug, c, m));
             v["missing"] = json!(c.missing(app.store.home(), slug, m));
-            v["auth"] = json!(m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": keys.contains_key(&a.env) })).collect::<Vec<_>>());
+            v["auth"] = json!(m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "set": keys.contains_key(&a.env) })).collect::<Vec<_>>());
             v["connect"] = kiqr_core::connect::view(m.connect.as_ref());
             if let Some(k) = m.channels.iter().find(|k| k.kind == c.kind) {
                 v["kind_label"] = json!(k.label);

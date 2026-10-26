@@ -97,7 +97,7 @@ fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
         "connection_name": m.name,
         "ready": true,
         "destination": k.destination,
-        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": Value::Null })).collect::<Vec<_>>(),
+        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "set": Value::Null })).collect::<Vec<_>>(),
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "accounts": accounts,
         "options": publish_options(m, k),
@@ -149,6 +149,11 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
         let required = !spec["optional"].as_bool().unwrap_or(false);
         match b.destination.get(field).and_then(|v| if v.is_string() { v.as_str().map(|s| s.trim().to_string()) } else { Some(v.to_string()) }).filter(|s| !s.is_empty()) {
             Some(v) => {
+                if let Some(allowed) = spec["enum"].as_array().filter(|a| !a.is_empty()) {
+                    if !allowed.iter().any(|a| a.as_str() == Some(v.as_str())) {
+                        return Err(bad(format!("'{}' is one of {}", spec["label"].as_str().unwrap_or(field), allowed.iter().filter_map(|a| a.as_str()).collect::<Vec<_>>().join(", "))));
+                    }
+                }
                 destination.insert(field.clone(), Value::String(v));
             }
             None if required => return Err(bad(format!("the destination needs '{}' ({})", field, spec["label"].as_str().unwrap_or(field)))),

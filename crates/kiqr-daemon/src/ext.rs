@@ -311,7 +311,7 @@ fn connection_view(app: &App, e: &Entry, m: &Manifest) -> Value {
         "core": e.is_core(),
         "categories": m.categories,
         "icon": m.icon,
-        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": provider::has_env(&a.env) })).collect::<Vec<_>>(),
+        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "set": provider::has_env(&a.env) })).collect::<Vec<_>>(),
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "provides": m.provides.iter().map(|(id, p)| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or(""), "cost": p.cost })).collect::<Vec<_>>(),
         "tools": m.tools.iter().map(|t| json!({ "name": t.name, "label": t.label, "cost": t.provide.cost })).collect::<Vec<_>>(),
@@ -460,6 +460,11 @@ pub(crate) async fn set_connection_secret(app: &App, slug: &str, conn: &str, nam
     if !kiqr_core::connections::key_names(&m).iter().any(|n| n == name) {
         return Err(bad(format!("{} does not use {name}", m.name)));
     }
+    if let Some(k) = m.auth.iter().find(|a| a.env == name && !a.options.is_empty()) {
+        if !value.is_empty() && !k.options.contains(&value) {
+            return Err(bad(format!("{} is one of {}", if k.label.is_empty() { name } else { k.label.as_str() }, k.options.join(", "))));
+        }
+    }
     kiqr_core::secrets::write_env(&c.env_file(app.store.home(), slug), name, &value).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     app.mcp.stop(&format!("{}#{}", c.ability, c.id)).await;
     app.bus.emit(Some(slug), EventKind::SecretSet { name: name.to_string(), set: !value.is_empty(), project: Some(slug.to_string()) });
@@ -473,9 +478,13 @@ async fn check_secret(app: &App, name: &str, value: &str) -> Result<String, ApiE
     if !known_secret(app, name).await {
         return Err(bad(format!("no ability or provider uses {name}")));
     }
-    let value = value.trim().to_string();
+    let mut value = value.trim().to_string();
     if value.contains('\n') {
         return Err(bad("a secret is one line"));
+    }
+    // A site address is used as a base for paths: "https://myblog.com/" and "https://myblog.com" mean the same.
+    if (value.starts_with("https://") || value.starts_with("http://")) && value.ends_with('/') && url::Url::parse(&value).is_ok_and(|u| u.path() == "/" && u.query().is_none()) {
+        value.pop();
     }
     Ok(value)
 }

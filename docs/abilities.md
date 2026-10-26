@@ -70,7 +70,7 @@ version: 0.1.0
 summary: Publish articles to our WordPress site.
 homepage: https://example.com/wp-admin
 transport: http                # http | command | mcp | builtin
-auth:                          # keys by variable name; values live in .env, set from the ability's Connect tab
+auth:                          # keys by variable name; values live on the project's accounts; `options: [a, b]` makes one a choice from a list
   - { env: WP_USER, label: User name }
   - { env: WP_APP_PASSWORD, label: Application password, help: https://example.com/wp-admin/profile.php }
 hosts: [myblog.com]            # the only hosts an http ability may call (subdomains included); "${WP_SITE}" makes it the project's own site

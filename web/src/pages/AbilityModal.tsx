@@ -407,7 +407,7 @@ function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Abi
         <>
           <div className="set-keys">
             {a.auth.map((k) => (
-              <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} set={k.set} optional={k.optional} onSaved={onChange} />
+              <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} set={k.set} optional={k.optional} options={k.options} onSaved={onChange} />
             ))}
           </div>
           <p className="muted sm">KIQR's own key, on this machine; every project uses it.</p>

@@ -310,3 +310,14 @@ a.mk-author:hover { color: var(--accent); }
   .acc-name .input { max-width: 100%; }
   .teach-form.acc-form .grid { grid-template-columns: 1fr; }
 }
+.acc-form { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; max-width: 560px; }
+.acc-form .scope { display: flex; gap: 6px; flex-wrap: wrap; }
+.acc-form .scope .chip { cursor: pointer; }
+.acc-form .acts { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.acc-form .ab-sign, .acc-keys .ab-sign { border: 0; padding: 0; }
+.acc-field { display: flex; flex-direction: column; gap: 5px; }
+.acc-field .nm { font-size: 13px; font-weight: 500; }
+.acc-field .ds { font-size: 12px; }
+.acc-links { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; }
+.lnk-btn { background: none; border: 0; padding: 0; color: var(--muted); font: 12.5px var(--sans); cursor: pointer; text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.lnk-btn:hover { color: var(--accent); }

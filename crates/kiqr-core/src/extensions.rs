@@ -42,6 +42,10 @@ pub struct AuthKey {
     pub help: String,
     /// Optional: a key the connection works without.
     pub optional: bool,
+    /// The values it can take when it is a choice (`starttls`, `tls`, `none`):
+    /// the UI shows a list, and anything else is refused.
+    #[serde(alias = "enum", skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

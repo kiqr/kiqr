@@ -227,7 +227,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
                 </span>
               )}
             </span>
-            {needs && <span className="warn"> · needs {a.missing.length ? a.missing.join(", ") : a.program_found === false ? "its program" : "setup"}</span>}
+            {needs && (a.core || !a.missing.length) && <span className="warn"> · needs {a.missing.length ? a.auth.filter((k) => a.missing.includes(k.env)).map((k) => k.label || k.env).join(", ") : a.program_found === false ? "its program" : "setup"}</span>}
           </p>
         </div>
         <div className="acts" onClick={(e) => e.stopPropagation()}>

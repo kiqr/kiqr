@@ -6,29 +6,47 @@ import { useEffect, useState } from "react";
 import { Check, Loader2, Pencil, Plus, Star, Trash2, X } from "lucide-react";
 import { api, useEvents, type Account, type ConnectInfo, type KindInfo } from "../api";
 import { ConnectButton } from "./ConnectButton";
-import { SecretField } from "./SecretField";
+import { Hint, SecretField } from "./SecretField";
+import { enumOf, FieldInput } from "./FieldInput";
 import "../settings.css";
 
 /** What an add form needs to know about the ability. */
-export type AbilityInfo = { id: string; name: string; auth: { env: string; label: string; help: string; optional: boolean }[]; connect?: ConnectInfo | null };
+export type AbilityInfo = { id: string; name: string; auth: { env: string; label: string; help: string; optional: boolean; options?: string[] }[]; connect?: ConnectInfo | null };
 
 export const ACCOUNT_EVENTS = ["connection_saved", "connection_deleted", "secret_set", "connect_finished"];
 
-/** The account's keys: sign in again with the service's button, or type them. */
-export function AccountKeys({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
+/**
+ * The account's keys. With a sign-in button: the button, and the keys only
+ * behind "Enter the keys yourself". `only` narrows them to what is still
+ * missing (pasting what the service showed).
+ */
+export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Account; onChange: () => void; only?: "missing" }) {
+  const [open, setOpen] = useState(!a.connect || only === "missing");
+  const [more, setMore] = useState(false);
+  const shown = a.auth.filter((k) => (only === "missing" ? a.missing.includes(k.env) : more || !k.optional || k.set));
+  const hidden = only !== "missing" && !more && a.auth.some((k) => k.optional && !k.set);
   return (
     <div className="acc-keys">
-      {a.connect && (
-        <>
-          <ConnectButton slug={slug} ability={a.ability} account={a.id} connect={a.connect} auth={a.auth} label={a.ready ? "Connect again" : a.connect.label} onDone={onChange} />
-          <p className="ab-or">Or enter the keys yourself</p>
-        </>
-      )}
-      <div className="set-keys">
-        {a.auth.map((k) => (
-          <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} set={k.set} optional={k.optional} slug={slug} account={a.id} onSaved={onChange} />
-        ))}
-      </div>
+      {a.connect && only !== "missing" && <ConnectButton slug={slug} ability={a.ability} account={a.id} connect={a.connect} auth={a.auth} label={a.ready ? "Connect again" : a.connect.label} onDone={onChange} />}
+      {open ? (
+        <div className="set-keys">
+          {shown.map((k) => (
+            <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} set={k.set} optional={k.optional} options={k.options} slug={slug} account={a.id} onSaved={onChange} />
+          ))}
+        </div>
+      ) : null}
+      <p className="acc-links">
+        {!open && (
+          <button className="lnk-btn" onClick={() => setOpen(true)}>
+            Enter the keys yourself
+          </button>
+        )}
+        {open && hidden && (
+          <button className="lnk-btn" onClick={() => setMore(true)}>
+            More
+          </button>
+        )}
+      </p>
     </div>
   );
 }
@@ -118,17 +136,63 @@ export function AccountCard({ slug, a, several, onChange }: { slug: string; a: A
   );
 }
 
+/** A short name from the first web address among the values: "whitening.se". */
+function hostOf(values: string[]): string {
+  for (const v of values) {
+    try {
+      const u = new URL(v.trim());
+      if (u.hostname) return u.hostname.replace(/^www\./, "");
+    } catch {
+      /* not a URL */
+    }
+  }
+  return "";
+}
+
+type Field = { key: string; label: string; help?: string; optional?: boolean; options?: string[]; secret?: boolean };
+
+/** Help that is a link to follow (where to get a key, a sentence with a link in it), not an example to show in the field. */
+function linkHelp(f: Field): boolean {
+  const h = (f.help ?? "").trim();
+  if (/^https?:\/\/\S+$/.test(h)) return !!f.secret;
+  return /https?:\/\//.test(h);
+}
+
+function Fields({ fields, values, onChange }: { fields: Field[]; values: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  return (
+    <>
+      {fields.map((f) => (
+        <label key={f.key} className="acc-field">
+          <span className="nm">
+            {f.label}
+            {f.optional && <small className="dim"> optional</small>}
+          </span>
+          <FieldInput mono={f.secret} secret={f.secret} options={f.options} optional={f.optional} value={values[f.key] ?? ""} onChange={(v) => onChange(f.key, v)} placeholder={f.help && !linkHelp(f) ? f.help : ""} ariaLabel={f.label} />
+          {f.help && linkHelp(f) && (
+            <span className="ds">
+              <Hint text={f.help} />
+            </span>
+          )}
+        </label>
+      ))}
+    </>
+  );
+}
+
 /**
- * Add an account, or a channel when `kinds` is given (it publishes): its
- * name, a channel's destination, then its account: signed in with the
- * service's button, typed keys, or the same account as another channel.
+ * Add an account, or a channel when `kinds` is given (it publishes). Only
+ * what is needed shows: with a sign-in button, what it asks first (the site)
+ * and the button; otherwise the required keys. Sharing another account, typing
+ * the keys by hand, and everything optional (the name too) wait behind links.
  */
 export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel }: { slug: string; ability: AbilityInfo; kinds?: KindInfo[]; shareable?: { id: string; label: string }[]; onDone: () => void; onCancel: () => void }) {
   const [kind, setKind] = useState<KindInfo | undefined>(kinds?.[0]);
   const [label, setLabel] = useState("");
   const [dest, setDest] = useState<Record<string, string>>({});
-  const [share, setShare] = useState<string>("");
   const [keys, setKeys] = useState<Record<string, string>>({});
+  const [mode, setMode] = useState<"connect" | "keys" | "share">(ability.connect ? "connect" : "keys");
+  const [share, setShare] = useState<string>(shareable?.[0]?.id ?? "");
+  const [more, setMore] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A sign-in adds the account as it starts; from then on the form shows that account.
@@ -141,17 +205,30 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
     if (a?.ready) onDone();
   };
   useEvents(slug, (e) => created && ACCOUNT_EVENTS.includes(e.type) && void reloadCreated(created.id), { demo: false });
-  const fields = Object.entries(kind?.destination ?? {}) as [string, { label?: string; help?: string; optional?: boolean }][];
-  const destOk = fields.every(([f, spec]) => spec.optional || (dest[f] ?? "").trim());
-  const keysOk = ability.auth.every((k) => k.optional || (keys[k.env] ?? "").trim());
-  const ok = destOk && (share ? true : keysOk);
+
+  const destFields: Field[] = Object.entries(kind?.destination ?? {}).map(([k, spec]) => {
+    const s = spec as { label?: string; help?: string; optional?: boolean };
+    return { key: k, label: s.label ?? k, help: s.help, optional: s.optional, options: enumOf(spec) };
+  });
+  const keyField = (a: AbilityInfo["auth"][number]): Field => ({ key: a.env, label: a.label || a.env, help: a.help, optional: a.optional, options: a.options, secret: /PASSWORD|KEY|TOKEN|SECRET/.test(a.env) });
+  const asked = mode === "connect" ? ability.auth.filter((a) => ability.connect?.needs.includes(a.env)) : mode === "keys" ? ability.auth.filter((a) => !a.optional) : [];
+  const optionalKeys = mode === "keys" ? ability.auth.filter((a) => a.optional) : [];
+  const required = [...destFields.filter((f) => !f.optional), ...asked.map(keyField)];
+  const optional = [...destFields.filter((f) => f.optional), ...optionalKeys.map(keyField)];
+  const values = { ...dest, ...keys };
+  const set = (k: string, v: string) => (destFields.some((f) => f.key === k) ? setDest({ ...dest, [k]: v }) : setKeys({ ...keys, [k]: v }));
+  const ok = required.every((f) => (values[f.key] ?? "").trim()) && (mode !== "share" || !!share);
+  const name = label.trim() || hostOf(Object.values(values));
+  const noun = kind ? "channel" : "account";
+
   const save = async () => {
     setSaving(true);
     setError(null);
     try {
-      const secrets = share ? undefined : Object.fromEntries(Object.entries(keys).filter(([, v]) => v.trim()));
-      if (kind) await api.createChannel(slug, { label, kind: kind.kind, connection: ability.id, destination: dest, secrets, same_as: share || undefined });
-      else await api.createAccount(slug, { ability: ability.id, label, secrets, same_as: share || undefined });
+      const secrets = mode === "keys" ? Object.fromEntries(Object.entries(keys).filter(([, v]) => v.trim())) : undefined;
+      const same_as = mode === "share" ? share : undefined;
+      if (kind) await api.createChannel(slug, { label: name, kind: kind.kind, connection: ability.id, destination: dest, secrets, same_as });
+      else await api.createAccount(slug, { ability: ability.id, label: name, secrets, same_as });
       onDone();
     } catch (e) {
       setError((e as Error).message);
@@ -159,18 +236,17 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
       setSaving(false);
     }
   };
-  const noun = kind ? "channel" : "account";
 
   if (created)
     return (
-      <div className="pcard teach-form acc-form">
+      <div className="pcard acc-form">
         <p className="cap">
           {created.label}: {created.ready ? "connected" : "finish connecting"}
         </p>
         {!created.ready && (
           <p className="muted sm">
             {paste ? (
-              "Approve in the tab that opened. It shows what KIQR needs once, because it only sends it back over https: paste it into the fields below."
+              "Approve in the tab that opened. It shows what KIQR needs once, because it only sends it back over https: paste it below."
             ) : (
               <>
                 <Loader2 size={12} className="spin" /> Waiting for you to approve in the tab that opened.
@@ -178,23 +254,23 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
             )}
           </p>
         )}
-        <AccountKeys slug={slug} a={created} onChange={() => void reloadCreated(created.id)} />
+        <AccountKeys slug={slug} a={created} only={paste ? "missing" : undefined} onChange={() => void reloadCreated(created.id)} />
         <div className="acts">
-          <button className="btn p" onClick={onDone}>
-            <Check size={14} /> Done
+          <button className="btn p sm" onClick={onDone}>
+            <Check size={13} /> Done
           </button>
         </div>
       </div>
     );
 
+  const others: { id: string; label: string }[] = shareable ?? [];
   return (
-    <div className="pcard teach-form acc-form">
+    <div className="pcard acc-form">
       <p className="cap">
-        New {noun} · {ability.name}
+        New {noun} · {kind?.label ?? ability.name}
       </p>
       {kinds && kinds.length > 1 && (
         <div className="scope">
-          <span className="nm">Kind</span>
           {kinds.map((k) => (
             <button key={k.kind} className={`chip ${kind?.kind === k.kind ? "acc" : ""}`} onClick={() => (setKind(k), setDest({}))}>
               {k.label}
@@ -202,77 +278,59 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
           ))}
         </div>
       )}
-      <div className="grid">
-        <label>
-          <span className="nm">Name</span>
-          <input className="input" value={label} placeholder={kind ? kind.label : ability.name} onChange={(e) => setLabel(e.target.value)} />
-          <span className="ds">Optional. How it shows up here and in chats.</span>
+      {mode === "share" && (
+        <label className="acc-field">
+          <span className="nm">Same account as</span>
+          <FieldInput options={others.map((o) => o.label)} value={others.find((o) => o.id === share)?.label ?? ""} onChange={(v) => setShare(others.find((o) => o.label === v)?.id ?? "")} ariaLabel="Same account as" />
         </label>
-        {fields.map(([f, s]) => (
-          <label key={f}>
-            <span className="nm">
-              {s.label ?? f}
-              {s.optional && <small className="dim"> optional</small>}
-            </span>
-            <input className="input" value={dest[f] ?? ""} onChange={(e) => setDest({ ...dest, [f]: e.target.value })} placeholder={s.help ?? ""} />
-            {s.help && <span className="ds">{s.help}</span>}
-          </label>
-        ))}
-      </div>
-      {ability.auth.length > 0 && (
+      )}
+      <Fields fields={required} values={values} onChange={set} />
+      {more && (
         <>
-          {shareable && shareable.length > 0 && (
-            <div className="scope">
-              <span className="nm">Account</span>
-              <button className={`chip ${!share ? "acc" : ""}`} onClick={() => setShare("")}>
-                Its own
-              </button>
-              {shareable.map((s) => (
-                <button key={s.id} className={`chip ${share === s.id ? "acc" : ""}`} onClick={() => setShare(s.id)}>
-                  Same as {s.label}
-                </button>
-              ))}
-            </div>
-          )}
-          {!share && (
-            <>
-              {ability.connect &&
-                (destOk ? (
-                  <ConnectButton slug={slug} ability={ability.id} connect={ability.connect} auth={ability.auth.map((k) => ({ ...k, set: null }))} fresh={{ label, kind: kind?.kind, destination: dest }} onStarted={(id, p) => (setPaste(p), void reloadCreated(id))} onDone={onDone} />
-                ) : (
-                  <p className="muted sm">Fill in where it goes first, then sign in with “{ability.connect.label}”.</p>
-                ))}
-              {ability.connect && <p className="ab-or">Or enter the keys yourself</p>}
-              <div className="grid">
-                {ability.auth.map((a) => (
-                  <label key={a.env}>
-                    <span className="nm">
-                      {a.label || a.env}
-                      {a.optional && <small className="dim"> optional</small>}
-                    </span>
-                    <input className="input mono" type={/PASSWORD|KEY|TOKEN|SECRET/.test(a.env) ? "password" : "text"} autoComplete="off" spellCheck={false} value={keys[a.env] ?? ""} onChange={(e) => setKeys({ ...keys, [a.env]: e.target.value })} placeholder={a.help && !/^https?:/.test(a.help) ? a.help : ""} />
-                    {a.help && /^https?:/.test(a.help) && (
-                      <a className="ds" href={a.help} target="_blank" rel="noreferrer">
-                        where to get it
-                      </a>
-                    )}
-                  </label>
-                ))}
-              </div>
-              <p className="muted sm">Saved with this {noun} only, never shown again.</p>
-            </>
-          )}
+          <label className="acc-field">
+            <span className="nm">
+              Name<small className="dim"> optional</small>
+            </span>
+            <FieldInput value={label} placeholder={hostOf(Object.values(values)) || kind?.label || ability.name} onChange={setLabel} ariaLabel="Name" />
+          </label>
+          <Fields fields={optional} values={values} onChange={set} />
         </>
       )}
-      {error && <p className="err">{error}</p>}
+      {error && <p className="err sm">{error}</p>}
       <div className="acts">
-        <button className="btn p" disabled={!ok || saving} onClick={() => void save()}>
-          {saving ? <Loader2 size={14} className="spin" /> : <Check size={14} />} Add the {noun}
-        </button>
-        <button className="btn t" onClick={onCancel}>
+        {mode === "connect" && ability.connect ? (
+          <ConnectButton slug={slug} ability={ability.id} connect={ability.connect} auth={ability.auth.map((k) => ({ ...k, set: null }))} values={keys} disabled={!ok} fresh={{ label: name, kind: kind?.kind, destination: dest }} onStarted={(id, p) => (setPaste(p), void reloadCreated(id))} onDone={onDone} />
+        ) : (
+          <button className="btn p sm" disabled={!ok || saving} onClick={() => void save()}>
+            {saving ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Add the {noun}
+          </button>
+        )}
+        <button className="btn t sm" onClick={onCancel}>
           Cancel
         </button>
       </div>
+      <p className="acc-links">
+        {mode !== "share" && others.length > 0 && (
+          <button className="lnk-btn" onClick={() => setMode("share")}>
+            Same account as {others.length === 1 ? others[0].label : "another"}
+          </button>
+        )}
+        {mode !== "keys" && ability.auth.length > 0 && (
+          <button className="lnk-btn" onClick={() => setMode("keys")}>
+            Enter the keys yourself
+          </button>
+        )}
+        {mode !== "connect" && ability.connect && (
+          <button className="lnk-btn" onClick={() => setMode("connect")}>
+            {ability.connect.label} instead
+          </button>
+        )}
+        {!more && (
+          <button className="lnk-btn" onClick={() => setMore(true)}>
+            More
+          </button>
+        )}
+      </p>
     </div>
   );
 }

@@ -7,10 +7,11 @@
 import { useState } from "react";
 import { ExternalLink, Loader2, LogIn } from "lucide-react";
 import { api, useEvents, type ConnectInfo } from "../api";
+import { FieldInput } from "./FieldInput";
 
-type Key = { env: string; label: string; help: string; optional: boolean; set: boolean | string | null };
+type Key = { env: string; label: string; help: string; optional: boolean; options?: string[]; set: boolean | string | null };
 
-export function ConnectButton({ slug, ability, connect, auth, account, fresh, label, onStarted, onDone }: {
+export function ConnectButton({ slug, ability, connect, auth, account, fresh, label, values: given, disabled, onStarted, onDone }: {
   slug: string;
   ability: string;
   connect: ConnectInfo;
@@ -21,12 +22,16 @@ export function ConnectButton({ slug, ability, connect, auth, account, fresh, la
   fresh?: { label?: string; kind?: string; destination?: Record<string, string> };
   /** The button's words, when not the manifest's ("Connect again"). */
   label?: string;
+  /** What it asks first, when the form around it already asked (then no fields here). */
+  values?: Record<string, string>;
+  disabled?: boolean;
   /** The account the sign-in goes to, once it exists (a new one is added at the start). */
   onStarted?: (account: string, paste: boolean) => void;
   onDone?: () => void;
 }) {
   const ask = connect.needs.map((n) => auth.find((k) => k.env === n) ?? { env: n, label: n, help: "", optional: false, set: null });
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [own, setValues] = useState<Record<string, string>>({});
+  const values = given ?? own;
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState<"callback" | "paste" | null>(null);
   const [target, setTarget] = useState<string | undefined>(account);
@@ -56,18 +61,18 @@ export function ConnectButton({ slug, ability, connect, auth, account, fresh, la
   const returned = auth.filter((k) => connect.returns.includes(k.env) && !connect.needs.includes(k.env)).map((k) => k.label || k.env);
   return (
     <div className="ab-sign">
-      {ask
+      {!given && ask
         .filter((k) => !k.set)
         .map((k) => (
           <label key={k.env} className="set-key">
             <span className="lb">{k.label || k.env}</span>
             <span className="in">
-              <input className="input" autoComplete="off" spellCheck={false} placeholder={k.help || ""} value={values[k.env] ?? ""} onChange={(e) => setValues({ ...values, [k.env]: e.target.value })} />
+              <FieldInput options={k.options} optional={k.optional} placeholder={k.help || ""} value={values[k.env] ?? ""} onChange={(v) => setValues({ ...values, [k.env]: v })} ariaLabel={k.label || k.env} />
             </span>
           </label>
         ))}
       <div className="row">
-        <button className="btn p sm" disabled={busy || missing.length > 0} onClick={() => void start()}>
+        <button className="btn p sm" disabled={busy || disabled || missing.length > 0} onClick={() => void start()}>
           {busy ? <Loader2 size={13} className="spin" /> : <LogIn size={13} />} {label ?? connect.label}
         </button>
         {waiting === "callback" && (
