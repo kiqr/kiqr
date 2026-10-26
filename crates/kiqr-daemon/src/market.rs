@@ -501,7 +501,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
     // A core ability's keys are KIQR's own (the machine's); an installed one's live on the project's accounts of it.
     let missing: Vec<String> = match (m, core) {
         (Some(m), None) => crate::ext::missing_in(ctx.app, ctx.slug, m),
-        _ => auth.iter().filter(|a| !a.optional && !kiqr_core::secrets::has(home, ctx.slug, &a.env)).map(|a| a.env.clone()).collect(),
+        _ => auth.iter().filter(|a| !a.optional && !crate::signins::has_core_key(home, ctx.slug, &a.env)).map(|a| a.env.clone()).collect(),
     };
     // This project's accounts of it: never their values, only whether they are complete.
     let accounts: Vec<Value> = match (m, ctx.slug) {
@@ -954,7 +954,7 @@ async fn set_paused(app: &App, id: &str, project: &Option<String>, paused: bool)
     if extensions::is_core_id(id) {
         if let Some(c) = extensions::core_ability(id) {
             if !paused {
-                let missing: Vec<&str> = c.auth.iter().filter(|(env, _, _)| !kiqr_core::secrets::has(app.store.home(), None, env)).map(|(env, _, _)| *env).collect();
+                let missing: Vec<&str> = c.auth.iter().filter(|(env, _, _)| !crate::signins::has_core_key(app.store.home(), None, env)).map(|(env, _, _)| *env).collect();
                 if !missing.is_empty() {
                     return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} needs {} before it can be on", c.name, missing.join(", "))));
                 }

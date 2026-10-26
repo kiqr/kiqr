@@ -105,4 +105,4 @@ export function needsOf(a: Ability): Part[] {
   return out;
 }
 
-export const RELOAD_ON = ["secret_set", "connect_finished", "connection_saved", "connection_deleted", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];
+export const RELOAD_ON = ["secret_set", "connect_finished", "sign_in_changed", "connection_saved", "connection_deleted", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];

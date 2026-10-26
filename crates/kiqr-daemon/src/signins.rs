@@ -135,6 +135,12 @@ pub fn signed_in(s: &SignIn) -> bool {
     get_env(s, "TOKEN").is_some()
 }
 
+/// Whether a core ability's key is there: set (the project's or the
+/// machine's), or stood in for by a sign-in (UnblockingAPI by account).
+pub fn has_core_key(home: &kiqr_core::paths::Home, slug: Option<&str>, env: &str) -> bool {
+    kiqr_core::secrets::has(home, slug, env) || (env == "UNBLOCKINGAPI_KEY" && SIGNINS.iter().find(|s| s.id == UNBLOCKINGAPI).is_some_and(signed_in))
+}
+
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
