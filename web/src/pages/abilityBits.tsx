@@ -87,8 +87,10 @@ export function partsOf(a: Ability, full = false): Part[] {
 export function needsOf(a: Ability): Part[] {
   const out: Part[] = [];
   if (a.auth.length && a.core) {
+    // Signed in to the service (`signed_in`), its key is not needed: the sign-in stands in for it.
+    const signedIn = a.signed_in ? `not needed: signed in for ${a.signed_in === "project" ? "this project" : "every project"}` : null;
     for (const k of a.auth) {
-      out.push({ icon: KeyRound, label: `${k.label || k.env}${k.optional ? " (optional)" : ""}`, detail: k.set ? `set for ${k.set === "project" ? "this project" : "the machine"}` : "not set", tone: !k.set && !k.optional ? "warn" : "" });
+      out.push({ icon: KeyRound, label: `${k.label || k.env}${k.optional ? " (optional)" : ""}`, detail: k.set ? `set for ${k.set === "project" ? "this project" : "the machine"}` : signedIn ?? "not set", tone: !k.set && !k.optional && !signedIn ? "warn" : "" });
     }
   } else if (a.auth.length) {
     // Each account (each channel, for one that publishes) has its own keys.
