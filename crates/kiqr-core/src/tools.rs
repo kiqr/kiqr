@@ -621,6 +621,14 @@ pub fn catalogue() -> Vec<Tool> {
             schema: no_args,
         },
         Tool {
+            name: "channel_activity",
+            group: Publish,
+            label: "Checking what was done on a channel",
+            description: "What every ability did through a channel or account (they share it when they work on the same service): replies, publishes, profile changes, newest first, with what each acted on, today's count and the daily cap. Check it before replying or posting so you do not repeat what another ability already did; a repeat on the same target is refused anyway.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/connections/{channel}/activity", body: Body::None },
+            schema: || obj(json!({ "channel": { "type": "string", "description": "A channel or account id from list_channels" } }), &["channel"]),
+        },
+        Tool {
             name: "create_channel",
             group: Publish,
             label: "Proposing a channel",

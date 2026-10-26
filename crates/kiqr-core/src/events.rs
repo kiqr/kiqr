@@ -122,6 +122,12 @@ pub enum EventKind {
     /// A connection (one account of an ability in a project) was added or changed; `kind` is set for a channel.
     ConnectionSaved { connection: String, label: String, ability: String, #[serde(default)] kind: String },
     ConnectionDeleted { connection: String, ability: String },
+    /// An ability acted through an account (anything but reading), logged on it.
+    AccountActed { connection: String, ability: String, role: String, #[serde(default)] target: String, #[serde(default)] url: Option<String> },
+    /// An action through an account was refused: `why` is `duplicate` (the
+    /// same role on the same target was done already) or `cap` (the service's
+    /// daily cap is reached).
+    ActionRefused { connection: String, ability: String, why: String, message: String },
     /// An asset went out through a channel.
     AssetPublished { asset_type: String, id: String, channel: String, #[serde(default)] url: Option<String> },
     /// The user approved an asset for a channel (it is Ready), or set when the
@@ -176,6 +182,8 @@ impl EventKind {
                 | EventKind::MediaCreated { .. }
                 | EventKind::ConnectionSaved { .. }
                 | EventKind::ConnectionDeleted { .. }
+                | EventKind::AccountActed { .. }
+                | EventKind::ActionRefused { .. }
                 | EventKind::AssetPublished { .. }
                 | EventKind::AssetApproved { .. }
                 | EventKind::AssetUnpublished { .. }

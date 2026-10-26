@@ -844,7 +844,10 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
     };
     let act = conn.as_ref().and_then(|c| action(m, tool, c, &args));
     if let (Some(c), Some(a)) = (&conn, &act) {
-        check_action(app, slug, m, c, a).await?;
+        if let Err((why, e)) = check_action(app, slug, m, c, a).await {
+            app.bus.emit(Some(slug), EventKind::ActionRefused { connection: c.id.clone(), ability: m.id.clone(), why: why.to_string(), message: e.to_string() });
+            return Err(e);
+        }
     }
     let out = run(app, slug, m, provide, ability, tool, &args, conn.as_ref()).await?;
     if let (Some(c), Some(mut a)) = (conn, act) {
@@ -852,6 +855,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         if let Err(e) = c.record(app.store.home(), slug, &a) {
             tracing::warn!(account = %c.id, "could not log an action: {e:#}");
         }
+        app.bus.emit(Some(slug), EventKind::AccountActed { connection: c.id.clone(), ability: a.ability, role: a.role, target: a.target, url: a.url });
     }
     Ok(out)
 }
@@ -880,17 +884,17 @@ fn action(m: &Manifest, tool: Option<&str>, c: &Connection, args: &Value) -> Opt
 
 /// Refuse an action already done on the same target through this account,
 /// or one over the lowest `daily_cap` any ability of the service declares.
-async fn check_action(app: &App, slug: &str, m: &Manifest, c: &Connection, a: &Activity) -> Result<()> {
+async fn check_action(app: &App, slug: &str, m: &Manifest, c: &Connection, a: &Activity) -> std::result::Result<(), (&'static str, anyhow::Error)> {
     let home = app.store.home();
     if !a.target.is_empty() {
         if let Some(p) = c.acted_on(home, slug, &a.role, &a.target) {
-            bail!("already done: {} ({}) on {} through {} at {}; not doing it twice", p.role, p.ability, a.target, c.label, p.at.format("%Y-%m-%d %H:%M UTC"));
+            return Err(("duplicate", anyhow!("already done: {} ({}) on {} through {} at {}; not doing it twice", p.role, p.ability, a.target, c.label, p.at.format("%Y-%m-%d %H:%M UTC"))));
         }
     }
     let cap = app.registry.read().await.of_service(slug, m.service()).iter().filter_map(|o| o.daily_cap).min();
     if let Some(cap) = cap {
         if c.actions_today(home, slug) >= cap as usize {
-            bail!("{} has done its {cap} actions for today (the limit is shared by every ability that uses this account); it can act again tomorrow", c.label);
+            return Err(("cap", anyhow!("{} has done its {cap} actions for today (the limit is shared by every ability that uses this account); it can act again tomorrow", c.label)));
         }
     }
     Ok(())

@@ -341,8 +341,17 @@ export type Account = {
   destination_text: string;
   icon?: string;
   error?: string;
+  /** The service it is an account of; every ability of that service on here uses it. */
+  service?: string;
+  /** Those abilities, with what each does on this channel (empty for a plain account). */
+  used_by?: { id: string; name: string; does: string[] }[];
+  /** A channel's: the ability that publishes to it, and those that could. */
+  publisher?: string | null;
+  publisher_name?: string | null;
+  publishers?: { id: string; name: string }[];
 };
 export type Channel = Account;
+export type AccountActivity = { connection: string; service: string; today: number; daily_cap: number | null; activity: { at: string; ability: string; role: string; tool: string; target?: string; url?: string | null }[] };
 export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }> };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -485,7 +494,8 @@ export const api = {
   createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string>; secrets?: Record<string, string>; same_as?: string }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
   deleteChannel: (slug: string, id: string) => req<void>(`/api/projects/${slug}/channels/${id}`, { method: "DELETE" }),
   /** `asks_first: false` lets Seemo publish through the channel on its own. */
-  updateChannel: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean }) => req<Channel>(`/api/projects/${slug}/channels/${id}`, { method: "PUT", body: JSON.stringify(p) }),
+  accountActivity: (slug: string, id: string, limit = 20) => req<AccountActivity>(`/api/projects/${slug}/connections/${id}/activity?limit=${limit}`),
+  updateChannel: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean; publisher?: string }) => req<Channel>(`/api/projects/${slug}/channels/${id}`, { method: "PUT", body: JSON.stringify(p) }),
   /** Publish an asset now, through the channel it was approved for or the one given. From the UI the click is the yes. */
   publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel = "", note = "", options: Record<string, unknown> = {}) =>
     req<{ published: boolean; url: string | null; detail: string; channel_label: string }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel, note, options, by: "user" }) }),

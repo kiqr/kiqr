@@ -273,8 +273,15 @@ enum SecretsCmd {
 
 #[derive(Subcommand)]
 enum AccountsCmd {
-    /// A project's accounts of its abilities (channels included)
+    /// A project's accounts of its abilities (channels included), with the abilities that use each
     Ls { slug: String },
+    /// What the abilities did through an account (or channel), newest first
+    Activity {
+        slug: String,
+        account: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Add an account of an installed ability; its keys are asked for
     Add {
         slug: String,
@@ -648,7 +655,18 @@ impl Client {
                     for c in list {
                         let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
                         let missing = c["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-                        println!("{:<24} {:<28} {:<28} {:<9} {}{}", s("id"), s("label"), s("ability_name"), if c["channel"].as_bool() == Some(true) { s("kind") } else { "account".into() }, if c["ready"].as_bool() == Some(true) { "ready".to_string() } else { format!("needs {missing}") }, if c["default"].as_bool() == Some(true) { "  (default)" } else { "" });
+                        let used_by = c["used_by"].as_array().map(|u| u.iter().filter_map(|x| x["id"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                        let publisher = c["publisher"].as_str().map(|p| format!("  publishes: {p}")).unwrap_or_default();
+                        println!("{:<24} {:<28} {:<16} {:<9} {:<14} used by {}{publisher}{}", s("id"), s("label"), s("service"), if c["channel"].as_bool() == Some(true) { s("kind") } else { "account".into() }, if c["ready"].as_bool() == Some(true) { "ready".to_string() } else { format!("needs {missing}") }, if used_by.is_empty() { "nothing on here".to_string() } else { used_by }, if c["default"].as_bool() == Some(true) { "  (default)" } else { "" });
+                    }
+                }
+                AccountsCmd::Activity { slug, account, limit } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/connections/{account}/activity?limit={limit}")).await?;
+                    let cap = v["daily_cap"].as_u64().map(|c| format!(" of {c}")).unwrap_or_default();
+                    println!("{} action(s) today{cap}", v["today"].as_u64().unwrap_or(0));
+                    for a in v["activity"].as_array().cloned().unwrap_or_default() {
+                        let s = |k: &str| a[k].as_str().unwrap_or("").to_string();
+                        println!("{:<22} {:<8} {:<20} {:<30} {}", s("at").get(..19).unwrap_or(""), s("role"), s("ability"), s("target"), s("url"));
                     }
                 }
                 AccountsCmd::Add { slug, ability, label } => {
@@ -1276,6 +1294,8 @@ fn print_event(ev: &Event) {
         EventKind::MediaCreated { ability, asset_type, id, file, provider } => format!("{ability:<8} {asset_type}/{id}/{file} via {provider}"),
         EventKind::ConnectionSaved { connection, label, ability, kind } => format!("{:<8} {connection} \"{label}\" ({})", if kind.is_empty() { "account" } else { "channel" }, if kind.is_empty() { ability.as_str() } else { kind.as_str() }),
         EventKind::ConnectionDeleted { connection, .. } => format!("account  {connection} removed"),
+        EventKind::AccountActed { connection, ability, role, target, .. } => format!("{role:<8} {connection} by {ability}{}", if target.is_empty() { String::new() } else { format!(" on {target}") }),
+        EventKind::ActionRefused { message, .. } => format!("refused  {message}"),
         EventKind::AssetPublished { asset_type, id, channel, url } => format!("publish  {asset_type}/{id} → {channel}{}", url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
         EventKind::AssetApproved { asset_type, id, channel, at, .. } => match at {
             Some(at) => format!("schedule {asset_type}/{id} → {channel} at {}", at.with_timezone(&chrono::Local).format("%a %-d %b %H:%M")),

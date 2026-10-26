@@ -1,10 +1,12 @@
-// Accounts: a project's setups of one installed ability, each with its own
-// keys (two WordPress sites, two analytics properties). For an ability that
-// publishes, every account is a channel. Used by the ability window and the
-// Channels page; installing an ability adds none, the project adds them here.
+// Accounts: a project's accounts of a service, each with its own keys (two
+// WordPress sites, two analytics properties), used by every ability of that
+// service. For an ability that publishes, every account is a channel. Used by
+// the ability window and the Channels page; installing an ability adds none,
+// the project adds them here.
 import { useEffect, useState } from "react";
-import { Check, Loader2, Pencil, Plus, Star, Trash2, X } from "lucide-react";
-import { api, useEvents, type Account, type ConnectInfo, type KindInfo } from "../api";
+import { Check, ExternalLink, Loader2, Pencil, Plus, Star, Trash2, Users, X } from "lucide-react";
+import { api, useEvents, type Account, type AccountActivity, type ConnectInfo, type KindInfo } from "../api";
+import { ago } from "./Project";
 import { ConnectButton } from "./ConnectButton";
 import { Hint, SecretField } from "./SecretField";
 import { enumOf, FieldInput } from "./FieldInput";
@@ -14,6 +16,68 @@ import "../settings.css";
 export type AbilityInfo = { id: string; name: string; auth: { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string }[]; connect?: ConnectInfo | null };
 
 export const ACCOUNT_EVENTS = ["connection_saved", "connection_deleted", "secret_set", "connect_finished"];
+
+const ROLE_WORDS: Record<string, string> = { publish: "publishes", read: "reads", reply: "replies", manage: "manages" };
+const DONE_WORDS: Record<string, string> = { publish: "Published", reply: "Replied", manage: "Changed", read: "Read" };
+
+/** "Used by Read posts · Reply (reads, replies)": the abilities sharing it, when more than one does. */
+export function UsedBy({ a }: { a: Account }) {
+  const by = a.used_by ?? [];
+  if (by.length < 2) return null;
+  return (
+    <p className="acc-used" title="These abilities sign in once and share this account">
+      <Users size={12} /> Used by{" "}
+      {by.map((u, i) => (
+        <span key={u.id}>
+          {i > 0 && " · "}
+          {u.name}
+          {a.channel && u.does.length > 0 && <span className="dim"> ({u.does.map((d) => ROLE_WORDS[d] ?? d).join(", ")})</span>}
+        </span>
+      ))}
+    </p>
+  );
+}
+
+/** What the abilities did through an account, newest first, with today's count against the cap. */
+export function ActivityLog({ slug, a }: { slug: string; a: Account }) {
+  const [log, setLog] = useState<AccountActivity | null>(null);
+  const load = () => api.accountActivity(slug, a.id).then(setLog).catch(() => setLog(null));
+  useEffect(() => {
+    void load();
+  }, [slug, a.id]);
+  useEvents(slug, (e) => ["account_acted", "action_refused"].includes(e.type) && void load(), { demo: false });
+  const name = (id: string) => a.used_by?.find((u) => u.id === id)?.name ?? id;
+  const items = log?.activity ?? [];
+  return (
+    <div className="acc-log">
+      <p className="muted sm">
+        {log?.today ?? 0} action{log?.today === 1 ? "" : "s"} today{log?.daily_cap != null ? ` of ${log.daily_cap} allowed` : ""}
+        {log?.daily_cap != null && (a.used_by?.length ?? 0) > 1 ? ", shared by every ability that uses it" : ""}.
+      </p>
+      {items.length === 0 ? (
+        <p className="muted sm">Nothing done through it yet.</p>
+      ) : (
+        <ul>
+          {items.map((x, i) => (
+            <li key={i}>
+              <span className="when mono">{ago(x.at)}</span>
+              <span>
+                {DONE_WORDS[x.role] ?? x.role}
+                {x.target ? <span className="mono"> {x.target}</span> : null}
+                <span className="dim"> · {name(x.ability)}</span>
+              </span>
+              {x.url && (
+                <a className="lnk sm" href={x.url} target="_blank" rel="noreferrer" aria-label="Open">
+                  <ExternalLink size={12} />
+                </a>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 /**
  * The account's keys. With a sign-in button: the button, and the keys only
@@ -54,6 +118,7 @@ export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Acco
 /** One account in a list: its name, whether it works, the default, its keys, remove. */
 export function AccountCard({ slug, a, several, onChange }: { slug: string; a: Account; several: boolean; onChange: () => void }) {
   const [open, setOpen] = useState(!a.ready);
+  const [log, setLog] = useState(false);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState(a.label);
   const [confirm, setConfirm] = useState(false);
@@ -125,12 +190,21 @@ export function AccountCard({ slug, a, several, onChange }: { slug: string; a: A
           </button>
         )}
       </div>
+      <UsedBy a={a} />
       {open && <AccountKeys slug={slug} a={a} onChange={onChange} />}
-      {!open && (
-        <button className="lnk sm acc-more" onClick={() => setOpen(true)}>
-          {a.ready ? "Keys and sign-in" : "Connect it"}
-        </button>
-      )}
+      <span className="acc-links">
+        {!open && (
+          <button className="lnk sm acc-more" onClick={() => setOpen(true)}>
+            {a.ready ? "Keys and sign-in" : "Connect it"}
+          </button>
+        )}
+        {a.ready && (
+          <button className="lnk sm acc-more" onClick={() => setLog((o) => !o)}>
+            {log ? "Hide activity" : "Activity"}
+          </button>
+        )}
+      </span>
+      {log && <ActivityLog slug={slug} a={a} />}
       {error && <p className="err sm">{error}</p>}
     </div>
   );
@@ -345,6 +419,8 @@ export function AccountList({ slug, ability, kinds, onChange }: { slug: string; 
   const publishes = kinds.length > 0;
   const noun = publishes ? "channel" : "account";
   const shareable = (list ?? []).filter((a) => a.ready).map((a) => ({ id: a.id, label: a.label }));
+  // Other abilities of the same service use these accounts too: one sign-in for all of them.
+  const others = [...new Map((list ?? []).flatMap((a) => a.used_by ?? []).filter((u) => u.id !== ability.id).map((u) => [u.id, u.name])).values()];
   return (
     <div className="ab-con">
       <p className="muted sm">
@@ -352,6 +428,11 @@ export function AccountList({ slug, ability, kinds, onChange }: { slug: string; 
           ? `Each channel has its own account: add one per ${kinds.map((k) => k.label.toLowerCase()).join(" or ")}. They belong to this project.`
           : "Each account has its own keys and belongs to this project. With more than one, Seemo uses the default unless it names another."}
       </p>
+      {others.length > 0 && (
+        <p className="acc-used">
+          <Users size={12} /> Shared with {others.length === 1 ? others[0] : `${others.slice(0, -1).join(", ")} and ${others[others.length - 1]}`}: {list && list.length === 1 ? "this account is" : "these accounts are"} theirs too, signed in once.
+        </p>
+      )}
       {list === null && <Loader2 size={14} className="spin" />}
       {list?.map((a) => <AccountCard key={a.id} slug={slug} a={a} several={list.length > 1} onChange={changed} />)}
       {list && list.length === 0 && !adding && <p className="muted sm">No {noun} yet.</p>}

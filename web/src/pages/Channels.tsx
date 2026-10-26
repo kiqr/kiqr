@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Check, Loader2, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
 import { Switch } from "./Switch";
-import { AccountForm, AccountKeys, ACCOUNT_EVENTS } from "./Accounts";
+import { AccountForm, AccountKeys, ACCOUNT_EVENTS, ActivityLog, UsedBy } from "./Accounts";
 import { kindIcon } from "./abilityBits";
 import { api, useAsync, useEvents, type ChannelKindInfo } from "../api";
 import { ago } from "./Project";
@@ -83,6 +83,17 @@ function ChannelRow({ slug, c, icon, onChange }: { slug: string; c: import("../a
   const [busy, setBusy] = useState(false);
   const [trustBusy, setTrustBusy] = useState(false);
   const [keys, setKeys] = useState(false);
+  const [log, setLog] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const setPublisher = async (id: string) => {
+    setError(null);
+    try {
+      await api.updateChannel(slug, c.id, { publisher: id });
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   const setTrust = async (own: boolean) => {
     setTrustBusy(true);
     try {
@@ -118,7 +129,20 @@ function ChannelRow({ slug, c, icon, onChange }: { slug: string; c: import("../a
           </h3>
           <p className="meta">
             <span className="mono">{c.destination_text}</span>
-            <span>via {c.connection_name}</span>
+            {(c.publishers?.length ?? 0) > 1 ? (
+              <label className="ch-pub" title="Several abilities can publish here; this one does">
+                via
+                <select className="input sm" value={c.publisher ?? ""} onChange={(e) => void setPublisher(e.target.value)}>
+                  {c.publishers!.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <span>via {c.publisher_name ?? c.connection_name}</span>
+            )}
             <span>
               {c.publications} published{c.last_published ? `, last ${ago(c.last_published)}` : ""}
             </span>
@@ -127,12 +151,22 @@ function ChannelRow({ slug, c, icon, onChange }: { slug: string; c: import("../a
             <Switch on={!c.asks_first} disabled={trustBusy || !c.ready} onChange={(v) => void setTrust(v)} />
             <span>Seemo may publish here on its own</span>
           </label>
-          {c.ready && !keys && (
-            <button className="lnk sm acc-more" onClick={() => setKeys(true)}>
-              Account
-            </button>
-          )}
+          <UsedBy a={c} />
+          {error && <p className="err sm">{error}</p>}
+          <span className="acc-links">
+            {c.ready && !keys && (
+              <button className="lnk sm acc-more" onClick={() => setKeys(true)}>
+                Account
+              </button>
+            )}
+            {c.ready && (
+              <button className="lnk sm acc-more" onClick={() => setLog((o) => !o)}>
+                {log ? "Hide activity" : "Activity"}
+              </button>
+            )}
+          </span>
           {(!c.ready || keys) && <AccountKeys slug={slug} a={c} onChange={onChange} />}
+          {log && <ActivityLog slug={slug} a={c} />}
         </div>
         <div className="acts">
           {confirm ? (
