@@ -5,6 +5,7 @@
 import { useState } from "react";
 import { Check, ExternalLink, Loader2, LogIn, LogOut } from "lucide-react";
 import { api, useAsync, useEvents, type SignIn } from "../api";
+import "../signin.css";
 
 /** One sign-in: who it is signed in as, or the button (and the code, in device mode). */
 export function SignInRow({ s, onChange, label }: { s: SignIn; onChange: () => void; label?: string }) {

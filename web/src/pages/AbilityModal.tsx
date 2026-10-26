@@ -400,11 +400,49 @@ function Instructions({ slug, a, onChange }: { slug: string; a: Ability; onChang
   );
 }
 
+/** Core abilities whose service KIQR signs in to (KIQR's own sign-ins), with what the panel says. */
+const SIGN_IN: Record<string, { title: string; text: string; button: string }> = {
+  unblockingapi: { title: "Sign in with your UnblockingAPI account", text: "One click, no API key to copy. KIQR reads blocked pages through your account, and you can sign it out any time.", button: "Sign in with UnblockingAPI" },
+};
+
+/** Signing in first, prominently; the key only for those who want it. */
+function CoreSignIn({ a, onChange }: { a: Ability; onChange: () => void }) {
+  const copy = SIGN_IN[a.id];
+  const hasKey = a.auth.some((k) => !!k.set);
+  const [keys, setKeys] = useState(hasKey);
+  return (
+    <>
+      <div className="signin-hero">
+        <p className="t">{copy.title}</p>
+        <p className="muted sm">{copy.text}</p>
+        <SignInById id={a.id} label={copy.button} />
+      </div>
+      {keys ? (
+        <>
+          <p className="ab-or">Or use an API key</p>
+          <div className="set-keys">
+            {a.auth.map((k) => (
+              <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} set={k.set} optional={k.optional} options={k.options} onSaved={onChange} />
+            ))}
+          </div>
+          <p className="muted sm">A key here is used instead of the sign-in, for every project.</p>
+        </>
+      ) : (
+        <button className="lnk-btn" onClick={() => setKeys(true)}>
+          Use an API key instead
+        </button>
+      )}
+    </>
+  );
+}
+
 /** An installed ability: this project's accounts of it (channels, when it publishes). A core one: KIQR's own key, on this machine. Then which ability serves a contract. */
 function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Ability; rivals: Contract[]; onChange: () => void; onPrefer: (contract: string, id: string) => void }) {
   return (
     <div className="ab-con">
-      {a.core ? (
+      {a.core && SIGN_IN[a.id] ? (
+        <CoreSignIn a={a} onChange={onChange} />
+      ) : a.core ? (
         <>
           <div className="set-keys">
             {a.auth.map((k) => (
@@ -412,12 +450,6 @@ function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Abi
             ))}
           </div>
           <p className="muted sm">KIQR's own key, on this machine; every project uses it.</p>
-          {a.id === "unblockingapi" && (
-            <>
-              <p className="ab-or">Or sign in to your account instead of a key</p>
-              <SignInById id="unblockingapi" label="Sign in with UnblockingAPI" />
-            </>
-          )}
         </>
       ) : (
         <AccountList slug={slug} ability={{ id: a.id, name: a.name, auth: a.auth, connect: a.connect }} kinds={a.kinds ?? []} onChange={onChange} />
