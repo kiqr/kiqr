@@ -11,7 +11,7 @@ import { enumOf, FieldInput } from "./FieldInput";
 import "../settings.css";
 
 /** What an add form needs to know about the ability. */
-export type AbilityInfo = { id: string; name: string; auth: { env: string; label: string; help: string; optional: boolean; options?: string[] }[]; connect?: ConnectInfo | null };
+export type AbilityInfo = { id: string; name: string; auth: { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string }[]; connect?: ConnectInfo | null };
 
 export const ACCOUNT_EVENTS = ["connection_saved", "connection_deleted", "secret_set", "connect_finished"];
 
@@ -31,7 +31,7 @@ export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Acco
       {open ? (
         <div className="set-keys">
           {shown.map((k) => (
-            <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} set={k.set} optional={k.optional} options={k.options} slug={slug} account={a.id} onSaved={onChange} />
+            <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} placeholder={k.placeholder} set={k.set} optional={k.optional} options={k.options} slug={slug} account={a.id} onSaved={onChange} />
           ))}
         </div>
       ) : null}
@@ -149,14 +149,7 @@ function hostOf(values: string[]): string {
   return "";
 }
 
-type Field = { key: string; label: string; help?: string; optional?: boolean; options?: string[]; secret?: boolean };
-
-/** Help that is a link to follow (where to get a key, a sentence with a link in it), not an example to show in the field. */
-function linkHelp(f: Field): boolean {
-  const h = (f.help ?? "").trim();
-  if (/^https?:\/\/\S+$/.test(h)) return !!f.secret;
-  return /https?:\/\//.test(h);
-}
+type Field = { key: string; label: string; help?: string; placeholder?: string; optional?: boolean; options?: string[]; secret?: boolean };
 
 function Fields({ fields, values, onChange }: { fields: Field[]; values: Record<string, string>; onChange: (k: string, v: string) => void }) {
   return (
@@ -167,8 +160,8 @@ function Fields({ fields, values, onChange }: { fields: Field[]; values: Record<
             {f.label}
             {f.optional && <small className="dim"> optional</small>}
           </span>
-          <FieldInput mono={f.secret} secret={f.secret} options={f.options} optional={f.optional} value={values[f.key] ?? ""} onChange={(v) => onChange(f.key, v)} placeholder={f.help && !linkHelp(f) ? f.help : ""} ariaLabel={f.label} />
-          {f.help && linkHelp(f) && (
+          <FieldInput mono={f.secret} secret={f.secret} options={f.options} optional={f.optional} value={values[f.key] ?? ""} onChange={(v) => onChange(f.key, v)} placeholder={f.placeholder ?? ""} ariaLabel={f.label} />
+          {f.help && (
             <span className="ds">
               <Hint text={f.help} />
             </span>
@@ -207,10 +200,10 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
   useEvents(slug, (e) => created && ACCOUNT_EVENTS.includes(e.type) && void reloadCreated(created.id), { demo: false });
 
   const destFields: Field[] = Object.entries(kind?.destination ?? {}).map(([k, spec]) => {
-    const s = spec as { label?: string; help?: string; optional?: boolean };
-    return { key: k, label: s.label ?? k, help: s.help, optional: s.optional, options: enumOf(spec) };
+    const s = spec as { label?: string; help?: string; placeholder?: string; optional?: boolean };
+    return { key: k, label: s.label ?? k, help: s.help, placeholder: s.placeholder, optional: s.optional, options: enumOf(spec) };
   });
-  const keyField = (a: AbilityInfo["auth"][number]): Field => ({ key: a.env, label: a.label || a.env, help: a.help, optional: a.optional, options: a.options, secret: /PASSWORD|KEY|TOKEN|SECRET/.test(a.env) });
+  const keyField = (a: AbilityInfo["auth"][number]): Field => ({ key: a.env, label: a.label || a.env, help: a.help, placeholder: a.placeholder, optional: a.optional, options: a.options, secret: /PASSWORD|KEY|TOKEN|SECRET/.test(a.env) });
   const asked = mode === "connect" ? ability.auth.filter((a) => ability.connect?.needs.includes(a.env)) : mode === "keys" ? ability.auth.filter((a) => !a.optional) : [];
   const optionalKeys = mode === "keys" ? ability.auth.filter((a) => a.optional) : [];
   const required = [...destFields.filter((f) => !f.optional), ...asked.map(keyField)];

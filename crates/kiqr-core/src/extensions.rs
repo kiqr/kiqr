@@ -38,8 +38,12 @@ pub struct AuthKey {
     /// Environment variable name; the value lives in `.env`.
     pub env: String,
     pub label: String,
-    /// Where to get it.
+    /// Where to get it, or what it is, shown under the field.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub help: String,
+    /// Shown greyed inside the empty field: what a value looks like.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub placeholder: String,
     /// Optional: a key the connection works without.
     pub optional: bool,
     /// The values it can take when it is a choice (`starttls`, `tls`, `none`):

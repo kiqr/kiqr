@@ -248,7 +248,7 @@ export type ToolGroup = { id: string; label: string; tools: string[] };
 // ---- Abilities
 export type Scope = { scope: "global" } | { scope: "project"; project: string };
 /** A key an ability needs. `set` says where, for a core ability's own key (this project or the machine); an installed ability's keys live on its accounts. */
-export type MarketAuth = { env: string; label: string; help: string; optional: boolean; options?: string[]; set: "project" | "global" | boolean | null };
+export type MarketAuth = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: "project" | "global" | boolean | null };
 /** One of this project's accounts of an ability (a channel, when it publishes): which keys it has, never their values. */
 export type AccountSummary = { id: string; label: string; default: boolean; channel: boolean; kind: string; destination_text: string; missing: string[]; set: string[] };
 /** A kind of channel an ability publishes to, and what a channel of it needs. */
@@ -312,7 +312,7 @@ export type Ability = {
 export type Contract = { id: string; label: string; tool: string; configured: string | null; active: { id: string; name: string } | null; candidates: { id: string; name: string; ready: boolean }[] };
 export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts: Contract[]; broken: { folder: string; scope: Scope; error: string }[]; guide: Ability | null; index: string; index_fetched?: boolean; env_file: string; project_env_file: string | null };
 /** A key on one account: set or not, never its value. */
-export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; set: boolean };
+export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean };
 /** One account of an ability in this project, with its own keys. With a `kind` it is a channel: where the project publishes. */
 export type Account = {
   id: string;

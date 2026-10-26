@@ -97,7 +97,7 @@ fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
         "connection_name": m.name,
         "ready": true,
         "destination": k.destination,
-        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "set": Value::Null })).collect::<Vec<_>>(),
+        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": Value::Null })).collect::<Vec<_>>(),
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "accounts": accounts,
         "options": publish_options(m, k),

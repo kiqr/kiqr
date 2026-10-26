@@ -9,7 +9,7 @@ import { ExternalLink, Loader2, LogIn } from "lucide-react";
 import { api, useEvents, type ConnectInfo } from "../api";
 import { FieldInput } from "./FieldInput";
 
-type Key = { env: string; label: string; help: string; optional: boolean; options?: string[]; set: boolean | string | null };
+type Key = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean | string | null };
 
 export function ConnectButton({ slug, ability, connect, auth, account, fresh, label, values: given, disabled, onStarted, onDone }: {
   slug: string;
@@ -67,7 +67,7 @@ export function ConnectButton({ slug, ability, connect, auth, account, fresh, la
           <label key={k.env} className="set-key">
             <span className="lb">{k.label || k.env}</span>
             <span className="in">
-              <FieldInput options={k.options} optional={k.optional} placeholder={k.help || ""} value={values[k.env] ?? ""} onChange={(v) => setValues({ ...values, [k.env]: v })} ariaLabel={k.label || k.env} />
+              <FieldInput options={k.options} optional={k.optional} placeholder={k.placeholder ?? ""} value={values[k.env] ?? ""} onChange={(v) => setValues({ ...values, [k.env]: v })} ariaLabel={k.label || k.env} />
             </span>
           </label>
         ))}

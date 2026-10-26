@@ -311,7 +311,7 @@ fn connection_view(app: &App, e: &Entry, m: &Manifest) -> Value {
         "core": e.is_core(),
         "categories": m.categories,
         "icon": m.icon,
-        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "set": provider::has_env(&a.env) })).collect::<Vec<_>>(),
+        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": provider::has_env(&a.env) })).collect::<Vec<_>>(),
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "provides": m.provides.iter().map(|(id, p)| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or(""), "cost": p.cost })).collect::<Vec<_>>(),
         "tools": m.tools.iter().map(|t| json!({ "name": t.name, "label": t.label, "cost": t.provide.cost })).collect::<Vec<_>>(),

@@ -28,7 +28,7 @@ export function Hint({ text }: { text: string }) {
   );
 }
 
-export function SecretField({ name, label, help, set, optional, options, slug, account, onSaved }: { name: string; label: string; help?: string; set: boolean | string | null; optional?: boolean; options?: string[]; slug?: string; account?: string; onSaved?: () => void }) {
+export function SecretField({ name, label, help, placeholder, set, optional, options, slug, account, onSaved }: { name: string; label: string; help?: string; placeholder?: string; set: boolean | string | null; optional?: boolean; options?: string[]; slug?: string; account?: string; onSaved?: () => void }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(!!set);
@@ -62,7 +62,7 @@ export function SecretField({ name, label, help, set, optional, options, slug, a
       </span>
       {editing ? (
         <span className="in">
-          <FieldInput mono secret options={options} placeholder={done ? "new value" : "paste it here"} value={value} onChange={setValue} onEnter={() => value.trim() && void save()} ariaLabel={label} />
+          <FieldInput mono secret options={options} placeholder={done ? "new value" : placeholder || "paste it here"} value={value} onChange={setValue} onEnter={() => value.trim() && void save()} ariaLabel={label} />
           <button className="btn g sm" disabled={busy || !value.trim()} onClick={() => void save()}>
             {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Save
           </button>
