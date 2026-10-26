@@ -205,6 +205,60 @@ pub fn pick_publisher<'a>(c: &Connection, on: &'a [(Manifest, ChannelKind)]) -> 
     by(&c.publisher).or_else(|| by(&c.ability)).or_else(|| all.first().copied())
 }
 
+/// One action through an account: what an ability did, on what, when.
+/// `connections/<id>/activity.jsonl`, one line each, never committed.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Activity {
+    pub at: DateTime<Utc>,
+    pub ability: String,
+    pub role: String,
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+impl Connection {
+    /// A folder of the account's own that outlives a call: where a hosted
+    /// program keeps its state (a browser profile), shared by every ability
+    /// of the service and removed with the account. Never committed.
+    pub fn data_dir(&self, home: &Home, slug: &str) -> PathBuf {
+        home.connections_dir(slug).join(&self.id).join("data")
+    }
+
+    fn activity_file(&self, home: &Home, slug: &str) -> PathBuf {
+        home.connections_dir(slug).join(&self.id).join("activity.jsonl")
+    }
+
+    /// Every action through it, oldest first.
+    pub fn activity(&self, home: &Home, slug: &str) -> Vec<Activity> {
+        std::fs::read_to_string(self.activity_file(home, slug)).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    }
+
+    pub fn record(&self, home: &Home, slug: &str, a: &Activity) -> Result<()> {
+        use std::io::Write;
+        let f = self.activity_file(home, slug);
+        if let Some(d) = f.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(f)?;
+        writeln!(file, "{}", serde_json::to_string(a)?)?;
+        Ok(())
+    }
+
+    /// The earlier action with this role on this target, if any.
+    pub fn acted_on(&self, home: &Home, slug: &str, role: &str, target: &str) -> Option<Activity> {
+        self.activity(home, slug).into_iter().rev().find(|a| a.role == role && a.target == target)
+    }
+
+    /// Actions (anything but reading) since midnight UTC.
+    pub fn actions_today(&self, home: &Home, slug: &str) -> usize {
+        let today = Utc::now().date_naive();
+        self.activity(home, slug).iter().filter(|a| a.role != "read" && a.at.date_naive() == today).count()
+    }
+}
+
 pub fn env_file(home: &Home, slug: &str, id: &str) -> PathBuf {
     home.connections_dir(slug).join(id).join(".env")
 }
@@ -492,6 +546,18 @@ mod tests {
         assert!(pick_publisher(&page, &on[..1]).is_none());
         assert!(crate::extensions::parse_manifest("id: bad\nname: Bad\ntransport: http\nhosts: [a.test]\nchannels:\n  - { kind: page, label: Page, does: [shout] }\n").is_err());
         assert!(crate::extensions::parse_manifest("id: bad\nname: Bad\ntransport: http\nhosts: [a.test]\nchannels:\n  - { kind: page, label: Page }\n").is_err(), "publishing needs a publish tool");
+
+        // The account's log: what was done on what, and how much today.
+        let act = |role: &str, target: &str, at: DateTime<Utc>| Activity { at, ability: "social-reply".into(), role: role.into(), tool: "reply".into(), target: target.into(), url: None };
+        assert!(me.activity(&home, "acme").is_empty() && me.actions_today(&home, "acme") == 0);
+        me.record(&home, "acme", &act("reply", "post-1", Utc::now())).unwrap();
+        me.record(&home, "acme", &act("reply", "post-2", Utc::now() - chrono::Duration::days(2))).unwrap();
+        me.record(&home, "acme", &act("read", "", Utc::now())).unwrap();
+        assert_eq!(me.activity(&home, "acme").len(), 3);
+        assert_eq!(me.acted_on(&home, "acme", "reply", "post-2").map(|a| a.target), Some("post-2".into()));
+        assert!(me.acted_on(&home, "acme", "manage", "post-1").is_none(), "another role on the same target is another action");
+        assert_eq!(me.actions_today(&home, "acme"), 1, "reading and older days do not count");
+        assert!(me.data_dir(&home, "acme").ends_with("connections/me/data"));
 
         // Older records with no service are the ability's own.
         assert_eq!(Connection::load(&store, "acme", "news").unwrap().service(), "blog");

@@ -24,6 +24,9 @@ projects/*/cache/
 projects/*/assets/
 projects/*/.env
 projects/*/connections/*/.env
+# An account's working folder (a browser profile) and its activity log stay here too.
+projects/*/connections/*/data/
+projects/*/connections/*/activity.jsonl
 ";
 
 const ENV_TEMPLATE: &str = "\

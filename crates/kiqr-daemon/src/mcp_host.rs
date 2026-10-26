@@ -25,6 +25,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct Launch {
     pub key: String,
     pub vars: Vec<(String, String)>,
+    /// The account's own folder: the working directory unless the manifest
+    /// names one, `KIQR_ACCOUNT_DIR` in its environment and in its `args`.
+    pub dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]
@@ -56,7 +59,7 @@ impl McpHost {
             tracing::warn!(id = %key, "MCP server died; starting it again");
             all.remove(&key);
         }
-        let s = Server::spawn(home, m, &launch.vars).await?;
+        let s = Server::spawn(home, m, &launch.vars, launch.dir.as_deref()).await?;
         all.insert(key, s.clone());
         Ok(s)
     }
@@ -105,9 +108,11 @@ impl McpHost {
 }
 
 impl Server {
-    async fn spawn(home: &std::path::Path, m: &Manifest, vars: &[(String, String)]) -> Result<Arc<Server>> {
+    async fn spawn(home: &std::path::Path, m: &Manifest, vars: &[(String, String)], account_dir: Option<&std::path::Path>) -> Result<Arc<Server>> {
         let mut cmd = tokio::process::Command::new(&m.command);
-        cmd.args(&m.args);
+        // `${KIQR_ACCOUNT_DIR}` in an argument is the account's folder (`--user-data-dir ${KIQR_ACCOUNT_DIR}/profile`).
+        let dir_text = account_dir.map(|d| d.display().to_string()).unwrap_or_default();
+        cmd.args(m.args.iter().map(|a| a.replace("${KIQR_ACCOUNT_DIR}", &dir_text)));
         cmd.env_clear();
         for k in ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] {
             if let Ok(v) = std::env::var(k) {
@@ -120,7 +125,11 @@ impl Server {
                 cmd.env(k, v);
             }
         }
-        let cwd = m.cwd.clone().map(std::path::PathBuf::from).unwrap_or_else(|| home.join("tmp").join("mcp").join(&m.id));
+        if let Some(d) = account_dir {
+            let _ = std::fs::create_dir_all(d);
+            cmd.env("KIQR_ACCOUNT_DIR", d);
+        }
+        let cwd = m.cwd.clone().map(std::path::PathBuf::from).or_else(|| account_dir.map(std::path::Path::to_path_buf)).unwrap_or_else(|| home.join("tmp").join("mcp").join(&m.id));
         let _ = std::fs::create_dir_all(&cwd);
         cmd.current_dir(&cwd);
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);

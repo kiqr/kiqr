@@ -208,6 +208,13 @@ pub struct ExtraTool {
     pub label: String,
     pub description: String,
     pub input: Value,
+    /// What a call does on its account (`ROLES`): anything but `read` is an
+    /// action, logged per account and counted against `daily_cap`. Empty:
+    /// `read`, or `publish` for a channel kind's publish tool.
+    pub role: String,
+    /// The thing acted on, as a template (`"{{post_url}}"`): the same action
+    /// on the same target through one account is refused the second time.
+    pub target: String,
     #[serde(flatten)]
     pub provide: Provide,
 }
@@ -295,6 +302,12 @@ pub struct Manifest {
     /// profile, one daily cap) and agree on its key names. Empty: the ability's
     /// own id, so its accounts are its own.
     pub service: String,
+    /// One call at a time per account, across every ability of the service
+    /// that says so: a browser session that two callers must not drive at once.
+    pub exclusive: bool,
+    /// Actions (tool calls with a role other than `read`) per account per
+    /// day, across every ability of the service; the lowest declared wins.
+    pub daily_cap: Option<u32>,
     pub auth: Vec<AuthKey>,
     /// How the keys can be got with one button instead of typed in (`docs/abilities.md`, "Signing in").
     pub connect: Option<crate::connect::Connect>,
@@ -342,6 +355,8 @@ impl Default for Manifest {
             summary: String::new(),
             transport: Transport::Http,
             service: String::new(),
+            exclusive: false,
+            daily_cap: None,
             auth: vec![],
             connect: None,
             hosts: vec![],
@@ -695,6 +710,9 @@ pub fn validate(m: &Manifest) -> Result<()> {
     for t in &m.tools {
         if !is_tool_name(&t.name) {
             bail!("tool name '{}' must be snake_case", t.name);
+        }
+        if !t.role.is_empty() && !ROLES.contains(&t.role.as_str()) {
+            bail!("tool '{}' has role '{}', which is not one of {}", t.name, t.role, ROLES.join(", "));
         }
         if t.input != Value::Null && t.input["type"] != "object" {
             bail!("tool '{}' input must be a JSON schema object", t.name);

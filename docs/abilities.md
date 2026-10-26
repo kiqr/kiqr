@@ -37,7 +37,19 @@ projects/<slug>/connections/<id>/.env              the keys, never committed, mo
 - An account is an account of a **service**: the manifest's `service`, else the ability's own id. Every installed ability that names the same service uses the same accounts (one sign-in for "Read posts", "Reply to posts" and "Improve the profile"), so abilities sharing a service must agree on its key names. `ability` on the record is the one it was made with; a record without `service` (older homes) belongs to that ability's own id.
 - A call goes through one account: the one named, else the service's **default** (the first one added, or the one the user starred). The names an ability declares (`auth`, what `connect` writes, `env`, a command's `env`) are read from that account only, never from the project's or the machine's `.env`; KIQR's own keys (the model providers, UnblockingAPI) stay in `.env` as before.
 - With more than one account of a service in a project, its tools get an optional `connection` argument (an enum of the account names), and `send_email` takes `from`. Seemo leaves it out for the default.
-- A hosted program (`transport: mcp`) runs once per ability and account, started with that account's keys; changing a key on an account or removing it stops every ability's program for it.
+- A hosted program (`transport: mcp`) runs once per ability and account, started with that account's keys; changing a key on an account or removing it stops every ability's program for it. It works in the account's own folder, `connections/<id>/data/` (never committed, removed with the account), which every ability of the service shares: `KIQR_ACCOUNT_DIR` in its environment and `${KIQR_ACCOUNT_DIR}` in its `args` (`--user-data-dir ${KIQR_ACCOUNT_DIR}/profile` keeps one browser login for all of them). A manifest's own `cwd` still wins.
+- Abilities sharing an account do not get in each other's way:
+
+  ```yaml
+  exclusive: true          # one call at a time per account, across the service's abilities that say so (a browser session)
+  daily_cap: 20            # actions per account per day, across every ability of the service; the lowest declared wins
+  tools:
+    - name: reply
+      role: reply          # publish | reply | manage | read; empty is read, or publish for a channel kind's publish tool
+      target: "{{post_url}}"   # the thing acted on: the same role on the same target through one account is refused the second time
+  ```
+
+  Every action (a call whose role is not `read`) is logged on the account, `connections/<id>/activity.jsonl` (never committed): when, which ability, the role, the tool, the target and the link it returned. The cap counts today's (UTC) actions there. `GET /api/projects/{slug}/connections/{id}/activity` lists them, newest first, with today's count and the cap.
 - A channel is an account with a `kind`. A new one can start with the keys of another account of the same ability (`same_as`: the same mail account to another address); the keys are copied, so changing one later does not change the other.
 - `kiqr accounts ls|add|set|default|rm`; routes under `/api/projects/{slug}/connections`, channels under `/channels` as before.
 - Homes from before accounts are moved once at start: each channel keeps its id with a copy of its ability's keys, an ability a project had keys for becomes its first account (a channel when its kind needs no destination), the ability's keys leave the project's `.env`, and an ability switched off for the machine becomes switched off in every project. Installing an ability later does the same for keys a project's `.env` still holds.

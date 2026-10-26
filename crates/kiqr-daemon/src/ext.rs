@@ -15,7 +15,7 @@ use axum::{
 use base64::Engine;
 use kiqr_core::abilities::{self, Ability};
 use kiqr_core::assets;
-use kiqr_core::connections::Connection;
+use kiqr_core::connections::{Activity, Connection};
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{self, CommandSpec, Entry, HttpRequest, Manifest, Provide, Registry, ResultMap, Scope, Transport};
 use kiqr_core::project::Project;
@@ -821,11 +821,15 @@ pub struct ExecOut {
 /// Run one `provides` entry or extra tool of an installed ability. Secrets
 /// come from the project's `.env`, then the machine's.
 /// `conn` names the connection (id or label); none uses the ability's default.
+///
+/// An account is shared by every ability of its service, so a call through
+/// one waits its turn when the ability is `exclusive` (a browser session),
+/// is refused when it would repeat an action on the same target or go over
+/// the service's `daily_cap`, and is logged on the account when it acts.
 pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&str>) -> Result<ExecOut> {
     let conn = pick_connection(app, slug, m, conn)?;
-    let mut args = provide.mapped_args(args);
+    let mut args = args.clone();
     if let Some(o) = args.as_object_mut() {
-        o.remove("connection");
         // Through a channel of a kind this ability declares (any ability of its service, not only
         // the one that publishes): the channel's destination fills what the call left out.
         if let Some(c) = conn.as_ref().filter(|c| c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind)) {
@@ -834,10 +838,74 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
             }
         }
     }
+    let _turn = match (&conn, m.exclusive) {
+        (Some(c), true) => Some(account_turn(slug, &c.id).await),
+        _ => None,
+    };
+    let act = conn.as_ref().and_then(|c| action(m, tool, c, &args));
+    if let (Some(c), Some(a)) = (&conn, &act) {
+        check_action(app, slug, m, c, a).await?;
+    }
+    let out = run(app, slug, m, provide, ability, tool, &args, conn.as_ref()).await?;
+    if let (Some(c), Some(mut a)) = (conn, act) {
+        a.url = out.text.clone().filter(|t| t.starts_with("http")).or_else(|| ["url", "link"].iter().find_map(|k| out.json.get(*k).and_then(|u| u.as_str()).map(str::to_string)));
+        if let Err(e) = c.record(app.store.home(), slug, &a) {
+            tracing::warn!(account = %c.id, "could not log an action: {e:#}");
+        }
+    }
+    Ok(out)
+}
+
+/// Accounts being driven right now, by `slug/id`.
+static TURNS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> = std::sync::LazyLock::new(Default::default);
+
+/// Wait until no other exclusive call is using the account.
+async fn account_turn(slug: &str, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = TURNS.lock().unwrap_or_else(|e| e.into_inner()).entry(format!("{slug}/{id}")).or_default().clone();
+    lock.lock_owned().await
+}
+
+/// What a call does on its account, when it does more than read: the tool's
+/// `role` (or `publish` for a channel kind's publish tool) and its `target`.
+fn action(m: &Manifest, tool: Option<&str>, c: &Connection, args: &Value) -> Option<Activity> {
+    let t = tool.and_then(|n| m.tools.iter().find(|t| t.name == n));
+    let publishes = c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind && k.publishes() && Some(k.publish.as_str()) == tool);
+    let role = t.map(|t| t.role.clone()).filter(|r| !r.is_empty()).or_else(|| publishes.then(|| "publish".to_string()))?;
+    if role == "read" {
+        return None;
+    }
+    let target = t.map(|t| extensions::fill(&t.target, args, |_| None)).unwrap_or_default().trim().to_string();
+    Some(Activity { at: chrono::Utc::now(), ability: m.id.clone(), role, tool: tool.unwrap_or_default().to_string(), target, url: None })
+}
+
+/// Refuse an action already done on the same target through this account,
+/// or one over the lowest `daily_cap` any ability of the service declares.
+async fn check_action(app: &App, slug: &str, m: &Manifest, c: &Connection, a: &Activity) -> Result<()> {
+    let home = app.store.home();
+    if !a.target.is_empty() {
+        if let Some(p) = c.acted_on(home, slug, &a.role, &a.target) {
+            bail!("already done: {} ({}) on {} through {} at {}; not doing it twice", p.role, p.ability, a.target, c.label, p.at.format("%Y-%m-%d %H:%M UTC"));
+        }
+    }
+    let cap = app.registry.read().await.of_service(slug, m.service()).iter().filter_map(|o| o.daily_cap).min();
+    if let Some(cap) = cap {
+        if c.actions_today(home, slug) >= cap as usize {
+            bail!("{} has done its {cap} actions for today (the limit is shared by every ability that uses this account); it can act again tomorrow", c.label);
+        }
+    }
+    Ok(())
+}
+
+/// One call through its transport, after the account's checks.
+async fn run(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&Connection>) -> Result<ExecOut> {
+    let mut args = provide.mapped_args(args);
+    if let Some(o) = args.as_object_mut() {
+        o.remove("connection");
+    }
     let files = call_files(app, slug, provide, &mut args)?;
-    let stored = kiqr_core::connections::env_for(app.store.home(), slug, conn.as_ref(), m);
+    let stored = kiqr_core::connections::env_for(app.store.home(), slug, conn, m);
     // Tokens a sign-in flow mints or refreshes for this call come first.
-    let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, m, conn.as_ref()).await?);
+    let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, m, conn).await?);
     let env = move |k: &str| minted.get(k).cloned().or_else(|| stored(k));
     match m.transport {
         Transport::Http if !provide.steps.is_empty() => steps_exec(m, &provide.steps, &args, &provide.result, &env, &files).await,
@@ -855,7 +923,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
                 Some(t) => extensions::fill_value(t, &args, &env),
                 None => args.clone(),
             };
-            let r = app.mcp.call(app.store.home().root(), m, &mcp_env(m, conn.as_ref(), &env), &server_tool, &call_args).await?;
+            let r = app.mcp.call(app.store.home().root(), m, &mcp_env(app, slug, m, conn, &env), &server_tool, &call_args).await?;
             let out = crate::mcp_host::read_result(&r);
             if out.is_error {
                 bail!("{}: {}", m.name, kiqr_core::profile::truncate_chars(out.text.trim(), 300));
@@ -881,14 +949,15 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
 pub fn launch_for(app: &App, slug: &str, m: &Manifest) -> crate::mcp_host::Launch {
     let conn = Connection::default_of(&app.store, slug, m.service());
     let env = kiqr_core::connections::env_for(app.store.home(), slug, conn.as_ref(), m);
-    mcp_env(m, conn.as_ref(), &env)
+    mcp_env(app, slug, m, conn.as_ref(), &env)
 }
 
 /// What a hosted program is started with: its connection (the server runs
 /// once per connection) and the values of the names it asks for.
-pub fn mcp_env(m: &Manifest, conn: Option<&Connection>, env: &impl Fn(&str) -> Option<String>) -> crate::mcp_host::Launch {
+/// With a connection, it works in the account's own folder (`data/`), shared by every ability of the service.
+pub fn mcp_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Connection>, env: &impl Fn(&str) -> Option<String>) -> crate::mcp_host::Launch {
     let vars = kiqr_core::connections::key_names(m).into_iter().filter_map(|k| env(&k).map(|v| (k, v))).collect();
-    crate::mcp_host::Launch { key: conn.map(|c| format!("{}#{}", m.id, c.id)).unwrap_or_else(|| m.id.clone()), vars }
+    crate::mcp_host::Launch { key: conn.map(|c| format!("{}#{}", m.id, c.id)).unwrap_or_else(|| m.id.clone()), vars, dir: conn.map(|c| c.data_dir(app.store.home(), slug)) }
 }
 
 /// The asset's files, when the call names any (`{{file…}}`): their bytes for

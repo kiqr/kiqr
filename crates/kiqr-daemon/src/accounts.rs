@@ -26,6 +26,7 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/connections/{id}", get(get_one).put(update_route).delete(delete_route))
         .route("/api/projects/{slug}/connections/{id}/secrets/{name}", put(put_secret))
         .route("/api/projects/{slug}/connections/{id}/default", post(make_default))
+        .route("/api/projects/{slug}/connections/{id}/activity", get(activity))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -284,6 +285,23 @@ struct SecretBody {
 async fn put_secret(State(app): State<App>, Path((slug, id, name)): Path<(String, String, String)>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
     let set = crate::ext::set_connection_secret(&app, &slug, &id, &name, &b.value).await?;
     Ok(Json(json!({ "name": name, "set": set, "connection": id })))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ActivityQuery {
+    limit: Option<usize>,
+}
+
+/// What the abilities of its service did through an account, newest first, with today's count and the cap.
+async fn activity(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Query(q): Query<ActivityQuery>) -> ApiResult<Value> {
+    let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let home = app.store.home();
+    let mut all = c.activity(home, &slug);
+    all.reverse();
+    all.truncate(q.limit.unwrap_or(50).clamp(1, 500));
+    let cap = app.registry.read().await.of_service(&slug, c.service()).iter().filter_map(|m| m.daily_cap).min();
+    Ok(Json(json!({ "connection": c.id, "service": c.service(), "today": c.actions_today(home, &slug), "daily_cap": cap, "activity": all })))
 }
 
 async fn make_default(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
