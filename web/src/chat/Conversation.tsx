@@ -314,6 +314,13 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
             </button>
           )}
           {files.length > 0 && <p className="muted sm">Attached: {files.map((f) => f.name).join(", ")}</p>}
+          {Object.keys((p.options as Record<string, unknown>) ?? {}).length > 0 && (
+            <p className="muted sm">
+              {Object.entries(p.options as Record<string, unknown>)
+                .map(([k, v]) => `${k.replace(/_/g, " ")}: ${String(v)}`)
+                .join(" · ")}
+            </p>
+          )}
           {!!p.note && <p className="muted sm">{String(p.note)}</p>}
         </>
       ) : isChannel ? (

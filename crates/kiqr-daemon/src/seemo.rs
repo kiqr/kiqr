@@ -618,7 +618,7 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },
-            "channel" => match crate::publish::save_channel(&app, &slug, &approval.payload, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
+            "channel" => match crate::publish::save_channel(&app, &slug, &approval.payload, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into()), Default::default()).await {
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },

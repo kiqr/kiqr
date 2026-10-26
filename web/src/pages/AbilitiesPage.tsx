@@ -134,7 +134,7 @@ export function AbilitiesPage() {
         {builtin.length > 0 && <Group label="Built in" items={builtin} slug={slug} cols={2} onOpen={open} onChange={data.reload} />}
       </section>
 
-      <Marketplace slug={slug} items={market} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a) => open(a)} onChange={data.reload} />
+      <Marketplace slug={slug} items={market} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a, tab) => open(a, tab)} onChange={data.reload} />
 
       <Advanced slug={slug} broken={data.data?.broken ?? []} envFile={data.data?.env_file ?? "~/.kiqr/.env"} projectEnvFile={data.data?.project_env_file ?? null} index={data.data?.index ?? ""} machineFolder={(data.data?.env_file ?? "~/.kiqr/.env").replace(/\/\.env$/, "/abilities")} onDone={data.reload} onGuide={() => guide && open(guide, "instructions")} />
 
@@ -169,6 +169,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
     setBusy(true);
     setError(null);
     try {
+      if (want && a.machine_off) await api.resumeAbility(a.id);
       if (want) await api.resumeProjectAbility(slug, a.id);
       else await api.pauseProjectAbility(slug, a.id);
       onChange();
@@ -178,7 +179,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
       setBusy(false);
     }
   };
-  const needs = !a.ready && a.installed && !a.machine_off;
+  const needs = !a.ready && a.installed;
   return (
     <li className={`mk-row ab-row ${isOn(a) ? "on" : "off"}`}>
       <div className="main" role="button" tabIndex={0} onClick={() => onOpen(a)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen(a))}>
@@ -202,8 +203,8 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
                 </button>
               )}
               {a.auth.length > 0 && (
-                <button className={`part ${a.missing.length ? "warn" : ""}`} title="Keys for this project or the machine" onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
-                  <KeyRound size={11} /> {a.channels.length ? "account" : "key"}
+                <button className={`part ${a.missing.length ? "warn" : ""}`} title={a.core ? "KIQR's own key" : a.channels.length ? "This project's channels, each with its own account" : "This project's accounts"} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
+                  <KeyRound size={11} /> {a.core ? "key" : a.channels.length ? "channels" : (a.accounts?.length ?? 0) > 1 ? `${a.accounts?.length} accounts` : "account"}
                 </button>
               )}
               {a.transport === "mcp" ? (
@@ -230,9 +231,9 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
           </p>
         </div>
         <div className="acts" onClick={(e) => e.stopPropagation()}>
-          <span title={a.machine_off ? "Switched off for the whole machine; opens it so you can turn it on everywhere" : a.paused ? "Off for this project" : needs ? "Not connected yet; opens it so you can" : "On for this project"}>
+          <span title={a.paused || a.machine_off ? "Off for this project" : needs ? (a.channels.length ? "No channel yet; opens it so you can add one" : "Not connected yet; opens it so you can") : "On for this project"}>
             {/* A switch that cannot flip yet still does something: it opens the ability where the missing step is. */}
-            <Switch on={!a.paused && !a.machine_off && a.ready} disabled={busy} onChange={(want) => (a.machine_off ? onOpen(a) : !a.ready ? onOpen(a, a.auth.length ? "connect" : "overview") : void toggle(want))} />
+            <Switch on={!a.paused && !a.machine_off && a.ready} disabled={busy} onChange={(want) => (!a.ready ? onOpen(a, a.auth.length ? "connect" : "overview") : void toggle(want))} />
           </span>
         </div>
       </div>

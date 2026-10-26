@@ -247,8 +247,12 @@ export type ToolGroup = { id: string; label: string; tools: string[] };
 
 // ---- Abilities
 export type Scope = { scope: "global" } | { scope: "project"; project: string };
-/** A key an ability needs, and whether it is set: for this project, for the machine, or not. */
-export type MarketAuth = { env: string; label: string; help: string; optional: boolean; set: "project" | "global" | null };
+/** A key an ability needs. `set` says where, for a core ability's own key (this project or the machine); an installed ability's keys live on its accounts. */
+export type MarketAuth = { env: string; label: string; help: string; optional: boolean; set: "project" | "global" | boolean | null };
+/** One of this project's accounts of an ability (a channel, when it publishes): which keys it has, never their values. */
+export type AccountSummary = { id: string; label: string; default: boolean; channel: boolean; kind: string; destination_text: string; missing: string[]; set: string[] };
+/** A kind of channel an ability publishes to, and what a channel of it needs. */
+export type KindInfo = { kind: string; label: string; name: string; destination: Record<string, unknown> };
 /** How an ability signs in with one button (its manifest's `connect`): what to ask first, what comes back. */
 export type ConnectInfo = { label: string; flow: "redirect" | "oauth2"; needs: string[]; returns: string[]; https_only: boolean };
 /** One instructions file of an ability, and where its text is overridden. */
@@ -288,7 +292,7 @@ export type Ability = {
   scope: Scope | null;
   folder: string | null;
   git: boolean;
-  /** Switched off for the whole machine. */
+  /** A core ability switched off in config.yaml for every project. Installed abilities are switched per project only. */
   machine_off: boolean;
   /** Switched off for this project. */
   paused: boolean;
@@ -296,6 +300,10 @@ export type Ability = {
   missing: string[];
   auth: MarketAuth[];
   connect?: ConnectInfo | null;
+  /** This project's accounts of it; empty for one that needs no keys. */
+  accounts?: AccountSummary[];
+  /** The kinds of channel it publishes to. */
+  kinds?: KindInfo[];
   active_for: string[];
   instructions: InstructionFile[];
   in_prompt: boolean;
@@ -303,11 +311,17 @@ export type Ability = {
 };
 export type Contract = { id: string; label: string; tool: string; configured: string | null; active: { id: string; name: string } | null; candidates: { id: string; name: string; ready: boolean }[] };
 export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts: Contract[]; broken: { folder: string; scope: Scope; error: string }[]; guide: Ability | null; index: string; index_fetched?: boolean; env_file: string; project_env_file: string | null };
-/** Where a project publishes. */
-export type Channel = {
+/** A key on one account: set or not, never its value. */
+export type AccountKey = { env: string; label: string; help: string; optional: boolean; set: boolean };
+/** One account of an ability in this project, with its own keys. With a `kind` it is a channel: where the project publishes. */
+export type Account = {
   id: string;
   label: string;
-  extension: string;
+  ability: string;
+  ability_name: string;
+  default: boolean;
+  /** True for a channel. */
+  channel: boolean;
   kind: string;
   destination: Record<string, unknown>;
   created_by: string;
@@ -317,9 +331,15 @@ export type Channel = {
   last_published?: string | null;
   connection_name: string;
   ready: boolean;
+  missing: string[];
+  auth: AccountKey[];
+  connect?: ConnectInfo | null;
   destination_text: string;
+  icon?: string;
+  error?: string;
 };
-export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string };
+export type Channel = Account;
+export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }> };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -420,36 +440,48 @@ export const api = {
   saveInstructions: (slug: string | null, id: string, text: string, file?: string) => req<Ability>(`${slug ? `/api/projects/${slug}` : "/api"}/abilities/${encodeURIComponent(id)}/instructions`, { method: "PUT", body: JSON.stringify({ text, file }) }),
   /** Drop the copy at that scope: a project's copy, or the machine's edit of shipped text (back to the shipped one). */
   deleteInstructions: (slug: string | null, id: string, file?: string) => req<void>(`${slug ? `/api/projects/${slug}` : "/api"}/abilities/${encodeURIComponent(id)}/instructions${file ? `?file=${encodeURIComponent(file)}` : ""}`, { method: "DELETE" }),
-  installAbility: (id: string, b: { scope: "global" | "project"; project?: string; secrets?: Record<string, string> }) => req<{ id: string; folder: string }>(`/api/abilities/${id}/install`, { method: "POST", body: JSON.stringify(b) }),
+  /** Install for the machine: the code only. A project adds its accounts afterwards. */
+  installAbility: (id: string) => req<{ id: string; folder: string }>(`/api/abilities/${id}/install`, { method: "POST", body: "{}" }),
   installAbilitySource: (b: { source: string; scope: "global" | "project"; project?: string; name?: string }) => req<Ability>("/api/abilities/install", { method: "POST", body: JSON.stringify(b) }),
   updateAbility: (id: string, slug?: string) => req<{ detail: string }>(`/api/abilities/${id}/update${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "POST", body: "{}" }),
-  /** Off or on for the whole machine (core abilities too). */
+  /** Off or on for every project: core abilities only (config.yaml). */
   pauseAbility: (id: string, slug?: string) => req<{ paused: boolean }>(`/api/abilities/${id}/pause${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "POST", body: "{}" }),
   resumeAbility: (id: string, slug?: string) => req<{ paused: boolean }>(`/api/abilities/${id}/resume${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "POST", body: "{}" }),
   removeAbility: (id: string, slug?: string) => req<void>(`/api/abilities/${id}${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "DELETE" }),
   /** Off or on for one project. */
   pauseProjectAbility: (slug: string, id: string) => req<{ paused: boolean }>(`/api/projects/${slug}/abilities/${id}/pause`, { method: "POST", body: "{}" }),
   resumeProjectAbility: (slug: string, id: string) => req<{ paused: boolean }>(`/api/projects/${slug}/abilities/${id}/resume`, { method: "POST", body: "{}" }),
-  /** Set a secret in .env by name; an empty value clears it. The value is never read back. */
+  /** Set one of KIQR's own keys in .env by name; an empty value clears it. The value is never read back. An ability's keys go on an account. */
   setSecret: (name: string, value: string) => req<{ name: string; set: boolean }>(`/api/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
   /** The same for one project: its own .env wins over the machine's. */
   setProjectSecret: (slug: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
 
-  /** Start signing in: saves what was asked first, returns the page to open; `callback: false` means the user pastes what it shows. */
-  startConnect: (slug: string, id: string, b: { scope: "project" | "global"; origin: string; values: Record<string, string> }) => req<{ url: string; callback: boolean; fields: string[] }>(`/api/projects/${slug}/connect/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(b) }),
+  /** Start signing in, into one account: `connection` to sign one in again, else a new one is added first (a channel with `kind` and `destination`). Saves what was asked first and returns the page to open; `callback: false` means the user pastes what it shows into the account. */
+  startConnect: (slug: string, id: string, b: { connection?: string; label?: string; kind?: string; destination?: Record<string, string>; origin: string; values: Record<string, string> }) =>
+    req<{ url: string; callback: boolean; connection: string; fields: string[] }>(`/api/projects/${slug}/connect/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(b) }),
+
+  // Accounts: one setup of an ability in a project, with its own keys
+  accounts: (slug: string, ability?: string) => req<{ connections: Account[] }>(`/api/projects/${slug}/connections${ability ? `?ability=${encodeURIComponent(ability)}` : ""}`),
+  createAccount: (slug: string, b: { ability: string; label?: string; secrets?: Record<string, string>; same_as?: string }) => req<Account>(`/api/projects/${slug}/connections`, { method: "POST", body: JSON.stringify(b) }),
+  updateAccount: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
+  deleteAccount: (slug: string, id: string) => req<void>(`/api/projects/${slug}/connections/${id}`, { method: "DELETE" }),
+  /** One key of an account; an empty value clears it. Never read back. */
+  setAccountSecret: (slug: string, id: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/connections/${id}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
+  /** The account its ability uses when nothing names one. */
+  defaultAccount: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}/default`, { method: "POST", body: "{}" }),
 
   // Channels and publishing
   channels: (slug: string) => req<{ channels: Channel[]; kinds: ChannelKindInfo[] }>(`/api/projects/${slug}/channels`),
-  createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string> }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
+  createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string>; secrets?: Record<string, string>; same_as?: string }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
   deleteChannel: (slug: string, id: string) => req<void>(`/api/projects/${slug}/channels/${id}`, { method: "DELETE" }),
   /** `asks_first: false` lets Seemo publish through the channel on its own. */
   updateChannel: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean }) => req<Channel>(`/api/projects/${slug}/channels/${id}`, { method: "PUT", body: JSON.stringify(p) }),
   /** Publish an asset now, through the channel it was approved for or the one given. From the UI the click is the yes. */
-  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel = "", note = "") =>
-    req<{ published: boolean; url: string | null; detail: string; channel_label: string }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel, note, by: "user" }) }),
+  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel = "", note = "", options: Record<string, unknown> = {}) =>
+    req<{ published: boolean; url: string | null; detail: string; channel_label: string }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel, note, options, by: "user" }) }),
   /** The user's yes to an asset, for a channel: it becomes Ready. Status is never set by hand; these change what it follows from. */
   approveAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel: string) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/approve`, { method: "POST", body: JSON.stringify({ channel }) }),
-  scheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">, at: string, channel = "") => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "POST", body: JSON.stringify({ at, channel }) }),
+  scheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">, at: string, channel = "", options: Record<string, unknown> = {}) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "POST", body: JSON.stringify({ at, channel, options }) }),
   unscheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "DELETE" }),
   unpublishAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/unpublish`, { method: "POST", body: "{}" }),
   archiveAsset: (slug: string, a: Pick<Asset, "type" | "id">, archived: boolean) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}`, { method: "PATCH", body: JSON.stringify({ archived }) }),
@@ -465,7 +497,7 @@ let demoConfig: Config = {
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (/\/(chats|approvals|tasks|calendar|channels|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|channels|connections|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

@@ -112,13 +112,14 @@ pub enum EventKind {
     /// the values went (None: the machine); `error` says why it failed.
     /// What Seemo suggests installing changed (a profile found, an ability installed, one waved away).
     SuggestionsChanged {},
-    ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] project: Option<String> },
+    ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] connection: Option<String> },
 
     // Abilities and channels.
     /// An ability made a file into an asset: `ability` is image, video or music.
     MediaCreated { ability: String, asset_type: String, id: String, file: String, provider: String },
-    ChannelSaved { channel: String, label: String, kind: String },
-    ChannelDeleted { channel: String },
+    /// A connection (one account of an ability in a project) was added or changed; `kind` is set for a channel.
+    ConnectionSaved { connection: String, label: String, ability: String, #[serde(default)] kind: String },
+    ConnectionDeleted { connection: String, ability: String },
     /// An asset went out through a channel.
     AssetPublished { asset_type: String, id: String, channel: String, #[serde(default)] url: Option<String> },
     /// The user approved an asset for a channel (it is Ready), or set when the
@@ -170,8 +171,8 @@ impl EventKind {
                 | EventKind::ConnectFinished { .. }
                 | EventKind::SuggestionsChanged { .. }
                 | EventKind::MediaCreated { .. }
-                | EventKind::ChannelSaved { .. }
-                | EventKind::ChannelDeleted { .. }
+                | EventKind::ConnectionSaved { .. }
+                | EventKind::ConnectionDeleted { .. }
                 | EventKind::AssetPublished { .. }
                 | EventKind::AssetApproved { .. }
                 | EventKind::AssetUnpublished { .. }

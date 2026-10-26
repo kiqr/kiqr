@@ -359,6 +359,47 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
     }
 }
 
+/// What can be used in this project right now, in a few lines: the
+/// installed abilities and their state, and the channels. Compared between
+/// turns of a chat; shown to Seemo when it changed.
+async fn setup_summary(app: &App, slug: &str) -> String {
+    let l = crate::market::listing(app, Some(slug)).await;
+    let mut ready = vec![];
+    let mut not_ready = vec![];
+    let mut off = vec![];
+    for a in &l.abilities {
+        let name = a["name"].as_str().unwrap_or("").to_string();
+        let accounts = a["accounts"].as_array().map(|v| v.len()).unwrap_or(0);
+        let name = if accounts > 1 { format!("{name} ({accounts} accounts)") } else { name };
+        if a["paused"].as_bool() == Some(true) || a["machine_off"].as_bool() == Some(true) {
+            off.push(name);
+        } else if a["ready"].as_bool() == Some(true) {
+            ready.push(name);
+        } else {
+            not_ready.push(name);
+        }
+    }
+    let channels: Vec<String> = {
+        let reg = app.registry.read().await;
+        kiqr_core::connections::Connection::channels(&app.store, slug)
+            .unwrap_or_default()
+            .iter()
+            .map(|c| {
+                let ok = reg.entry(Some(slug), &c.ability).and_then(|e| e.manifest.as_ref()).is_some_and(|m| crate::accounts::ready(app, slug, c, m));
+                format!("{} ({}, {})", c.label, c.kind, if ok { "connected" } else { "not connected" })
+            })
+            .collect()
+    };
+    let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
+    format!(
+        "- Abilities on and ready: {}\n- Installed but not set up: {}\n- Off here: {}\n- Channels: {}",
+        list(&ready),
+        list(&not_ready),
+        list(&off),
+        list(&channels)
+    )
+}
+
 fn persona(app: &App) -> String {
     std::fs::read_to_string(app.store.home().seemo_dir().join("PERSONA.md")).unwrap_or_else(|_| crate::PERSONA.to_string())
 }
@@ -388,6 +429,14 @@ pub async fn chat_turn(app: App, slug: String, mut chat: Chat, turn: std::sync::
             None => Session::New(uuid::Uuid::new_v4().to_string()),
         };
         let resumed = matches!(session, Session::Resume(_));
+        // A resumed chat remembers earlier answers about what is set up; when that changed, say so first.
+        let setup = setup_summary(&app, &slug).await;
+        let prompt = if resumed && chat.setup != setup {
+            format!("[From KIQR, not the user] This project's setup changed since your last answer in this chat. What you found earlier about abilities, accounts or channels is out of date; this is how it is now:\n{setup}\n\n---\n\n{prompt}")
+        } else {
+            prompt
+        };
+        chat.setup = setup;
         let groups = crate::ext::chat_groups(&app, &slug).await;
         let specs = crate::ext::tool_specs(&app, &slug, &groups).await;
         let spec = spec_for(&app, &project, session, Some(&chat.id), None, &groups, None).await?;

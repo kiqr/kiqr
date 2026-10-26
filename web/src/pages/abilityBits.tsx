@@ -54,9 +54,9 @@ export function stateOf(a: Ability): State {
   if (a.machine_off) return { id: "off-all", text: "off everywhere", tone: "" };
   if (a.paused) return { id: "off-here", text: "off here", tone: "" };
   if (a.program_found === false) return { id: "noprogram", text: "program missing", tone: "warn" };
-  if (!a.ready) return { id: a.missing.length ? "missing" : "setup", text: a.missing.length ? "not connected" : "needs setup", tone: "warn" };
-  const required = a.auth.filter((k) => !k.optional);
-  if (a.auth.length && required.every((k) => k.set === "project") && a.auth.some((k) => k.set === "project")) return { id: "own", text: "own account", tone: "ok" };
+  if (!a.ready) return { id: a.missing.length ? "missing" : "setup", text: a.missing.length ? (a.kinds?.length ? "no channel yet" : "not connected") : "needs setup", tone: "warn" };
+  const n = a.accounts?.length ?? 0;
+  if (n > 0) return { id: "own", text: a.kinds?.length ? (n === 1 ? "1 channel" : `${n} channels`) : n === 1 ? "connected" : `${n} accounts`, tone: "ok" };
   if (a.auth.length) return { id: "machine", text: "machine key", tone: "ok" };
   return { id: "on", text: "on", tone: "ok" };
 }
@@ -84,15 +84,25 @@ export function partsOf(a: Ability, full = false): Part[] {
 /** What an ability needs before it works: keys and where each is set, a program on this computer, the hosts it calls. */
 export function needsOf(a: Ability): Part[] {
   const out: Part[] = [];
-  if (a.auth.length) {
-    const account = a.channels.length > 0;
+  if (a.auth.length && a.core) {
     for (const k of a.auth) {
-      out.push({ icon: KeyRound, label: `${k.label || k.env}${k.optional ? " (optional)" : ""}${account ? ", per project" : ""}`, detail: k.set ? `set for ${k.set === "project" ? "this project" : "the machine"}` : "not set", tone: !k.set && !k.optional ? "warn" : "" });
+      out.push({ icon: KeyRound, label: `${k.label || k.env}${k.optional ? " (optional)" : ""}`, detail: k.set ? `set for ${k.set === "project" ? "this project" : "the machine"}` : "not set", tone: !k.set && !k.optional ? "warn" : "" });
     }
+  } else if (a.auth.length) {
+    // Each account (each channel, for one that publishes) has its own keys.
+    const n = a.accounts?.length ?? 0;
+    const ready = (a.accounts ?? []).filter((x) => x.missing.length === 0).length;
+    const noun = a.kinds?.length ? "channel" : "account";
+    out.push({
+      icon: KeyRound,
+      label: `${a.auth.map((k) => k.label || k.env).join(", ")}, per ${noun}`,
+      detail: !a.installed ? undefined : n === 0 ? `no ${noun} in this project yet` : `${ready} of ${n} ${noun}${n === 1 ? "" : "s"} connected`,
+      tone: a.installed && ready === 0 ? "warn" : "",
+    });
   }
   if (a.transport === "mcp" || a.runs_program) out.push({ icon: Terminal, label: `${a.command ?? "a program"} on this computer`, detail: a.program_found === false ? "not found; install it first" : a.program_found ? "found" : undefined, tone: a.program_found === false ? "warn" : "" });
   if (a.hosts.length) out.push({ icon: Globe, label: a.hosts.length === 1 ? "Access to one host" : `Access to ${a.hosts.length} hosts`, detail: a.hosts.join(", ") });
   return out;
 }
 
-export const RELOAD_ON = ["secret_set", "connect_finished", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];
+export const RELOAD_ON = ["secret_set", "connect_finished", "connection_saved", "connection_deleted", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];

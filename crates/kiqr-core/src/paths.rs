@@ -78,7 +78,11 @@ impl Home {
         }
         Ok(moves.len())
     }
-    /// Publishing channels: `channels/<id>/channel.yaml`. Committed.
+    /// A project's connections: `connections/<id>/connection.yaml` (committed) and `.env` (not).
+    pub fn connections_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("connections")
+    }
+    /// Where channels were kept before connections; read once, by the migration.
     pub fn channels_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("channels")
     }

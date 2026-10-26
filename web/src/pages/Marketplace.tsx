@@ -20,7 +20,7 @@ const SHELVES: { id: string; label: string }[] = [
   { id: "tools", label: "Tools" },
 ];
 
-export function Marketplace({ slug, items, index, indexFetched, loaded, onOpen, onChange }: { slug: string; items: Ability[]; index: string; indexFetched?: boolean; loaded: boolean; onOpen: (a: Ability) => void; onChange: () => void }) {
+export function Marketplace({ items, index, indexFetched, loaded, onOpen, onChange }: { slug: string; items: Ability[]; index: string; indexFetched?: boolean; loaded: boolean; onOpen: (a: Ability, tab?: "connect") => void; onChange: () => void }) {
   const [q, setQ] = useState("");
   const [shelf, setShelf] = useState("all");
   const [author, setAuthor] = useState("all");
@@ -82,24 +82,26 @@ export function Marketplace({ slug, items, index, indexFetched, loaded, onOpen, 
       )}
       <div className="mk-grid">
         {shown.map((it, i) => (
-          <MarketCard key={it.id} slug={slug} a={it} i={i} onOpen={() => onOpen(it)} onChange={onChange} />
+          <MarketCard key={it.id} a={it} i={i} onOpen={(tab) => onOpen(it, tab)} onChange={onChange} />
         ))}
       </div>
     </section>
   );
 }
 
-function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability; i: number; onOpen: () => void; onChange: () => void }) {
+function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen: (tab?: "connect") => void; onChange: () => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const install = async (secrets: Record<string, string>) => {
+  const install = async () => {
     setBusy(true);
     setError(null);
     try {
-      await api.installAbility(a.id, { scope: "project", project: slug, secrets });
+      await api.installAbility(a.id);
       setOpen(false);
       onChange();
+      // Installed for the machine; this project adds its account (or channel) next.
+      if (a.auth.length) onOpen("connect");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -107,7 +109,7 @@ function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability
     }
   };
   return (
-    <motion.article className="mk-card st-available" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.03 }} onClick={onOpen}>
+    <motion.article className="mk-card st-available" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.03 }} onClick={() => onOpen()}>
       <header>
         <span className={`ic ${a.avatar ? "has-avatar" : ""}`}>
           <AbilityIcon a={a} size={a.avatar ? 40 : 18} />
@@ -148,12 +150,12 @@ function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability
         )}
         {a.hosts.length > 0 && <span className="chip dimmed">calls {a.hosts.join(", ")}</span>}
       </p>
-      <AnimatePresence>{open && <InstallPanel a={a} busy={busy} error={error} onCancel={() => setOpen(false)} onInstall={(s) => void install(s)} />}</AnimatePresence>
+      <AnimatePresence>{open && <InstallPanel a={a} busy={busy} error={error} onCancel={() => setOpen(false)} onInstall={() => void install()} />}</AnimatePresence>
       <footer onClick={(e) => e.stopPropagation()}>
         <button className={`mk-install-btn ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)}>
           <Download size={14} /> {open ? "Cancel" : "Install"}
         </button>
-        <button className="btn t sm" onClick={onOpen}>
+        <button className="btn t sm" onClick={() => onOpen()}>
           Details
         </button>
         {a.homepage && (
@@ -166,43 +168,18 @@ function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability
   );
 }
 
-/** Install is for the machine; the keys typed here are this project's. Abilities that publish bring an account per project instead, when a channel is added. */
-export function InstallPanel({ a, busy, error, onCancel, onInstall }: { a: Ability; busy: boolean; error: string | null; onCancel: () => void; onInstall: (secrets: Record<string, string>) => void }) {
-  const perProject = a.channels.length > 0;
-  const [secrets, setSecrets] = useState<Record<string, string>>({});
-  const required = perProject ? [] : a.auth.filter((k) => !k.optional);
-  // One that signs in with a button is connected after it is installed, from its Connect tab.
-  const ok = !!a.connect || required.every((k) => (secrets[k.env] ?? "").trim() || k.set);
+/** Install is for the machine: the code only. The project then adds its own accounts (its channels, for one that publishes). */
+export function InstallPanel({ a, busy, error, onCancel, onInstall }: { a: Ability; busy: boolean; error: string | null; onCancel: () => void; onInstall: () => void }) {
+  const publishes = a.channels.length > 0;
   return (
     <motion.div className="mk-install" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }} onClick={(e) => e.stopPropagation()}>
-      {perProject ? (
-        <p className="muted sm">Installed once for this machine. Each project connects its own account when it adds a channel for it.</p>
-      ) : a.connect ? (
-        <p className="muted sm">Installed once for this machine. Then sign in from its Connect tab with “{a.connect.label}”, or type the keys below.</p>
+      {publishes ? (
+        <p className="muted sm">Installed once for this machine. Then add a channel per {a.channels.join(" or ")} you publish to, each with its own account{a.connect ? ` (“${a.connect.label}”)` : ""}.</p>
       ) : a.auth.length > 0 ? (
-        <p className="muted sm">Installed once for this machine. The keys below are this project's; other projects add theirs, or a key for every project, from the ability's Connect tab.</p>
+        <p className="muted sm">Installed once for this machine. Then add this project's account{a.connect ? ` with “${a.connect.label}”` : ", with its keys"}; a project can have several.</p>
       ) : a.instructions.length > 0 || a.transport === "instructions" ? (
         <p className="muted sm">Instructions Seemo reads before this kind of work. Nothing to connect.</p>
       ) : null}
-      {!perProject && a.auth.length > 0 && (
-        <div className="keys">
-          {a.auth.map((k) => (
-            <label key={k.env}>
-              <span className="lb">
-                {k.label || k.env}
-                {k.optional && <small> optional</small>}
-                {k.set && <small> · already set ({k.set === "project" ? "this project" : "the machine"})</small>}
-              </span>
-              <input className="input mono" type="password" autoComplete="off" spellCheck={false} placeholder={k.help && !/^https?:/.test(k.help) ? k.help : "paste it here"} value={secrets[k.env] ?? ""} onChange={(e) => setSecrets({ ...secrets, [k.env]: e.target.value })} />
-              {k.help && /^https?:/.test(k.help) && (
-                <a className="lnk sm" href={k.help} target="_blank" rel="noreferrer">
-                  where to get it
-                </a>
-              )}
-            </label>
-          ))}
-        </div>
-      )}
       {a.runs_program && (
         <p className="warn sm">
           <Terminal size={12} /> This one runs a program on this computer{a.command ? <code> {a.command}</code> : null}.
@@ -214,7 +191,7 @@ export function InstallPanel({ a, busy, error, onCancel, onInstall }: { a: Abili
         </p>
       )}
       <div className="acts">
-        <button className="btn p sm" disabled={busy || !ok} onClick={() => onInstall(secrets)}>
+        <button className="btn p sm" disabled={busy} onClick={() => onInstall()}>
           {busy ? <Loader2 size={13} className="spin" /> : <Download size={13} />} {a.repo ? "Download and install" : "Install"}
         </button>
         <button className="btn t sm" onClick={onCancel}>

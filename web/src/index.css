@@ -168,3 +168,5 @@ select.input { width: auto; }
 /* ---------- settings sections ---------- */
 .sect { margin-bottom: 28px; scroll-margin-top: 20px; }
 .sect header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; } .sect header p { color: var(--dim); font-size: 13px; }
+.pub-opt { display: inline-flex; gap: 4px; }
+.pub-opt .chip { cursor: pointer; }

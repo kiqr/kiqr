@@ -51,6 +51,14 @@ pub async fn available(spec: &str) -> bool {
     }
 }
 
+/// The keys KIQR itself uses (the model providers, UnblockingAPI, kiqr.cloud):
+/// the machine's `.env`, never an ability's connection.
+pub const CORE_KEYS: &[&str] = &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "UNBLOCKINGAPI_KEY", "KIQR_CLOUD_TOKEN"];
+
+pub fn is_core_key(k: &str) -> bool {
+    CORE_KEYS.contains(&k)
+}
+
 pub fn has_env(k: &str) -> bool {
     std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false)
 }

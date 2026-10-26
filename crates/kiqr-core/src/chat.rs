@@ -27,6 +27,10 @@ pub struct Chat {
     pub last_message: String,
     #[serde(default)]
     pub messages: usize,
+    /// What the project's setup (abilities, accounts, channels) looked like
+    /// at Seemo's last answer here, so the next turn can be told it changed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub setup: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +148,7 @@ impl Chat {
             model: model.to_string(),
             last_message: String::new(),
             messages: 0,
+            setup: String::new(),
         };
         chat.save(store, slug)?;
         std::fs::write(store.home().chat_dir(slug, &chat.id).join("messages.jsonl"), "")?;

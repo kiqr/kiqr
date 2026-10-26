@@ -15,6 +15,7 @@ use axum::{
 use base64::Engine;
 use kiqr_core::abilities::{self, Ability};
 use kiqr_core::assets;
+use kiqr_core::connections::Connection;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{self, CommandSpec, Entry, HttpRequest, Manifest, Provide, Registry, ResultMap, Scope, Transport};
 use kiqr_core::project::Project;
@@ -52,17 +53,46 @@ pub async fn reload(app: &App) {
     *app.registry.write().await = Registry::load(app.store.home(), &core_off);
 }
 
-/// Is an installed ability usable for a project right now: keys present
-/// (the project's, else the machine's), program found.
+/// Is an installed ability usable for a project right now: no keys needed,
+/// or one of the project's connections of it has them all; program found.
+/// Without a project (the machine's view) only an ability that needs no keys is.
 pub fn ready_in(app: &App, slug: Option<&str>, m: &Manifest) -> bool {
-    let home = app.store.home();
-    extensions::missing_keys(m, |k| kiqr_core::secrets::has(home, slug, k)).is_empty() && (m.transport != Transport::Mcp || on_path(&m.command))
+    missing_in(app, slug, m).is_empty() && (m.transport != Transport::Mcp || on_path(&m.command))
 }
 
-/// Keys an ability still needs for a project.
+/// Keys an ability still needs for a project: none once a connection has
+/// them all, else what its default connection (or a new one) lacks.
 pub fn missing_in(app: &App, slug: Option<&str>, m: &Manifest) -> Vec<String> {
+    let all = extensions::missing_keys(m, |_| false);
+    if all.is_empty() {
+        return all;
+    }
+    let Some(slug) = slug.filter(|s| !s.is_empty()) else { return all };
     let home = app.store.home();
-    extensions::missing_keys(m, |k| kiqr_core::secrets::has(home, slug, k))
+    let conns = Connection::of(&app.store, slug, &m.id);
+    if conns.iter().any(|c| c.missing(home, slug, m).is_empty()) {
+        return vec![];
+    }
+    conns.first().map(|c| c.missing(home, slug, m)).unwrap_or(all)
+}
+
+/// The connection a call goes through: the one named (id or label), else the
+/// ability's default. None for an ability that needs no keys and has none.
+pub fn pick_connection(app: &App, slug: &str, m: &Manifest, name: Option<&str>) -> Result<Option<Connection>> {
+    if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
+        return match Connection::find(&app.store, slug, &m.id, n) {
+            Some(c) => Ok(Some(c)),
+            None => {
+                let have: Vec<String> = Connection::of(&app.store, slug, &m.id).into_iter().map(|c| c.label).collect();
+                bail!("{} has no account '{n}' in this project{}", m.name, if have.is_empty() { String::new() } else { format!(" (there is {})", have.join(", ")) })
+            }
+        };
+    }
+    let found = Connection::default_of(&app.store, slug, &m.id);
+    if found.is_none() && !extensions::missing_keys(m, |_| false).is_empty() {
+        bail!("{} is not connected in this project yet; add an account under Setup → Abilities", m.name);
+    }
+    Ok(found)
 }
 
 /// Is a program there: a path that exists, or a name found on PATH.
@@ -151,7 +181,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         }
         if let Some((_, m)) = reg.provider(slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(app, Some(slug), m)) {
             let cost = m.provides.get(a.id).and_then(|p| p.cost.as_deref());
-            out.push(a.spec(&m.name, cost));
+            out.push(with_connection_arg(a.spec(&m.name, cost), &Connection::of(&app.store, slug, &m.id)));
         }
     }
     for (_, m) in reg.connections(slug) {
@@ -161,7 +191,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         }
         if m.transport == Transport::Mcp && !m.expose.is_empty() && ready_in(app, Some(slug), m) {
             // The server's own tools, raw, under the connection's group.
-            match app.mcp.tools(app.store.home().root(), m).await {
+            match app.mcp.tools(app.store.home().root(), m, &launch_for(app, slug, m)).await {
                 Ok(list) => {
                     for t in list {
                         let name = t["name"].as_str().unwrap_or("").to_string();
@@ -197,9 +227,28 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
                 call: CallSpec::Ext { ext: m.id.clone(), tool: t.name.clone() },
                 cost: t.provide.cost.clone(),
             });
+            let last = out.pop().expect("just pushed");
+            out.push(with_connection_arg(last, &Connection::of(&app.store, slug, &m.id)));
         }
     }
     out
+}
+
+/// With more than one account of an ability in the project, its tools take
+/// `connection`: which one, by name; the default when left out.
+fn with_connection_arg(mut spec: ToolSpec, conns: &[Connection]) -> ToolSpec {
+    if conns.len() < 2 {
+        return spec;
+    }
+    let labels: Vec<String> = conns.iter().map(|c| c.label.clone()).collect();
+    if !spec.input_schema.is_object() {
+        spec.input_schema = json!({ "type": "object", "properties": {} });
+    }
+    if !spec.input_schema["properties"].is_object() {
+        spec.input_schema["properties"] = json!({});
+    }
+    spec.input_schema["properties"]["connection"] = json!({ "type": "string", "enum": labels, "description": format!("Which account to use. Leave it out for the default, {}.", conns[0].label) });
+    spec
 }
 
 #[derive(Deserialize, Default)]
@@ -372,18 +421,13 @@ pub(crate) async fn known_secret(app: &App, name: &str) -> bool {
     reg.entries.iter().filter_map(|e| e.manifest.as_ref()).any(uses) || extensions::shipped_all().iter().any(|(_, m)| uses(m))
 }
 
-/// Set (or, with an empty value, clear) one secret. `slug` picks the
-/// project's `.env`; none means the machine's. The value is never read back.
+/// Set (or, with an empty value, clear) one of KIQR's own keys. `slug` picks
+/// the project's `.env`; none means the machine's. An ability's keys belong
+/// to one of its connections (`set_connection_secret`). Never read back.
 pub(crate) async fn set_secret(app: &App, slug: Option<&str>, name: &str, value: &str) -> Result<bool, ApiError> {
-    if !extensions::valid_env_name(name) {
-        return Err(bad("a secret name is upper-case letters, digits and underscores"));
-    }
-    if !known_secret(app, name).await {
-        return Err(bad(format!("no ability or provider uses {name}")));
-    }
-    let value = value.trim().to_string();
-    if value.contains('\n') {
-        return Err(bad("a secret is one line"));
+    let value = check_secret(app, name, value).await?;
+    if !crate::api::SECRETS.contains(&name) {
+        return Err(bad(format!("{name} belongs to an ability: set it on one of the project's accounts of it (Setup → Abilities)")));
     }
     let path = match slug {
         Some(s) => {
@@ -402,6 +446,38 @@ pub(crate) async fn set_secret(app: &App, slug: Option<&str>, name: &str, value:
     }
     app.bus.emit(slug, EventKind::SecretSet { name: name.to_string(), set: !value.is_empty(), project: slug.map(str::to_string) });
     Ok(!value.is_empty())
+}
+
+/// Set (or clear) one key of a connection: a name its ability uses.
+pub(crate) async fn set_connection_secret(app: &App, slug: &str, conn: &str, name: &str, value: &str) -> Result<bool, ApiError> {
+    let value = check_secret(app, name, value).await?;
+    let c = Connection::load(&app.store, slug, conn).map_err(|e| not_found(e.to_string()))?;
+    let m = {
+        let reg = app.registry.read().await;
+        reg.entry(Some(slug), &c.ability).and_then(|e| e.manifest.clone())
+    }
+    .ok_or_else(|| bad(format!("the ability '{}' is not installed", c.ability)))?;
+    if !kiqr_core::connections::key_names(&m).iter().any(|n| n == name) {
+        return Err(bad(format!("{} does not use {name}", m.name)));
+    }
+    kiqr_core::secrets::write_env(&c.env_file(app.store.home(), slug), name, &value).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    app.mcp.stop(&format!("{}#{}", c.ability, c.id)).await;
+    app.bus.emit(Some(slug), EventKind::SecretSet { name: name.to_string(), set: !value.is_empty(), project: Some(slug.to_string()) });
+    Ok(!value.is_empty())
+}
+
+async fn check_secret(app: &App, name: &str, value: &str) -> Result<String, ApiError> {
+    if !extensions::valid_env_name(name) {
+        return Err(bad("a secret name is upper-case letters, digits and underscores"));
+    }
+    if !known_secret(app, name).await {
+        return Err(bad(format!("no ability or provider uses {name}")));
+    }
+    let value = value.trim().to_string();
+    if value.contains('\n') {
+        return Err(bad("a secret is one line"));
+    }
+    Ok(value)
 }
 
 async fn put_secret(State(app): State<App>, Path(name): Path<String>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
@@ -732,12 +808,17 @@ pub struct ExecOut {
 
 /// Run one `provides` entry or extra tool of an installed ability. Secrets
 /// come from the project's `.env`, then the machine's.
-pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value) -> Result<ExecOut> {
+/// `conn` names the connection (id or label); none uses the ability's default.
+pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&str>) -> Result<ExecOut> {
+    let conn = pick_connection(app, slug, m, conn)?;
     let mut args = provide.mapped_args(args);
+    if let Some(o) = args.as_object_mut() {
+        o.remove("connection");
+    }
     let files = call_files(app, slug, provide, &mut args)?;
-    let stored = kiqr_core::secrets::env_fn(app.store.home(), Some(slug));
+    let stored = kiqr_core::connections::env_for(app.store.home(), slug, conn.as_ref(), m);
     // Tokens a sign-in flow mints or refreshes for this call come first.
-    let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, m).await?);
+    let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, m, conn.as_ref()).await?);
     let env = move |k: &str| minted.get(k).cloned().or_else(|| stored(k));
     match m.transport {
         Transport::Http if !provide.steps.is_empty() => steps_exec(m, &provide.steps, &args, &provide.result, &env, &files).await,
@@ -755,7 +836,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
                 Some(t) => extensions::fill_value(t, &args, &env),
                 None => args.clone(),
             };
-            let r = app.mcp.call(app.store.home().root(), m, &server_tool, &call_args).await?;
+            let r = app.mcp.call(app.store.home().root(), m, &mcp_env(m, conn.as_ref(), &env), &server_tool, &call_args).await?;
             let out = crate::mcp_host::read_result(&r);
             if out.is_error {
                 bail!("{}: {}", m.name, kiqr_core::profile::truncate_chars(out.text.trim(), 300));
@@ -775,6 +856,20 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         Transport::Smtp => crate::smtp::exec(app, slug, m, &args, &env).await,
         Transport::Builtin => crate::builtin::run(app, slug, m, ability, tool, &args).await,
     }
+}
+
+/// The launch for a project's default connection of a hosted program.
+pub fn launch_for(app: &App, slug: &str, m: &Manifest) -> crate::mcp_host::Launch {
+    let conn = Connection::default_of(&app.store, slug, &m.id);
+    let env = kiqr_core::connections::env_for(app.store.home(), slug, conn.as_ref(), m);
+    mcp_env(m, conn.as_ref(), &env)
+}
+
+/// What a hosted program is started with: its connection (the server runs
+/// once per connection) and the values of the names it asks for.
+pub fn mcp_env(m: &Manifest, conn: Option<&Connection>, env: &impl Fn(&str) -> Option<String>) -> crate::mcp_host::Launch {
+    let vars = kiqr_core::connections::key_names(m).into_iter().filter_map(|k| env(&k).map(|v| (k, v))).collect();
+    crate::mcp_host::Launch { key: conn.map(|c| format!("{}#{}", m.id, c.id)).unwrap_or_else(|| m.id.clone()), vars }
 }
 
 /// The asset's files, when the call names any (`{{file…}}`): their bytes for
@@ -1217,7 +1312,7 @@ async fn run_ability(State(app): State<App>, Path((slug, ability)): Path<(String
     };
     let by = by_of(&headers, &args);
     let args = normalize_media_args(args, &crate::networks::installed(&app, &slug).await);
-    let out = execute(&app, &slug, &m, &provide, Some(&a), None, &args).await.map_err(|e| bad(format!("{e:#}")))?;
+    let out = execute(&app, &slug, &m, &provide, Some(&a), None, &args, args["connection"].as_str()).await.map_err(|e| bad(format!("{e:#}")))?;
     // A file lands on the asset at once. The asset is what the user approves,
     // in the chat (where it shows as it will look) or in the library; an image
     // is never approved on its own.
@@ -1253,7 +1348,7 @@ async fn run_ext_tool(State(app): State<App>, Path((slug, ext, tool)): Path<(Str
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} is not set up yet (missing {}). Add it under Setup → Abilities.", m.name, missing.join(", "))));
     }
     let by = by_of(&headers, &args);
-    let out = execute(&app, &slug, &m, &t.provide, None, Some(&t.name), &args).await.map_err(|e| bad(format!("{e:#}")))?;
+    let out = execute(&app, &slug, &m, &t.provide, None, Some(&t.name), &args, args["connection"].as_str()).await.map_err(|e| bad(format!("{e:#}")))?;
     let mut v = match out.file {
         Some((bytes, mime)) if t.provide.attach.unwrap_or(false) => attach(&app, &slug, "image", &args, &by, bytes, mime, &m.name, &t.name).await?,
         Some((bytes, mime)) => json!({ "ok": true, "bytes": bytes.len(), "mime": mime, "connection": m.name, "note": "the file was not kept; pass `asset` to put it on one" }),

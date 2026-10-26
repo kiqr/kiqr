@@ -90,6 +90,11 @@ enum Command {
         #[arg(long)]
         asset: Option<String>,
     },
+    /// A project's accounts of its abilities, each with its own keys (typed, never shown)
+    Accounts {
+        #[command(subcommand)]
+        cmd: AccountsCmd,
+    },
     /// Secrets in .env, by name; values are typed, never shown
     Secrets {
         #[command(subcommand)]
@@ -222,29 +227,25 @@ enum AbilitiesCmd {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Install one by id, everywhere or for one project; keys are asked for
-    Install {
-        id: String,
-        #[arg(long)]
-        project: Option<String>,
-    },
+    /// Install one by id for the machine; then add a project's account with `kiqr accounts add`
+    Install { id: String },
     /// Pull the newest version (git), or refresh a shipped one
     Update {
         id: String,
         #[arg(long)]
         project: Option<String>,
     },
-    /// Switch one off without removing it
+    /// Switch one off for a project without removing it
     Pause {
         id: String,
         #[arg(long)]
-        project: Option<String>,
+        project: String,
     },
-    /// Switch a paused one on again
+    /// Switch one on again for a project
     Resume {
         id: String,
         #[arg(long)]
-        project: Option<String>,
+        project: String,
     },
     /// Remove an installed ability's folder
     Rm {
@@ -256,13 +257,33 @@ enum AbilitiesCmd {
 
 #[derive(Subcommand)]
 enum SecretsCmd {
-    /// Set a secret: `kiqr secrets set FAL_KEY` then type it (an empty value clears it)
+    /// Set one of KIQR's own keys (model providers, UnblockingAPI): `kiqr secrets set ANTHROPIC_API_KEY` then type it (an empty value clears it). An ability's keys go on an account: `kiqr accounts`
     Set {
         name: String,
         /// Set it for one project only (its own .env wins over the machine's)
         #[arg(long)]
         project: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum AccountsCmd {
+    /// A project's accounts of its abilities (channels included)
+    Ls { slug: String },
+    /// Add an account of an installed ability; its keys are asked for
+    Add {
+        slug: String,
+        ability: String,
+        /// What to call it (default: the ability's name)
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Set or clear one key of an account: `kiqr accounts set <slug> <account> FAL_KEY`, then type it
+    Set { slug: String, account: String, name: String },
+    /// Make an account the one its ability uses when nothing names one
+    Default { slug: String, account: String },
+    /// Remove an account and its keys
+    Rm { slug: String, account: String },
 }
 
 #[derive(Subcommand)]
@@ -520,25 +541,9 @@ impl Client {
                     let v: serde_json::Value = resp.json().await.unwrap_or_default();
                     println!("{} now knows how to: {}", if project.is_some() { "This project" } else { "Every project" }, v["name"].as_str().unwrap_or(id));
                 }
-                AbilitiesCmd::Install { id, project } => {
-                    let q = project.as_ref().map(|p| format!("?project={p}")).unwrap_or_default();
-                    let list: serde_json::Value = self.get(&format!("/api/abilities{q}")).await?;
-                    let item = list["market"].as_array().and_then(|a| a.iter().find(|i| i["id"] == id.as_str())).cloned().ok_or_else(|| anyhow::anyhow!("the marketplace has no ability '{id}' (or it is already installed)"))?;
-                    let mut secrets = serde_json::Map::new();
-                    for a in item["auth"].as_array().cloned().unwrap_or_default() {
-                        if a["set"].is_string() {
-                            continue;
-                        }
-                        let env = a["env"].as_str().unwrap_or("");
-                        eprint!("{} ({env}{}): ", a["label"].as_str().unwrap_or(env), if a["optional"].as_bool() == Some(true) { ", optional, Enter to skip" } else { "" });
-                        let value = read_secret()?;
-                        if !value.trim().is_empty() {
-                            secrets.insert(env.to_string(), serde_json::Value::String(value));
-                        }
-                    }
-                    let body = serde_json::json!({ "scope": if project.is_some() { "project" } else { "global" }, "project": project, "secrets": secrets });
-                    let v: serde_json::Value = self.post(&format!("/api/abilities/{id}/install"), &body).await?;
-                    println!("installed {} ({})", id, v["folder"].as_str().unwrap_or(""));
+                AbilitiesCmd::Install { id } => {
+                    let v: serde_json::Value = self.post(&format!("/api/abilities/{id}/install"), &serde_json::json!({})).await?;
+                    println!("installed {} ({}). Add an account for a project with: kiqr accounts add <slug> {id}", id, v["folder"].as_str().unwrap_or(""));
                 }
                 AbilitiesCmd::Update { id, project } => {
                     let q = project.as_ref().map(|p| format!("?project={p}")).unwrap_or_default();
@@ -547,9 +552,8 @@ impl Client {
                 }
                 AbilitiesCmd::Pause { id, project } | AbilitiesCmd::Resume { id, project } => {
                     let pause = matches!(&cmd, AbilitiesCmd::Pause { .. });
-                    let q = project.as_ref().map(|p| format!("?project={p}")).unwrap_or_default();
-                    let _: serde_json::Value = self.post(&format!("/api/abilities/{id}/{}{q}", if pause { "pause" } else { "resume" }), &serde_json::json!({})).await?;
-                    println!("{id} {}", if pause { "paused" } else { "on again" });
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{project}/abilities/{id}/{}", if pause { "pause" } else { "resume" }), &serde_json::json!({})).await?;
+                    println!("{id} {} for {project}", if pause { "off" } else { "on again" });
                 }
                 AbilitiesCmd::Rm { id, project } => {
                     let q = project.as_ref().map(|p| format!("?project={p}")).unwrap_or_default();
@@ -582,11 +586,11 @@ impl Client {
                 }
                 for c in list {
                     let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
-                    println!("{:<24} {:<10} {:<28} {:<22} {} published{}{}", s("id"), s("kind"), s("destination_text"), s("connection_name"), c["publications"], if c["asks_first"].as_bool() == Some(false) { "  (Seemo publishes on its own)" } else { "" }, if c["ready"].as_bool() == Some(true) { "" } else { "  (connection not set up)" });
+                    println!("{:<24} {:<10} {:<28} {:<22} {} published{}{}", s("id"), s("kind"), s("destination_text"), s("connection_name"), c["publications"], if c["asks_first"].as_bool() == Some(false) { "  (Seemo publishes on its own)" } else { "" }, if c["ready"].as_bool() == Some(true) { "" } else { "  (not connected yet)" });
                 }
                 let kinds = v["kinds"].as_array().cloned().unwrap_or_default();
                 if !kinds.is_empty() {
-                    println!("\nKinds a new channel can use: {}", kinds.iter().map(|k| format!("{} via {}{}", k["kind"].as_str().unwrap_or(""), k["connection_name"].as_str().unwrap_or(""), if k["ready"].as_bool() == Some(true) { "" } else { " (needs a key)" })).collect::<Vec<_>>().join("; "));
+                    println!("\nKinds a new channel can use: {}", kinds.iter().map(|k| format!("{} via {}", k["kind"].as_str().unwrap_or(""), k["connection_name"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("; "));
                 }
             }
             Command::Publish { slug, asset, channel, note } => {
@@ -603,6 +607,49 @@ impl Client {
                 let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/email"), &body).await?;
                 println!("sent \"{}\" to {} via {}", v["subject"].as_str().unwrap_or(""), v["to"].as_str().unwrap_or(""), v["connection"].as_str().unwrap_or(""));
             }
+            Command::Accounts { cmd } => match cmd {
+                AccountsCmd::Ls { slug } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/connections")).await?;
+                    let list = v["connections"].as_array().cloned().unwrap_or_default();
+                    if list.is_empty() {
+                        println!("No accounts yet. Add one: kiqr accounts add {slug} <ability>");
+                    }
+                    for c in list {
+                        let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+                        let missing = c["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                        println!("{:<24} {:<28} {:<28} {:<9} {}{}", s("id"), s("label"), s("ability_name"), if c["channel"].as_bool() == Some(true) { s("kind") } else { "account".into() }, if c["ready"].as_bool() == Some(true) { "ready".to_string() } else { format!("needs {missing}") }, if c["default"].as_bool() == Some(true) { "  (default)" } else { "" });
+                    }
+                }
+                AccountsCmd::Add { slug, ability, label } => {
+                    let list: serde_json::Value = self.get(&format!("/api/projects/{slug}/abilities")).await?;
+                    let item = list["abilities"].as_array().and_then(|a| a.iter().find(|i| i["id"] == ability.as_str())).cloned().ok_or_else(|| anyhow::anyhow!("'{ability}' is not installed; kiqr abilities install {ability}"))?;
+                    let mut secrets = serde_json::Map::new();
+                    for a in item["auth"].as_array().cloned().unwrap_or_default() {
+                        let env = a["env"].as_str().unwrap_or("");
+                        eprint!("{} ({env}{}): ", a["label"].as_str().unwrap_or(env), if a["optional"].as_bool() == Some(true) { ", optional, Enter to skip" } else { "" });
+                        let value = read_secret()?;
+                        if !value.trim().is_empty() {
+                            secrets.insert(env.to_string(), serde_json::Value::String(value));
+                        }
+                    }
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/connections"), &serde_json::json!({ "ability": ability, "label": label.unwrap_or_default(), "secrets": secrets })).await?;
+                    println!("added {} ({}){}", v["label"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""), if v["ready"].as_bool() == Some(true) { "" } else { ", still missing keys" });
+                }
+                AccountsCmd::Set { slug, account, name } => {
+                    eprint!("{name}: ");
+                    let value = read_secret()?;
+                    let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/connections/{account}/secrets/{name}"), &serde_json::json!({ "value": value })).await?;
+                    println!("{name} {} on {account}", if v["set"].as_bool() == Some(true) { "set" } else { "cleared" });
+                }
+                AccountsCmd::Default { slug, account } => {
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/connections/{account}/default"), &serde_json::json!({})).await?;
+                    println!("{} is the default for {}", v["label"].as_str().unwrap_or(&account), v["ability_name"].as_str().unwrap_or(""));
+                }
+                AccountsCmd::Rm { slug, account } => {
+                    self.delete(&format!("/api/projects/{slug}/connections/{account}")).await?;
+                    println!("Removed {account}.");
+                }
+            },
             Command::Secrets { cmd } => match cmd {
                 SecretsCmd::Set { name, project } => {
                     eprint!("{name}: ");
@@ -1187,13 +1234,13 @@ fn print_event(ev: &Event) {
         EventKind::ExtensionPaused { id, paused } => format!("ability  {id} {}", if *paused { "paused" } else { "on again" }),
         EventKind::SecretSet { name, set, project } => format!("secret   {name} {}{}", if *set { "set" } else { "cleared" }, project.as_ref().map(|p| format!(" for {p}")).unwrap_or_default()),
         EventKind::SuggestionsChanged {} => return,
-        EventKind::ConnectFinished { ability, ok, error, project } => match (ok, error) {
-            (true, _) => format!("connect  {ability} connected{}", project.as_ref().map(|p| format!(" for {p}")).unwrap_or_default()),
+        EventKind::ConnectFinished { ability, ok, error, connection } => match (ok, error) {
+            (true, _) => format!("connect  {ability} connected{}", connection.as_ref().map(|c| format!(" as {c}")).unwrap_or_default()),
             (false, e) => format!("connect  {ability} failed: {}", e.clone().unwrap_or_default()),
         },
         EventKind::MediaCreated { ability, asset_type, id, file, provider } => format!("{ability:<8} {asset_type}/{id}/{file} via {provider}"),
-        EventKind::ChannelSaved { channel, label, kind } => format!("channel  {channel} \"{label}\" ({kind})"),
-        EventKind::ChannelDeleted { channel } => format!("channel  {channel} removed"),
+        EventKind::ConnectionSaved { connection, label, ability, kind } => format!("{:<8} {connection} \"{label}\" ({})", if kind.is_empty() { "account" } else { "channel" }, if kind.is_empty() { ability.as_str() } else { kind.as_str() }),
+        EventKind::ConnectionDeleted { connection, .. } => format!("account  {connection} removed"),
         EventKind::AssetPublished { asset_type, id, channel, url } => format!("publish  {asset_type}/{id} → {channel}{}", url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
         EventKind::AssetApproved { asset_type, id, channel, at, .. } => match at {
             Some(at) => format!("schedule {asset_type}/{id} → {channel} at {}", at.with_timezone(&chrono::Local).format("%a %-d %b %H:%M")),

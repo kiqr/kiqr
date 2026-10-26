@@ -1,4 +1,4 @@
-// A secret by name: typed once, saved to .env (the machine's, or a project's), never shown again.
+// A secret by name: typed once, saved to .env (one account's, or KIQR's own keys on the machine), never shown again.
 import { useEffect, useState } from "react";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import { api } from "../api";
@@ -27,7 +27,7 @@ export function Hint({ text }: { text: string }) {
   );
 }
 
-export function SecretField({ name, label, help, set, optional, slug, onSaved }: { name: string; label: string; help?: string; set: boolean | string | null; optional?: boolean; slug?: string; onSaved?: () => void }) {
+export function SecretField({ name, label, help, set, optional, slug, account, onSaved }: { name: string; label: string; help?: string; set: boolean | string | null; optional?: boolean; slug?: string; account?: string; onSaved?: () => void }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(!!set);
@@ -41,7 +41,7 @@ export function SecretField({ name, label, help, set, optional, slug, onSaved }:
     setBusy(true);
     setError(null);
     try {
-      const r = slug ? await api.setProjectSecret(slug, name, value.trim()) : await api.setSecret(name, value.trim());
+      const r = slug && account ? await api.setAccountSecret(slug, account, name, value.trim()) : slug ? await api.setProjectSecret(slug, name, value.trim()) : await api.setSecret(name, value.trim());
       setDone(r.set);
       setEditing(!r.set);
       setValue("");

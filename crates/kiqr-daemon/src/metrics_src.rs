@@ -61,7 +61,7 @@ async fn read_source(app: &App, slug: &str, m: &Manifest, source: &str, from: Na
     let mut answers = Vec::with_capacity(spec.requests.len());
     for r in &spec.requests {
         let provide = Provide { request: Some(r.request.clone()), ..Default::default() };
-        let out = crate::ext::execute(app, slug, m, &provide, None, None, &args).await.with_context(|| format!("{} could not read {source}", m.name))?;
+        let out = crate::ext::execute(app, slug, m, &provide, None, None, &args, None).await.with_context(|| format!("{} could not read {source}", m.name))?;
         answers.push(out.json);
     }
     Ok(kiqr_core::sources::read(spec, &answers, &args))

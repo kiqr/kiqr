@@ -23,6 +23,7 @@ projects/*/cache/
 # Generated assets and project secrets stay on this machine.
 projects/*/assets/
 projects/*/.env
+projects/*/connections/*/.env
 ";
 
 const ENV_TEMPLATE: &str = "\

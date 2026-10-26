@@ -58,6 +58,10 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   const own = all.find((c) => c.id === a.channel);
   const chosen = pick || (mode !== "channel" && a.channel) || choices[0]?.id || "";
   const chosenLabel = all.find((c) => c.id === chosen)?.label ?? chosen;
+  // Choices the channel's kind offers per publish (a blog: draft or published), the first value by default.
+  const target = all.find((c) => c.id === (a.channel || chosen));
+  const offered = Object.entries(channels.data?.kinds.find((k) => k.kind === target?.kind && k.connection === target?.ability)?.options ?? {}).filter(([, s]) => s.enum?.length);
+  const [opts, setOpts] = useState<Record<string, string>>({});
 
   const run = async (what: string, fn: () => Promise<unknown>) => {
     setBusy(what);
@@ -87,7 +91,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   const scheduleRow = mode === "schedule" && (
     <div className="aa-row">
       <input className="input sm" type="datetime-local" value={at} onChange={(e) => setAt(e.target.value)} />
-      <button className="btn p sm" disabled={!!busy || !at} onClick={() => void run("schedule", () => api.scheduleAsset(slug, a, new Date(at).toISOString(), chosen))}>
+      <button className="btn p sm" disabled={!!busy || !at} onClick={() => void run("schedule", () => api.scheduleAsset(slug, a, new Date(at).toISOString(), chosen, opts))}>
         {spin("schedule", CalendarClock)} Schedule
       </button>
       <button className="btn t sm" onClick={() => setMode("")}>
@@ -153,7 +157,16 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
             </>
           ) : (
             <>
-              <button className="btn p sm" disabled={!!busy} onClick={() => void run("publish", () => api.publishAsset(slug, a))}>
+              {offered.map(([name, spec]) => (
+                <span key={name} className="pub-opt" title={spec.description}>
+                  {(spec.enum ?? []).map((v) => (
+                    <button key={v} className={`chip sm ${(opts[name] ?? spec.enum?.[0]) === v ? "acc" : ""}`} onClick={() => setOpts({ ...opts, [name]: v })}>
+                      {v}
+                    </button>
+                  ))}
+                </span>
+              ))}
+              <button className="btn p sm" disabled={!!busy} onClick={() => void run("publish", () => api.publishAsset(slug, a, "", "", opts))}>
                 {spin("publish", Send)} Publish now
               </button>
               {a.status === "scheduled" ? (

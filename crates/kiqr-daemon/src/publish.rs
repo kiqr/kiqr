@@ -21,6 +21,7 @@ use kiqr_core::extensions::{ChannelKind, Manifest};
 use kiqr_core::project::Project;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 pub fn routes() -> Router<App> {
     Router::new()
@@ -55,10 +56,38 @@ pub(crate) async fn kinds(app: &App, slug: &str) -> Vec<(Manifest, ChannelKind)>
     out
 }
 
-/// A kind a new channel could use, with what the project still has to give
-/// it (a mail account is set up inside the project, when the channel is made).
+/// What the publisher sets itself on every publish; never an option.
+const PUBLISH_ARGS: &[&str] = &["title", "subject", "text", "html", "summary", "tags", "asset", "note", "files"];
+
+/// The choices a kind's publish tool takes per publish: the properties of its
+/// input beyond what the publisher fills in and the channel's destination.
+pub(crate) fn publish_options(m: &Manifest, k: &ChannelKind) -> serde_json::Map<String, Value> {
+    let input = m.tools.iter().find(|t| t.name == k.publish).map(|t| t.input.clone()).unwrap_or(Value::Null);
+    input["properties"].as_object().map(|o| o.iter().filter(|(n, _)| !PUBLISH_ARGS.contains(&n.as_str()) && !k.destination.contains_key(*n) && n.as_str() != "connection").map(|(n, v)| (n.clone(), v.clone())).collect()).unwrap_or_default()
+}
+
+/// Keep the options a kind offers, with an allowed value; refuse anything else.
+fn check_options(m: &Manifest, k: &ChannelKind, given: &serde_json::Map<String, Value>) -> Result<serde_json::Map<String, Value>, ApiError> {
+    let offered = publish_options(m, k);
+    let mut out = serde_json::Map::new();
+    for (n, v) in given {
+        let Some(spec) = offered.get(n) else {
+            return Err(bad(format!("{} takes no option '{n}'{}", k.label, if offered.is_empty() { String::new() } else { format!(" (it takes {})", offered.keys().cloned().collect::<Vec<_>>().join(", ")) })));
+        };
+        if let Some(allowed) = spec["enum"].as_array() {
+            if !allowed.contains(v) {
+                return Err(bad(format!("'{n}' is one of {}", allowed.iter().map(|a| a.as_str().map(str::to_string).unwrap_or_else(|| a.to_string())).collect::<Vec<_>>().join(", "))));
+            }
+        }
+        out.insert(n.clone(), v.clone());
+    }
+    Ok(out)
+}
+
+/// A kind a new channel could use. Each channel brings its own account: the
+/// keys it asks for, or those of another channel of the same ability (`accounts`).
 fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
-    let home = app.store.home();
+    let accounts: Vec<Value> = kiqr_core::connections::Connection::of(&app.store, slug, &m.id).iter().filter(|c| crate::accounts::ready(app, slug, c, m)).map(|c| json!({ "id": c.id, "label": c.label })).collect();
     json!({
         "kind": k.kind,
         "label": k.label,
@@ -66,30 +95,24 @@ fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
         "icon": k.icon,
         "connection": m.id,
         "connection_name": m.name,
-        "ready": crate::ext::ready_in(app, Some(slug), m),
+        "ready": true,
         "destination": k.destination,
-        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": kiqr_core::secrets::scope_of(home, Some(slug), &a.env) })).collect::<Vec<_>>(),
+        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": Value::Null })).collect::<Vec<_>>(),
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
+        "accounts": accounts,
+        "options": publish_options(m, k),
     })
 }
 
 async fn channel_view(app: &App, slug: &str, c: &Channel) -> Value {
-    let (name, ready) = {
-        let reg = app.registry.read().await;
-        reg.connection(slug, &c.extension).map(|(_, m)| (m.name.clone(), crate::ext::ready_in(app, Some(slug), m))).unwrap_or_else(|| (c.extension.clone(), false))
-    };
-    let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
-    v["connection_name"] = json!(name);
-    v["ready"] = json!(ready);
-    v["destination_text"] = json!(c.destination_text());
-    v
+    crate::accounts::view(app, slug, c).await
 }
 
 /// Channels plus the kinds a new one could use.
 async fn list_channels(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Value> {
     let _ = Project::load(&app.store, &slug)?;
     let mut list = Vec::new();
-    for c in Channel::list(&app.store, &slug)? {
+    for c in Channel::channels(&app.store, &slug)? {
         list.push(channel_view(&app, &slug, &c).await);
     }
     let kinds: Vec<Value> = kinds(&app, &slug).await.iter().map(|(m, k)| kind_view(&app, &slug, m, k)).collect();
@@ -101,9 +124,13 @@ async fn list_channels(State(app): State<App>, Path(slug): Path<String>) -> ApiR
 pub struct NewChannel {
     pub label: String,
     pub kind: String,
-    /// The connection to use when several offer the kind.
+    /// The ability to use when several publish the kind.
     pub connection: Option<String>,
     pub destination: serde_json::Map<String, Value>,
+    /// Start with the keys of this channel or account of the same ability (the same mail account).
+    pub same_as: Option<String>,
+    /// The new channel's own keys, by name (from the user, never from Seemo).
+    pub secrets: BTreeMap<String, String>,
 }
 
 /// Check a channel proposal against the kinds available; returns what will be saved.
@@ -113,10 +140,9 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
         return Err(bad("a channel needs a kind (email, or one a connection declares)"));
     }
     let all = kinds(app, slug).await;
-    let matching: Vec<&(Manifest, ChannelKind)> = all.iter().filter(|(m, k)| k.kind == kind && b.connection.as_deref().map(|c| c == m.id).unwrap_or(true)).collect();
-    let Some((m, k)) = matching.iter().find(|(m, _)| crate::ext::ready_in(app, Some(slug), m)).or_else(|| matching.first()).map(|x| (&x.0, &x.1)) else {
+    let Some((m, k)) = all.iter().find(|(m, k)| k.kind == kind && b.connection.as_deref().is_none_or(|c| c == m.id)).map(|x| (&x.0, &x.1)) else {
         let have: Vec<String> = all.iter().map(|(_, k)| k.kind.clone()).collect();
-        return Err(bad(if have.is_empty() { "nothing can publish yet; install Email under Setup → Abilities".to_string() } else { format!("nothing publishes '{kind}'; available: {}", have.join(", ")) }));
+        return Err(bad(if have.is_empty() { "nothing can publish yet; install an ability that publishes under Setup → Abilities".to_string() } else { format!("nothing publishes '{kind}'; available: {}", have.join(", ")) }));
     };
     let mut destination = serde_json::Map::new();
     for (field, spec) in &k.destination {
@@ -129,6 +155,15 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
             None => {}
         }
     }
+    // Its account: another one's keys, or the ones given; else the user adds them on the channel.
+    let same = match b.same_as.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Some(Channel::find(&app.store, slug, &m.id, s).ok_or_else(|| bad(format!("{} has no account '{s}' in this project to share", m.name)))?),
+        None => None,
+    };
+    let ready = match &same {
+        Some(c) => crate::accounts::ready(app, slug, c, m),
+        None => kiqr_core::extensions::missing_keys(m, |n| b.secrets.get(n).is_some_and(|v| !v.trim().is_empty())).is_empty(),
+    };
     let label = b.label.trim().to_string();
     let label = if label.is_empty() {
         let d = destination.values().find_map(|v| v.as_str()).unwrap_or("");
@@ -142,38 +177,33 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
         "kind_label": k.label,
         "connection": m.id,
         "connection_name": m.name,
-        "ready": crate::ext::ready_in(app, Some(slug), m),
+        "same_as": same.as_ref().map(|c| c.id.clone()),
+        "same_as_label": same.as_ref().map(|c| c.label.clone()),
+        "ready": ready,
         "destination": destination,
     }))
 }
 
-/// Save a channel from a checked preview.
-pub async fn save_channel(app: &App, slug: &str, preview: &Value, by: &str) -> Result<Value, ApiError> {
-    let label = preview["label"].as_str().unwrap_or("Channel").to_string();
-    let c = Channel {
-        id: channels::new_id(&app.store, slug, &label),
-        label,
-        extension: preview["connection"].as_str().unwrap_or("").to_string(),
+/// Save a channel from a checked preview, with its keys when the user gave them.
+pub async fn save_channel(app: &App, slug: &str, preview: &Value, by: &str, secrets: BTreeMap<String, String>) -> Result<Value, ApiError> {
+    let new = crate::accounts::NewConnection {
+        ability: preview["connection"].as_str().unwrap_or("").to_string(),
+        label: preview["label"].as_str().unwrap_or("Channel").to_string(),
         kind: preview["kind"].as_str().unwrap_or("").to_string(),
         destination: preview["destination"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default(),
-        created_by: by.to_string(),
-        created_at: Utc::now(),
-        asks_first: true,
-        publications: 0,
-        last_published: None,
+        secrets,
+        same_as: preview["same_as"].as_str().map(str::to_string),
     };
-    c.save(&app.store, slug)?;
-    app.store.commit(&format!("channel({slug}): add {}", c.label)).await?;
-    app.bus.emit(Some(slug), EventKind::ChannelSaved { channel: c.id.clone(), label: c.label.clone(), kind: c.kind.clone() });
+    let c = crate::accounts::create(app, slug, new, by).await?;
     let mut v = channel_view(app, slug, &c).await;
-    v["note"] = json!("The channel exists. Publishing to it still asks the user each time.");
+    v["note"] = json!(if v["ready"].as_bool() == Some(true) { "The channel exists. Publishing to it still asks the user each time." } else { "The channel exists but has no account yet: the user connects it under Setup → Channels before anything can go out." });
     Ok(v)
 }
 
 async fn create_channel(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewChannel>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let _ = Project::load(&app.store, &slug)?;
     let preview = channel_preview(&app, &slug, &b).await?;
-    let v = save_channel(&app, &slug, &preview, "user").await?;
+    let v = save_channel(&app, &slug, &preview, "user", b.secrets.clone()).await?;
     Ok((StatusCode::CREATED, Json(v)))
 }
 
@@ -182,38 +212,13 @@ async fn get_channel(State(app): State<App>, Path((slug, id)): Path<(String, Str
     Ok(Json(channel_view(&app, &slug, &c).await))
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct ChannelPatch {
-    label: Option<String>,
-    destination: Option<serde_json::Map<String, Value>>,
-    /// false lets Seemo publish through this channel without a card.
-    asks_first: Option<bool>,
-}
-
-async fn put_channel(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(p): Json<ChannelPatch>) -> ApiResult<Value> {
-    let mut c = Channel::load(&app.store, &slug, &id)?;
-    if let Some(l) = p.label.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        c.label = l;
-    }
-    if let Some(d) = p.destination {
-        let checked = channel_preview(&app, &slug, &NewChannel { label: c.label.clone(), kind: c.kind.clone(), connection: Some(c.extension.clone()), destination: d }).await?;
-        c.destination = checked["destination"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-    }
-    if let Some(a) = p.asks_first {
-        c.asks_first = a;
-    }
-    c.save(&app.store, &slug)?;
-    app.store.commit(&format!("channel({slug}): {}", c.label)).await?;
-    app.bus.emit(Some(&slug), EventKind::ChannelSaved { channel: c.id.clone(), label: c.label.clone(), kind: c.kind.clone() });
+async fn put_channel(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(p): Json<crate::accounts::Patch>) -> ApiResult<Value> {
+    let c = crate::accounts::update(&app, &slug, &id, p).await?;
     Ok(Json(channel_view(&app, &slug, &c).await))
 }
 
 async fn delete_channel(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> Result<StatusCode, ApiError> {
-    let c = Channel::load(&app.store, &slug, &id)?;
-    Channel::delete(&app.store, &slug, &id)?;
-    app.store.commit(&format!("channel({slug}): remove {}", c.label)).await?;
-    app.bus.emit(Some(&slug), EventKind::ChannelDeleted { channel: id });
+    crate::accounts::delete(&app, &slug, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -239,6 +244,8 @@ pub(crate) fn asset_parts(app: &App, slug: &str, a: &Asset) -> Result<(String, V
 #[serde(default)]
 pub struct PublishBody {
     pub asset: AssetRef,
+    /// Choices the channel's publish tool offers (`list_channels` → `options`), e.g. `{status: "publish"}`.
+    pub options: serde_json::Map<String, Value>,
     /// Empty means the channel the asset was approved for.
     pub channel: String,
     /// Set, the asset is scheduled for then instead of published now.
@@ -251,12 +258,12 @@ pub struct PublishBody {
 /// says what exists when the id is unknown.
 async fn ready_channel(app: &App, slug: &str, id: &str) -> Result<Channel, ApiError> {
     let c = Channel::load(&app.store, slug, id.trim()).map_err(|_| {
-        let have: Vec<String> = Channel::list(&app.store, slug).unwrap_or_default().into_iter().map(|c| format!("{} ({})", c.id, c.label)).collect();
+        let have: Vec<String> = Channel::channels(&app.store, slug).unwrap_or_default().into_iter().map(|c| format!("{} ({})", c.id, c.label)).collect();
         bad(if have.is_empty() { "there is no channel yet; create one first (create_channel) or ask the user to add one under Setup → Channels".to_string() } else { format!("no channel '{}'; channels: {}", id.trim(), have.join(", ")) })
     })?;
     let cv = channel_view(app, slug, &c).await;
     if cv["ready"].as_bool() != Some(true) {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("the ability behind the channel ({}) is not set up for this project; add a channel of that kind under Channels to set the account up", cv["connection_name"].as_str().unwrap_or(""))));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("the channel '{}' has no account yet ({} needs {}); the user connects it under Setup → Channels", c.label, cv["connection_name"].as_str().unwrap_or(""), cv["missing"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default())));
     }
     Ok(c)
 }
@@ -291,7 +298,15 @@ pub async fn publish_preview(app: &App, slug: &str, b: &PublishBody) -> Result<V
     }
     let (body, files) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
     let subject = c.destination.get("subject").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string).unwrap_or_else(|| a.title.clone());
+    let options = {
+        let reg = app.registry.read().await;
+        match reg.connection(slug, &c.ability).and_then(|(_, m)| m.channels.iter().find(|k| k.kind == c.kind).map(|k| (m.clone(), k.clone()))) {
+            Some((m, k)) => check_options(&m, &k, &b.options)?,
+            None => serde_json::Map::new(),
+        }
+    };
     Ok(json!({
+        "options": options,
         "asset": { "type": a.kind, "id": a.id, "title": a.title, "status": a.status },
         "channel": c.id,
         "channel_label": c.label,
@@ -318,6 +333,7 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     let mut a = assets::load(&app.store, slug, &kind, &id)?;
     let mut c = Channel::load(&app.store, slug, preview["channel"].as_str().unwrap_or(""))?;
     if let Some(at) = preview["at"].as_str().and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.with_timezone(&Utc)) {
+        a.publish_options = preview["options"].as_object().cloned().unwrap_or_default();
         let a = set_schedule(app, slug, a, &c, Some(at)).await?;
         return Ok(json!({
             "scheduled": true,
@@ -336,7 +352,7 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     let subject = preview["subject"].as_str().unwrap_or(&a.title).to_string();
     let m = {
         let reg = app.registry.read().await;
-        reg.connection(slug, &c.extension).map(|(_, m)| m.clone()).ok_or_else(|| bad(format!("the connection '{}' is gone", c.extension)))?
+        reg.connection(slug, &c.ability).map(|(_, m)| m.clone()).ok_or_else(|| bad(format!("the ability '{}' is not installed or is off here", c.ability)))?
     };
     let k = m.channels.iter().find(|k| k.kind == c.kind).cloned().ok_or_else(|| bad(format!("{} no longer publishes '{}'", m.name, c.kind)))?;
     // The connection's publish tool, with the asset and the destination.
@@ -354,7 +370,13 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     for (dk, dv) in &c.destination {
         args[dk] = dv.clone();
     }
-    let out = crate::ext::execute(app, slug, &m, &provide, None, Some(&k.publish), &args).await.map_err(|e| bad(format!("{e:#}")))?;
+    // This publish's own choices last: they were on the card the user said yes to.
+    if let Some(o) = preview["options"].as_object() {
+        for (n, v) in o {
+            args[n] = v.clone();
+        }
+    }
+    let out = crate::ext::execute(app, slug, &m, &provide, None, Some(&k.publish), &args, Some(&c.id)).await.map_err(|e| bad(format!("{e:#}")))?;
     let url = out.text.clone().filter(|t| t.starts_with("http")).or_else(|| out.json.get("url").and_then(|u| u.as_str()).map(str::to_string)).or_else(|| out.json.get("link").and_then(|u| u.as_str()).map(str::to_string));
     let account = out.json.get("from").and_then(|f| f.as_str()).map(str::to_string);
     let detail = out.text.clone().unwrap_or_else(|| kiqr_core::profile::truncate_chars(&out.json.to_string(), 200));
@@ -407,6 +429,9 @@ struct ScheduleBody {
     at: DateTime<Utc>,
     #[serde(default)]
     channel: String,
+    /// This publish's choices (see `PublishBody::options`).
+    #[serde(default)]
+    options: serde_json::Map<String, Value>,
 }
 
 /// Approve the asset for a channel, with or without a time. Ready, or Scheduled.
@@ -443,6 +468,14 @@ async fn schedule_route(State(app): State<App>, Path((slug, kind, id)): Path<(St
         return Err(bad("that time has passed; publish it now instead"));
     }
     let c = ready_channel(&app, &slug, channel_of(&a, &b.channel)?).await?;
+    let mut a = a;
+    a.publish_options = {
+        let reg = app.registry.read().await;
+        match reg.connection(&slug, &c.ability).and_then(|(_, m)| m.channels.iter().find(|k| k.kind == c.kind).map(|k| (m.clone(), k.clone()))) {
+            Some((m, k)) => check_options(&m, &k, &b.options)?,
+            None => serde_json::Map::new(),
+        }
+    };
     Ok(Json(set_schedule(&app, &slug, a, &c, Some(b.at)).await?))
 }
 
@@ -487,7 +520,7 @@ pub async fn publish_due(app: &App, slug: &str, now: DateTime<Utc>) {
         if !app.jobs.write().await.insert(key.clone()) {
             continue;
         }
-        let body = PublishBody { asset: AssetRef { kind: a.kind.clone(), id: a.id.clone() }, channel: a.channel.clone().unwrap_or_default(), ..Default::default() };
+        let body = PublishBody { asset: AssetRef { kind: a.kind.clone(), id: a.id.clone() }, channel: a.channel.clone().unwrap_or_default(), options: a.publish_options.clone(), ..Default::default() };
         let r = match publish_preview(app, slug, &body).await {
             Ok(p) => do_publish(app, slug, &p, "schedule").await,
             Err(e) => Err(e),
@@ -516,6 +549,9 @@ pub struct EmailBody {
     pub subject: String,
     pub text: String,
     pub asset: Option<AssetRef>,
+    /// Which mail account sends it (an email channel or account, by id or name); the default when empty.
+    #[serde(alias = "connection")]
+    pub from: String,
 }
 
 pub async fn email_preview(app: &App, slug: &str, b: &EmailBody) -> Result<Value, ApiError> {
@@ -526,14 +562,16 @@ pub async fn email_preview(app: &App, slug: &str, b: &EmailBody) -> Result<Value
     if b.subject.trim().is_empty() {
         return Err(bad("an email needs a subject"));
     }
-    let provider = {
+    let m = {
         let cfg = app.config.read().await.clone();
         let reg = app.registry.read().await;
-        reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), |m| crate::ext::ready_in(app, Some(slug), m)).map(|(_, m)| m.name.clone())
+        reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), |m| crate::ext::ready_in(app, Some(slug), m)).map(|(_, m)| m.clone())
     };
-    let Some(provider) = provider else {
+    let Some(m) = m else {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, "no mail ability is set up for this project; install Email under Setup → Abilities and add an email channel".into()));
     };
+    let provider = m.name.clone();
+    let from = crate::ext::pick_connection(app, slug, &m, Some(b.from.as_str()).filter(|f| !f.trim().is_empty())).map_err(|e| bad(e.to_string()))?;
     let files: Vec<Value> = match &b.asset {
         Some(r) if !r.id.is_empty() => {
             let a = assets::load(&app.store, slug, &r.kind, &r.id)?;
@@ -550,6 +588,8 @@ pub async fn email_preview(app: &App, slug: &str, b: &EmailBody) -> Result<Value
         "asset": b.asset.as_ref().filter(|r| !r.id.is_empty()).map(|r| json!({ "type": r.kind, "id": r.id })),
         "files": files,
         "connection_name": provider,
+        "from": from.as_ref().map(|c| c.id.clone()),
+        "from_label": from.as_ref().map(|c| c.label.clone()),
     }))
 }
 
@@ -566,7 +606,7 @@ pub async fn do_email(app: &App, slug: &str, preview: &Value) -> Result<Value, A
     let provide = m.provides.get("email").cloned().unwrap_or_default();
     // The asset's files go along; the executor reads them when the connection sends any.
     let args = json!({ "to": to, "subject": subject, "text": text, "html": channels::markdown_to_html(&text), "asset": preview["asset"] });
-    let out = crate::ext::execute(app, slug, &m, &provide, kiqr_core::abilities::find("email").as_ref(), None, &args).await.map_err(|e| bad(format!("{e:#}")))?;
+    let out = crate::ext::execute(app, slug, &m, &provide, kiqr_core::abilities::find("email").as_ref(), None, &args, preview["from"].as_str()).await.map_err(|e| bad(format!("{e:#}")))?;
     let result = json!({ "sent": true, "to": to, "from": out.json.get("from"), "subject": subject, "connection": m.name, "response": out.json });
     app.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("I sent \"{subject}\" to {to}.") });
     Ok(result)

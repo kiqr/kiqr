@@ -1,6 +1,7 @@
 // One ability, in full: what it is and what it includes, its instructions
-// (read, edit, edit a copy, restore), how it connects for this project, and
-// the switches and actions. Opened from any row or card on the Abilities page.
+// (read, edit, edit a copy, restore), this project's accounts of it (its
+// channels, when it publishes), and its switch for this project. Opened from
+// any row or card on the Abilities page.
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
@@ -8,7 +9,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, Check, Download, FolderOpen, Globe, Loader2, Pencil, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { api, type Ability, type Contract } from "../api";
 import { Markdown } from "../markdown";
-import { ConnectButton } from "./ConnectButton";
+import { AccountList } from "./Accounts";
 import { SecretField } from "./SecretField";
 import { Switch } from "./Switch";
 import { InstallPanel } from "./Marketplace";
@@ -31,8 +32,9 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   useEffect(() => {
-    if (tab === "connect" && !canConnect) setTab("overview");
-  }, [tab, canConnect]);
+    // Right after an install the list has not caught up yet: wait for it rather than leave the tab.
+    if (tab === "connect" && a.installed && !canConnect) setTab("overview");
+  }, [tab, canConnect, a.installed]);
   const run = async (what: string, f: () => Promise<unknown>, close = false) => {
     setBusy(what);
     setError(null);
@@ -48,7 +50,8 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
     }
   };
   const rivals = contracts.filter((c) => a.provides.some((p) => p.ability === c.id) && c.candidates.length > 1);
-  const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, ...(a.instructions.length ? [{ id: "instructions" as Tab, label: "Instructions" }] : []), ...(canConnect ? [{ id: "connect" as Tab, label: "Connect" }] : [])];
+  const connectLabel = a.core ? "Connect" : a.kinds?.length ? "Channels" : "Accounts";
+  const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, ...(a.instructions.length ? [{ id: "instructions" as Tab, label: "Instructions" }] : []), ...(canConnect ? [{ id: "connect" as Tab, label: connectLabel }] : [])];
 
   return createPortal(
     <motion.div className="lib-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }} onClick={onClose}>
@@ -87,7 +90,7 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
         <div className="ab-body">
           {tab === "overview" && <Overview slug={slug} a={a} onConnect={canConnect ? () => setTab("connect") : undefined} />}
           {tab === "instructions" && <Instructions slug={slug} a={a} onChange={onChange} />}
-          {tab === "connect" && <Connect slug={slug} a={a} rivals={rivals} onChange={onChange} onPrefer={onPrefer} />}
+          {tab === "connect" && canConnect && <Connect slug={slug} a={a} rivals={rivals} onChange={onChange} onPrefer={onPrefer} />}
           <AnimatePresence>
             {installing && (
               <InstallPanel
@@ -95,10 +98,11 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
                 busy={busy === "install"}
                 error={error}
                 onCancel={() => setInstalling(false)}
-                onInstall={(secrets) =>
+                onInstall={() =>
                   run("install", async () => {
-                    await api.installAbility(a.id, { scope: "project", project: slug, secrets });
+                    await api.installAbility(a.id);
                     setInstalling(false);
+                    if (a.auth.length) setTab("connect");
                   })
                 }
               />
@@ -117,13 +121,13 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
             </button>
           ) : (
             <>
-              <label className="ab-sw" title={a.machine_off ? "Switched off for the whole machine" : !a.ready ? "Connect it first" : undefined}>
-                <Switch on={!a.paused && !a.machine_off && a.ready} disabled={!!busy || a.machine_off || !a.ready} onChange={(on) => run("project", () => (on ? api.resumeProjectAbility(slug, a.id) : api.pauseProjectAbility(slug, a.id)))} />
+              <label className="ab-sw" title={!a.ready ? (a.kinds?.length ? "Add a channel first" : "Connect it first") : undefined}>
+                <Switch on={!a.paused && !a.machine_off && a.ready} disabled={!!busy || !a.ready} onChange={(on) => run("project", async () => {
+                  // A core ability switched off in Settings for every project comes back on with this project.
+                  if (on && a.machine_off) await api.resumeAbility(a.id);
+                  await (on ? api.resumeProjectAbility(slug, a.id) : api.pauseProjectAbility(slug, a.id));
+                })} />
                 <span>On for this project</span>
-              </label>
-              <label className="ab-sw" title={!a.ready ? "Needs its keys before it can be on" : undefined}>
-                <Switch on={!a.machine_off && a.ready} disabled={!!busy || (!a.ready && (a.auth.length > 0 || a.program_found === false))} onChange={(on) => run("machine", () => (on ? api.resumeAbility(a.id) : api.pauseAbility(a.id)))} />
-                <span>On for every project</span>
               </label>
               <span className="grow" />
               {(a.git || (a.source === "shipped" && !a.core)) && (
@@ -196,7 +200,7 @@ function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?
             What it needs
             {a.auth.length > 0 && onConnect && (
               <button className="lnk ab-cap-act" onClick={onConnect}>
-                Set up under Connect
+                {a.core ? "Set up under Connect" : a.kinds?.length ? "Add a channel" : "Add an account"}
               </button>
             )}
           </p>
@@ -255,7 +259,7 @@ function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?
       </dl>
       {a.channels.length > 0 && (
         <p className="muted sm">
-          Where it publishes is set up per project under <Link to={`/p/${slug}/channels`}>Channels</Link>.
+          Each channel brings its own account; add them here or under <Link to={`/p/${slug}/channels`}>Channels</Link>.
         </p>
       )}
     </div>
@@ -395,39 +399,22 @@ function Instructions({ slug, a, onChange }: { slug: string; a: Ability; onChang
   );
 }
 
-/** Keys for this project, or for every project; which one serves a contract. */
+/** An installed ability: this project's accounts of it (channels, when it publishes). A core one: KIQR's own key, on this machine. Then which ability serves a contract. */
 function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Ability; rivals: Contract[]; onChange: () => void; onPrefer: (contract: string, id: string) => void }) {
-  const [scope, setScope] = useState<"project" | "global">(a.channels.length ? "project" : a.auth.some((k) => k.set === "project") ? "project" : "global");
-  const machineHas = a.auth.filter((k) => !k.optional).every((k) => !!k.set);
   return (
     <div className="ab-con">
-      <div className="scope">
-        <span className="nm">Keys for</span>
-        <button className={`chip ${scope === "project" ? "acc" : ""}`} onClick={() => setScope("project")}>
-          This project
-        </button>
-        <button className={`chip ${scope === "global" ? "acc" : ""}`} onClick={() => setScope("global")}>
-          <Globe size={12} /> Every project
-        </button>
-      </div>
-      {a.connect && (
+      {a.core ? (
         <>
-          <ConnectButton key={scope} slug={slug} ability={a.id} connect={a.connect} auth={a.auth.map((k) => ({ ...k, set: scope === "project" ? (k.set === "project" ? "project" : null) : k.set === "global" ? "global" : null }))} scope={scope} onDone={onChange} />
-          <p className="ab-or">Or enter the keys yourself</p>
+          <div className="set-keys">
+            {a.auth.map((k) => (
+              <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} set={k.set} optional={k.optional} onSaved={onChange} />
+            ))}
+          </div>
+          <p className="muted sm">KIQR's own key, on this machine; every project uses it.</p>
         </>
+      ) : (
+        <AccountList slug={slug} ability={{ id: a.id, name: a.name, auth: a.auth, connect: a.connect }} kinds={a.kinds ?? []} onChange={onChange} />
       )}
-      <div className="set-keys">
-        {a.auth.map((k) => (
-          <SecretField key={`${scope}-${k.env}`} name={k.env} label={k.label || k.env} help={k.help} set={scope === "project" ? (k.set === "project" ? "project" : null) : k.set === "global" ? "global" : null} optional={k.optional || (scope === "project" && !!k.set)} slug={scope === "project" ? slug : undefined} onSaved={onChange} />
-        ))}
-      </div>
-      <p className="muted sm">
-        {scope === "project"
-          ? machineHas
-            ? "The machine's keys are in use here; a value saved for this project replaces them for this project only."
-            : "Saved for this project only, never shown again."
-          : "The machine's keys: every project without its own uses them."}
-      </p>
       {rivals.map((c) => (
         <div key={c.id} className="ab-prefer">
           <span className="nm">{c.label} with</span>

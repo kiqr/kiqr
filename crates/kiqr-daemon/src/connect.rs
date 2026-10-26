@@ -2,8 +2,9 @@
 //! flow and take the service's callback, and the tokens a call needs at the
 //! moment it is made (an oauth2 token refreshed, a service account's minted).
 //! The flows are generic (`kiqr_core::connect`); what a service wants comes
-//! from its manifest. Values land in `.env` through `ext::set_secret`, like
-//! typed keys, so nothing else needs to know how they got there.
+//! from its manifest. Values land in one connection's `.env` (one account of
+//! the ability in a project) through `ext::set_connection_secret`, like typed
+//! keys, so nothing else needs to know how they got there.
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
@@ -16,6 +17,7 @@ use axum::{
     Json, Router,
 };
 use kiqr_core::connect::{self, Callback, Connect, Flow};
+use kiqr_core::connections::Connection;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::Manifest;
 use serde::Deserialize;
@@ -27,9 +29,8 @@ use std::time::{Duration, Instant};
 /// A flow waiting for its callback.
 pub struct Pending {
     ability: String,
-    /// Where the values go: the project's `.env`, or the machine's.
-    slug: Option<String>,
-    /// The project the flow was started from (for the event), whatever the scope.
+    /// The connection the values go to.
+    connection: String,
     project: String,
     connect: Connect,
     callback: String,
@@ -56,9 +57,16 @@ fn bad(msg: impl Into<String>) -> ApiError {
 
 #[derive(Deserialize)]
 struct StartBody {
-    /// `project` (default) or `global`: whose `.env` gets the values.
+    /// The connection to sign in again; none adds a new one first.
     #[serde(default)]
-    scope: String,
+    connection: Option<String>,
+    /// For a new one: its name, and for a channel its kind and destination.
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    destination: serde_json::Map<String, Value>,
     /// The UI's origin (`window.location.origin`); the callback is under it.
     origin: String,
     /// The `needs` values typed first (the site), saved before the flow starts.
@@ -72,15 +80,29 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
     if c.flow == Flow::ServiceAccount {
         return Err(bad(format!("{} signs in with a key file on this machine; set it under Connect", m.name)));
     }
-    let target = if b.scope == "global" { None } else { Some(slug.as_str()) };
-    for n in &c.needs {
-        if let Some(v) = b.values.get(n).filter(|v| !v.trim().is_empty()) {
-            crate::ext::set_secret(&app, target, n, v).await?;
-        }
-    }
     let origin = url::Url::parse(b.origin.trim()).map_err(|_| bad("origin is not a URL"))?;
     if !matches!(origin.scheme(), "http" | "https") {
         return Err(bad("origin must be http or https"));
+    }
+    let conn = match b.connection.as_deref().filter(|c| !c.trim().is_empty()) {
+        Some(id) => {
+            let c = Connection::load(&app.store, &slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+            if c.ability != m.id {
+                return Err(bad(format!("'{id}' is not an account of {}", m.name)));
+            }
+            c
+        }
+        None if !b.kind.trim().is_empty() => {
+            let preview = crate::publish::channel_preview(&app, &slug, &crate::publish::NewChannel { label: b.label.clone(), kind: b.kind.clone(), connection: Some(m.id.clone()), destination: b.destination.clone(), ..Default::default() }).await?;
+            let v = crate::publish::save_channel(&app, &slug, &preview, "user", BTreeMap::new()).await?;
+            Connection::load(&app.store, &slug, v["id"].as_str().unwrap_or(""))?
+        }
+        None => crate::accounts::create(&app, &slug, crate::accounts::NewConnection { ability: m.id.clone(), label: b.label.clone(), ..Default::default() }, "user").await?,
+    };
+    for n in &c.needs {
+        if let Some(v) = b.values.get(n).filter(|v| !v.trim().is_empty()) {
+            crate::ext::set_connection_secret(&app, &slug, &conn.id, n, v).await?;
+        }
     }
     let callback_url = format!("{}/api/connect/callback", origin.origin().ascii_serialization());
     let offered = match c.callback {
@@ -89,7 +111,7 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
     };
     let state = connect::random_token();
     let verifier = connect::random_token();
-    let env = kiqr_core::secrets::env_fn(app.store.home(), target);
+    let env = kiqr_core::connections::env_for(app.store.home(), &slug, Some(&conn), &m);
     let app_id = uuid::Uuid::new_v4().to_string();
     let url = connect::start_url(&c, &env, &app_id, &state, offered, &verifier).map_err(|e| bad(e.to_string()))?;
     let with_callback = offered.is_some();
@@ -97,10 +119,10 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
         let mut p = app.connects.pending.lock().await;
         p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
         if with_callback {
-            p.insert(state, Pending { ability: m.id.clone(), slug: target.map(str::to_string), project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
+            p.insert(state, Pending { ability: m.id.clone(), connection: conn.id.clone(), project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
         }
     }
-    Ok(Json(json!({ "url": url, "callback": with_callback, "fields": c.returns.keys().filter(|k| !c.needs.contains(k)).collect::<Vec<_>>() })))
+    Ok(Json(json!({ "url": url, "callback": with_callback, "connection": conn.id, "fields": c.returns.keys().filter(|k| !c.needs.contains(k)).collect::<Vec<_>>() })))
 }
 
 async fn callback(State(app): State<App>, Query(q): Query<BTreeMap<String, String>>) -> (StatusCode, Html<String>) {
@@ -113,29 +135,31 @@ async fn callback(State(app): State<App>, Query(q): Query<BTreeMap<String, Strin
     let name = manifest(&app, &f.project, &f.ability).await.map(|m| m.name).unwrap_or_else(|| f.ability.clone());
     match finish(&app, &f, &q).await {
         Ok(()) => {
-            app.bus.emit(Some(&f.project), EventKind::ConnectFinished { ability: f.ability.clone(), ok: true, error: None, project: f.slug.clone() });
+            app.bus.emit(Some(&f.project), EventKind::ConnectFinished { ability: f.ability.clone(), ok: true, error: None, connection: Some(f.connection.clone()) });
             page(StatusCode::OK, &format!("{name} is connected. You can close this tab."))
         }
         Err(e) => {
-            app.bus.emit(Some(&f.project), EventKind::ConnectFinished { ability: f.ability.clone(), ok: false, error: Some(e.to_string()), project: f.slug.clone() });
+            app.bus.emit(Some(&f.project), EventKind::ConnectFinished { ability: f.ability.clone(), ok: false, error: Some(e.to_string()), connection: Some(f.connection.clone()) });
             page(StatusCode::BAD_REQUEST, &format!("{name} is not connected: {e}"))
         }
     }
 }
 
 async fn finish(app: &App, f: &Pending, q: &BTreeMap<String, String>) -> Result<()> {
+    let conn = Connection::load(&app.store, &f.project, &f.connection)?;
+    let m = manifest(app, &f.project, &f.ability).await.ok_or_else(|| anyhow!("{} is no longer installed", f.ability))?;
     let values = match f.connect.flow {
         Flow::Redirect => connect::read_redirect(&f.connect, q)?,
         Flow::Oauth2 => {
             let code = connect::read_code(&f.connect, q)?;
-            let env = kiqr_core::secrets::env_fn(app.store.home(), f.slug.as_deref());
+            let env = kiqr_core::connections::env_for(app.store.home(), &f.project, Some(&conn), &m);
             let form = connect::code_form(&f.connect, &env, &code, &f.callback, &f.verifier);
             token_request(&f.connect, &env, &form).await?
         }
         Flow::ServiceAccount => bail!("a service account has no callback"),
     };
     for (n, v) in values {
-        crate::ext::set_secret(app, f.slug.as_deref(), &n, &v).await.map_err(|e| anyhow!(e.1))?;
+        crate::ext::set_connection_secret(app, &f.project, &conn.id, &n, &v).await.map_err(|e| anyhow!(e.1))?;
     }
     Ok(())
 }
@@ -172,13 +196,15 @@ fn page(status: StatusCode, msg: &str) -> (StatusCode, Html<String>) {
 
 // ------------------------------------------------------- tokens at call time
 
-/// Variables a call needs beyond `.env`: a service account's token, minted
-/// (and kept until it runs out). An oauth2 token about to expire is
-/// refreshed into `.env` first. Nothing for a manifest without `connect`.
-pub async fn call_env(app: &App, slug: &str, m: &Manifest) -> Result<BTreeMap<String, String>> {
+/// Variables a call needs beyond the connection's `.env`: a service
+/// account's token, minted (and kept until it runs out). An oauth2 token about
+/// to expire is refreshed into the connection first. Nothing for a manifest
+/// without `connect`, or a call through no connection.
+pub async fn call_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Connection>) -> Result<BTreeMap<String, String>> {
     let Some(c) = &m.connect else { return Ok(BTreeMap::new()) };
+    let Some(conn) = conn else { return Ok(BTreeMap::new()) };
     let home = app.store.home();
-    let env = kiqr_core::secrets::env_fn(home, Some(slug));
+    let env = kiqr_core::connections::env_for(home, slug, Some(conn), m);
     let now = chrono::Utc::now().timestamp();
     match c.flow {
         Flow::Redirect => Ok(BTreeMap::new()),
@@ -191,18 +217,14 @@ pub async fn call_env(app: &App, slug: &str, m: &Manifest) -> Result<BTreeMap<St
                 return Ok(BTreeMap::new());
             };
             let values = token_request(c, &env, &connect::refresh_form(c, &env, &refresh)).await.with_context(|| format!("{} needs connecting again", m.name))?;
-            let target = match kiqr_core::secrets::scope_of(home, Some(slug), &c.token_env) {
-                Some("project") => Some(slug),
-                _ => None,
-            };
             for (n, v) in &values {
-                crate::ext::set_secret(app, target, n, v).await.map_err(|e| anyhow!(e.1))?;
+                crate::ext::set_connection_secret(app, slug, &conn.id, n, v).await.map_err(|e| anyhow!(e.1))?;
             }
             Ok(values.into_iter().collect())
         }
         Flow::ServiceAccount => {
             let path = env(&c.key_file).ok_or_else(|| anyhow!("{} is not set", c.key_file))?;
-            let cache_key = format!("{}|{}|{}", path.trim(), c.token_url, c.scopes.join(" "));
+            let cache_key = format!("{slug}|{}|{}|{}|{}", conn.id, path.trim(), c.token_url, c.scopes.join(" "));
             if let Some((t, exp)) = app.connects.tokens.lock().await.get(&cache_key).cloned() {
                 if exp - 60 > now {
                     return Ok(BTreeMap::from([(c.token_env.clone(), t)]));

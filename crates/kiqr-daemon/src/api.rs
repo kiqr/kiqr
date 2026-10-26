@@ -49,6 +49,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::seemo::routes())
         .merge(crate::ext::routes())
         .merge(crate::connect::routes())
+        .merge(crate::accounts::routes())
         .merge(crate::networks::routes())
         .merge(crate::market::routes())
         .merge(crate::images::routes())
@@ -118,7 +119,7 @@ struct ToolStatus {
 }
 
 /// Every secret KIQR reads from `.env`.
-pub(crate) const SECRETS: &[&str] = &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "UNBLOCKINGAPI_KEY", "KIQR_CLOUD_TOKEN"];
+pub(crate) const SECRETS: &[&str] = kiqr_core::provider::CORE_KEYS;
 
 #[derive(Serialize)]
 struct ProviderStatus {

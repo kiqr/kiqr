@@ -498,7 +498,31 @@ fn copies(ctx: &Ctx, folder: &str, builtin: bool) -> (bool, bool) {
 fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&extensions::Entry>, core: Option<&extensions::CoreAbility>) -> Value {
     let home = ctx.app.store.home();
     let auth: Vec<&AuthKey> = m.map(|m| m.auth.iter().collect()).unwrap_or_else(|| item.auth.iter().collect());
-    let missing: Vec<String> = auth.iter().filter(|a| !a.optional && !kiqr_core::secrets::has(home, ctx.slug, &a.env)).map(|a| a.env.clone()).collect();
+    // A core ability's keys are KIQR's own (the machine's); an installed one's live on the project's accounts of it.
+    let missing: Vec<String> = match (m, core) {
+        (Some(m), None) => crate::ext::missing_in(ctx.app, ctx.slug, m),
+        _ => auth.iter().filter(|a| !a.optional && !kiqr_core::secrets::has(home, ctx.slug, &a.env)).map(|a| a.env.clone()).collect(),
+    };
+    // This project's accounts of it: never their values, only whether they are complete.
+    let accounts: Vec<Value> = match (m, ctx.slug) {
+        (Some(m), Some(slug)) if core.is_none() => kiqr_core::connections::Connection::of(&ctx.app.store, slug, &m.id)
+            .iter()
+            .map(|c| {
+                let keys = c.keys(home, slug);
+                json!({
+                    "id": c.id,
+                    "label": c.label,
+                    "default": c.default,
+                    "channel": c.is_channel(),
+                    "kind": c.kind,
+                    "destination_text": c.destination_text(),
+                    "missing": c.missing(home, slug, m),
+                    "set": m.auth.iter().filter(|a| keys.contains_key(&a.env)).map(|a| a.env.clone()).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+        _ => vec![],
+    };
     let program_found = m.filter(|m| m.transport == Transport::Mcp).map(|m| crate::ext::on_path(&m.command));
     let installed = core.is_some() || e.is_some();
     let ready = installed && missing.is_empty() && program_found.unwrap_or(true);
@@ -529,10 +553,10 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         core.and_then(|c| c.instructions.first()).and_then(|(folder, _)| ctx.reg.entry(ctx.slug, folder).and_then(|e| e.instructions.as_ref()).map(|i| i.description.clone()))
     });
     let in_prompt = core.map(|c| c.in_prompt).unwrap_or(!files.is_empty());
-    let machine_off = match (core, e) {
-        (Some(c), _) => !ctx.cfg.core_on(c.id),
-        (None, Some(e)) => e.paused,
-        _ => false,
+    // Only a core ability has a machine-wide switch (config.yaml); an installed one is switched per project.
+    let machine_off = match core {
+        Some(c) => !ctx.cfg.core_on(c.id),
+        None => false,
     };
     let is_core = core.is_some() || e.is_some_and(|e| e.is_core());
     let source = if core.is_some() {
@@ -582,8 +606,10 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "paused": ctx.project_off.iter().any(|x| x == &item.id),
         "ready": ready,
         "missing": missing,
-        "auth": auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": kiqr_core::secrets::scope_of(home, ctx.slug, &a.env) })).collect::<Vec<_>>(),
+        "auth": auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "set": if core.is_some() { json!(kiqr_core::secrets::scope_of(home, ctx.slug, &a.env)) } else { Value::Null } })).collect::<Vec<_>>(),
         "connect": kiqr_core::connect::view(m.and_then(|m| m.connect.as_ref()).or(item.connect.as_ref())),
+        "accounts": accounts,
+        "kinds": m.map(|m| m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "name": c.display_name(), "destination": c.destination })).collect::<Vec<_>>()).unwrap_or_default(),
         "active_for": ctx.active.iter().filter(|(_, id)| *id == item.id).map(|(a, _)| a.clone()).collect::<Vec<_>>(),
         "instructions": files,
         "in_prompt": in_prompt,
@@ -751,16 +777,6 @@ async fn brief(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Va
     Ok(Json(json!({ "abilities": rows, "suggestions": suggestions, "note": "Read an ability's instructions with read_instructions before doing that kind of work. Off or not ready means you cannot use it here; say so instead of improvising. `suggestions` are profiles the business has where an ability in the marketplace could publish; the user installs it under Setup → Abilities." })))
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct InstallBody {
-    /// `global` (everywhere) or `project`.
-    scope: String,
-    project: Option<String>,
-    /// Keys to set right away, by name.
-    secrets: std::collections::BTreeMap<String, String>,
-}
-
 fn scope_of(b_scope: &str, project: &Option<String>) -> Result<Scope, ApiError> {
     match (b_scope, project.as_deref().filter(|p| !p.is_empty())) {
         ("project", Some(p)) => Ok(Scope::Project(p.to_string())),
@@ -788,11 +804,10 @@ async fn install_shipped(app: &App, id: &str, scope: &Scope) -> Result<String, A
     Ok(folder.to_string())
 }
 
-/// Install is always for the machine: one copy, one version. A project
-/// connects an installed ability with its own keys (`PUT /api/projects/{slug}/secrets/{NAME}`).
-/// `project` in the body only says whose `.env` the keys given here go to.
-async fn install(State(app): State<App>, Path(id): Path<String>, body: Option<Json<InstallBody>>) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let b = body.map(|Json(b)| b).unwrap_or_default();
+/// Install is always for the machine: one copy, one version, no keys. A
+/// project adds its own accounts of it afterwards (`/api/projects/{slug}/connections`,
+/// or a channel under `/channels`).
+async fn install(State(app): State<App>, Path(id): Path<String>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let scope = Scope::Global;
     {
         let reg = app.registry.read().await;
@@ -825,13 +840,27 @@ async fn install(State(app): State<App>, Path(id): Path<String>, body: Option<Js
         }
         (None, false) => return Err(bad(format!("'{id}' has no repository to install from"))),
     };
-    let slug = b.project.as_deref().filter(|p| !p.is_empty()).filter(|_| b.scope == "project");
-    for (name, value) in &b.secrets {
-        if !value.trim().is_empty() {
-            crate::ext::set_secret(&app, slug, name, value).await?;
+    adopt_keys(&app, &id).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "id": id, "folder": folder, "scope": scope }))))
+}
+
+/// Keys a project already had for this ability (from before accounts) become its first account.
+async fn adopt_keys(app: &App, id: &str) -> Result<(), ApiError> {
+    let m = {
+        let reg = app.registry.read().await;
+        reg.installed(id).into_iter().find_map(|e| e.manifest.clone())
+    };
+    let Some(m) = m else { return Ok(()) };
+    let adopted = kiqr_core::connections::adopt(&app.store, &m)?;
+    if !adopted.is_empty() {
+        app.store.commit(&format!("[auto] accounts: {} keeps the {} keys it had", adopted.join(", "), m.name)).await?;
+        for slug in &adopted {
+            if let Some(c) = kiqr_core::connections::Connection::default_of(&app.store, slug, &m.id) {
+                app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id, label: c.label, ability: c.ability, kind: c.kind });
+            }
         }
     }
-    Ok((StatusCode::CREATED, Json(json!({ "id": id, "folder": folder, "scope": scope }))))
+    Ok(())
 }
 
 #[derive(Deserialize, Default)]
@@ -846,7 +875,11 @@ struct SourceBody {
 /// Advanced: a git URL or a folder on this machine that is not in any index.
 async fn install_source(State(app): State<App>, Json(b): Json<SourceBody>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let scope = scope_of(&b.scope, &b.project)?;
-    crate::ext::install_into(&app, scope, crate::ext::Install { source: b.source, name: b.name }).await
+    let r = crate::ext::install_into(&app, scope, crate::ext::Install { source: b.source, name: b.name }).await?;
+    if let Some(id) = r.1["id"].as_str() {
+        adopt_keys(&app, id).await?;
+    }
+    Ok(r)
 }
 
 #[derive(Deserialize, Default)]
@@ -927,27 +960,8 @@ async fn set_paused(app: &App, id: &str, project: &Option<String>, paused: bool)
         app.bus.emit(None, EventKind::ExtensionPaused { id: id.to_string(), paused });
         return Ok(Json(json!({ "id": id, "paused": paused })));
     }
-    let e = {
-        let reg = app.registry.read().await;
-        find_installed(&reg, id, project)?
-    };
-    if !paused {
-        if let Some(m) = &e.manifest {
-            if !crate::ext::ready_in(app, None, m) {
-                return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{} needs {} before it can be on", m.name, crate::ext::missing_in(app, None, m).join(", "))));
-            }
-        }
-    }
-    let marker = e.dir.join(".off");
-    if paused {
-        std::fs::write(&marker, "paused by the user\n").map_err(|err| ApiError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-        app.mcp.stop(id).await;
-    } else {
-        let _ = std::fs::remove_file(&marker);
-    }
-    crate::ext::reload(app).await;
-    app.bus.emit(None, EventKind::ExtensionPaused { id: id.to_string(), paused });
-    Ok(Json(json!({ "id": id, "paused": paused })))
+    let _ = project;
+    Err(bad(format!("'{id}' is switched on and off per project (POST /api/projects/{{slug}}/abilities/{id}/pause or resume)")))
 }
 
 async fn pause(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ScopeQuery>) -> ApiResult<Value> {

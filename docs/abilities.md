@@ -2,8 +2,8 @@
 
 The two words a user sees, and the one folder format behind them.
 
-- **Ability**: something Seemo can do. KIQR's core ones are code (write, crawl a site into a business profile, read the web, read blocked pages with UnblockingAPI, write social media posts, run tasks on a schedule, create images with the built-in renderer); every other ability is one folder, holding **instructions** (`SKILL.md`: how Seemo does this kind of work, in words the user can edit), a **connection** (`extension.yaml`: a service behind a key, a program on this computer, or an MCP server, providing a contract such as `create_image` or a few tools of its own), or both ("Publish to WordPress": the call and the instructions for it). Abilities are installed once for the machine, from the marketplace under Setup → Abilities, and then switched on, connected (keys) and taught (copies of the instructions) per project. The user's own, written on that page in plain words, are abilities too. Core abilities can be switched off, never removed.
-- **Channel**: where a project's content goes out: an email address, a blog, an account. A channel names an installed ability that publishes plus a destination, and the account behind it is set up inside the project. Publishing always asks the user first.
+- **Ability**: something Seemo can do. KIQR's core ones are code (write, crawl a site into a business profile, read the web, read blocked pages with UnblockingAPI, write social media posts, run tasks on a schedule, create images with the built-in renderer); every other ability is one folder, holding **instructions** (`SKILL.md`: how Seemo does this kind of work, in words the user can edit), a **connection** (`extension.yaml`: a service behind a key, a program on this computer, or an MCP server, providing a contract such as `create_image` or a few tools of its own), or both ("Publish to WordPress": the call and the instructions for it). Abilities are installed once for the machine, from the marketplace under Setup → Abilities, and that only puts the code there; each project then switches it on, adds its own **accounts** of it (keys, see Accounts below) and teaches it (copies of the instructions). The user's own, written on that page in plain words, are abilities too. Core abilities can be switched off, never removed.
+- **Channel**: where a project's content goes out: an email address, a blog, an account. A channel is one account of an ability that publishes, plus a destination; a project can have as many as it wants of each kind (two blogs are two channels, each with its own keys). Publishing always asks the user first.
 
 Seemo only ever sees tools, named after ability contracts, whatever installed ability is behind them, plus the list of abilities that come with instructions (`id — name: when it applies`) in its system prompt, which it reads with `read_instructions` before acting. Transport words (HTTP, MCP, command) stay in the manifest and under Advanced. The marketplace index (`config.marketplace.url`, `{ "abilities": [ { id, name, author, summary, version, repo, path, categories, icon, cost, provides, channels, auth, trust, transport } ] }`) lists repositories to clone, optionally a `path` inside one (the marketplace repository holds its own abilities as folders); a folder with an `extension.yaml` or a `SKILL.md` in a public git repository is all a community ability needs (`transport: instructions` in the index marks one that is instructions only). The vendor shown on the card is `author`, else the GitHub user or organisation in `repo`; KIQR's own are `kiqr` (github.com/kiqr). Installing copies the folder into `~/.kiqr/abilities/<id>` (committed, with `.source` remembering the repository and path); Update fetches the repository again.
 
@@ -20,9 +20,26 @@ Seemo only ever sees tools, named after ability contracts, whatever installed ab
 
 The ability's id is the manifest's `id`, else the folder name. A folder with only `SKILL.md` is instructions (what the user writes with "Teach Seemo something", or a shared recipe from the marketplace). With only `extension.yaml` it is a connection. With both it is one ability with instructions and a connection, such as "Publish to WordPress".
 
-Install from Setup → Abilities (the marketplace, or Advanced for a folder or git URL), or with `kiqr abilities install <id>` (`--project <slug>` puts the keys you type into that project's `.env`). `kiqr abilities ls|show|teach|update|pause|resume|rm`. Only the core folders (the renderer) install themselves; a shipped `extension.yaml` follows each release once installed, and shipped instructions follow too unless you edited them (`.builtin` beside the file remembers what was installed; the old copy is kept as `SKILL.previous.md`). A project's copy of shipped instructions (`projects/<slug>/abilities/<folder>/SKILL.md`) wins for that project; the Instructions tab of the ability's modal edits and drops copies. Homes from before the rename had these folders under `skills/`; the daemon moves them once and commits.
+Install from Setup → Abilities (the marketplace, or Advanced for a folder or git URL), or with `kiqr abilities install <id>`; then add a project's account with `kiqr accounts add <slug> <id>`. `kiqr abilities ls|show|teach|update|pause|resume|rm`. Only the core folders (the renderer) install themselves; a shipped `extension.yaml` follows each release once installed, and shipped instructions follow too unless you edited them (`.builtin` beside the file remembers what was installed; the old copy is kept as `SKILL.previous.md`). A project's copy of shipped instructions (`projects/<slug>/abilities/<folder>/SKILL.md`) wins for that project; the Instructions tab of the ability's modal edits and drops copies. Homes from before the rename had these folders under `skills/`; the daemon moves them once and commits.
 
-Switches: a core ability is switched off for the machine in `config.yaml` (`core_off`), an installed folder with an `.off` marker in it; a project switches any ability off for itself in its `project.yaml` (`abilities_off`). Off means Seemo does not see its tools, its instructions leave the prompt and `read_instructions` refuses; a core ability off takes its tools with it (writing: `create_asset`; reading the web: `read_url`; tasks: `create_task` and the scheduler; the posts job refuses). An ability with keys cannot be switched on without them.
+Switches: an ability is switched on and off per project, in its `project.yaml` (`abilities_off`); that is the only switch an installed ability has. A core ability can also be off for every project in `config.yaml` (`core_off`); switching it on in a project clears that. Off means Seemo does not see its tools, its instructions leave the prompt and `read_instructions` refuses; a core ability off takes its tools with it (writing: `create_asset`; reading the web: `read_url`; tasks: `create_task` and the scheduler; the posts job refuses). An ability with keys cannot be switched on before the project has an account of it with all of them.
+
+## Accounts
+
+An installed ability holds no keys. A project adds **accounts** of it (the code calls them connections), each with a name and its own keys:
+
+```
+projects/<slug>/connections/<id>/connection.yaml   committed: id, label, ability, default, created_by, created_at
+                                                   and for a channel: kind, destination, asks_first, publications, last_published
+projects/<slug>/connections/<id>/.env              the keys, never committed, mode 0600
+```
+
+- A call goes through one account: the one named, else the ability's **default** (the first one added, or the one the user starred). The names an ability declares (`auth`, what `connect` writes, `env`, a command's `env`) are read from that account only, never from the project's or the machine's `.env`; KIQR's own keys (the model providers, UnblockingAPI) stay in `.env` as before.
+- With more than one account of an ability in a project, its tools get an optional `connection` argument (an enum of the account names), and `send_email` takes `from`. Seemo leaves it out for the default.
+- A hosted program (`transport: mcp`) runs once per account, started with that account's keys.
+- A channel is an account with a `kind`. A new one can start with the keys of another account of the same ability (`same_as`: the same mail account to another address); the keys are copied, so changing one later does not change the other.
+- `kiqr accounts ls|add|set|default|rm`; routes under `/api/projects/{slug}/connections`, channels under `/channels` as before.
+- Homes from before accounts are moved once at start: each channel keeps its id with a copy of its ability's keys, an ability a project had keys for becomes its first account (a channel when its kind needs no destination), the ability's keys leave the project's `.env`, and an ability switched off for the machine becomes switched off in every project. Installing an ability later does the same for keys a project's `.env` still holds.
 
 ## SKILL.md
 
@@ -102,7 +119,7 @@ List the same fields (`kind`, `name`, `icon`, `profile_hosts`) under `channels` 
 
 ### Signing in
 
-A connection can offer one button instead of typed keys. `connect` names a generic flow, and everything specific to the service stays in the manifest; the values land in the same `.env` variables `auth` declares, so readiness, `${…}` and hosts work as for typed keys, and typing them stays possible.
+A connection can offer one button instead of typed keys. `connect` names a generic flow, and everything specific to the service stays in the manifest; the values land in the variables `auth` declares, in the `.env` of the one account being signed in (a new one is added as the flow starts), so readiness, `${…}` and hosts work as for typed keys, and typing them stays possible.
 
 ```yaml
 connect:
@@ -246,11 +263,8 @@ Every ability's modal shows what it includes: instructions, keys (and where each
 
 ## Channels
 
-```
-projects/<slug>/channels/<id>/channel.yaml
-  id, label, extension, kind, destination {…}, created_by, created_at, asks_first, publications
-```
+A channel is an account with a kind (see Accounts): `projects/<slug>/connections/<id>/`, with its own keys.
 
-Create one on the Channels page, with `kiqr channels <slug>` to list, or let Seemo propose one (`create_channel`, confirmed on a card). Publish with the asset page's Publish button, `kiqr publish <slug> <type>/<id> <channel>`, or Seemo's `publish_asset`, which always opens a card first. A task run that reaches a publish gets the card in the task's chat and waits.
+Create one on the Channels page or in the ability's Channels tab, with `kiqr channels <slug>` to list, or let Seemo propose one (`create_channel`, confirmed on a card). Publish with the asset page's Publish button, `kiqr publish <slug> <type>/<id> <channel>`, or Seemo's `publish_asset`, which always opens a card first. A task run that reaches a publish gets the card in the task's chat and waits.
 
 Email is a channel kind like any other, declared by whichever ability sends mail: the marketplace's "Send email from your mail account" (`transport: smtp`, keys `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` (a Gmail app password), optional `SMTP_PORT`, `SMTP_FROM`, `SMTP_SECURITY`), or an HTTP sender with `provides.email`.

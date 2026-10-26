@@ -19,6 +19,14 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Which copy of a program to run and what it is given: one server per
+/// connection (`id#connection`), started with that connection's keys.
+#[derive(Clone, Debug, Default)]
+pub struct Launch {
+    pub key: String,
+    pub vars: Vec<(String, String)>,
+}
+
 #[derive(Default)]
 pub struct McpHost {
     servers: Mutex<HashMap<String, Arc<Server>>>,
@@ -38,35 +46,42 @@ pub struct Server {
 
 impl McpHost {
     /// The running server for a connection, started if needed.
-    pub async fn server(&self, home: &std::path::Path, m: &Manifest) -> Result<Arc<Server>> {
+    pub async fn server(&self, home: &std::path::Path, m: &Manifest, launch: &Launch) -> Result<Arc<Server>> {
+        let key = if launch.key.is_empty() { m.id.clone() } else { launch.key.clone() };
         let mut all = self.servers.lock().await;
-        if let Some(s) = all.get(&m.id) {
+        if let Some(s) = all.get(&key) {
             if s.alive.load(Ordering::SeqCst) {
                 return Ok(s.clone());
             }
-            tracing::warn!(id = %m.id, "MCP server died; starting it again");
-            all.remove(&m.id);
+            tracing::warn!(id = %key, "MCP server died; starting it again");
+            all.remove(&key);
         }
-        let s = Server::spawn(home, m).await?;
-        all.insert(m.id.clone(), s.clone());
+        let s = Server::spawn(home, m, &launch.vars).await?;
+        all.insert(key, s.clone());
         Ok(s)
     }
 
-    pub async fn tools(&self, home: &std::path::Path, m: &Manifest) -> Result<Vec<Value>> {
-        let s = self.server(home, m).await?;
+    pub async fn tools(&self, home: &std::path::Path, m: &Manifest, launch: &Launch) -> Result<Vec<Value>> {
+        let s = self.server(home, m, launch).await?;
         s.tools_cached().await
     }
 
     /// Call one of the server's tools. Returns the raw MCP result.
-    pub async fn call(&self, home: &std::path::Path, m: &Manifest, tool: &str, args: &Value) -> Result<Value> {
-        let s = self.server(home, m).await?;
+    pub async fn call(&self, home: &std::path::Path, m: &Manifest, launch: &Launch, tool: &str, args: &Value) -> Result<Value> {
+        let s = self.server(home, m, launch).await?;
         let r = s.request("tools/call", json!({ "name": tool, "arguments": args }), CALL_TIMEOUT).await?;
         Ok(r)
     }
 
-    /// Stop a connection's server (after a remove or a manifest change).
+    /// Stop an ability's servers, every connection's (after a remove or a
+    /// manifest change), or one connection's with `id#connection`.
     pub async fn stop(&self, id: &str) {
-        if let Some(s) = self.servers.lock().await.remove(id) {
+        let gone: Vec<Arc<Server>> = {
+            let mut all = self.servers.lock().await;
+            let keys: Vec<String> = all.keys().filter(|k| *k == id || k.strip_prefix(id).is_some_and(|r| r.starts_with('#'))).cloned().collect();
+            keys.iter().filter_map(|k| all.remove(k)).collect()
+        };
+        for s in gone {
             s.kill().await;
         }
     }
@@ -77,7 +92,7 @@ impl McpHost {
 }
 
 impl Server {
-    async fn spawn(home: &std::path::Path, m: &Manifest) -> Result<Arc<Server>> {
+    async fn spawn(home: &std::path::Path, m: &Manifest, vars: &[(String, String)]) -> Result<Arc<Server>> {
         let mut cmd = tokio::process::Command::new(&m.command);
         cmd.args(&m.args);
         cmd.env_clear();
@@ -86,11 +101,10 @@ impl Server {
                 cmd.env(k, v);
             }
         }
-        for k in &m.env {
-            if let Ok(v) = std::env::var(k) {
-                if !v.trim().is_empty() {
-                    cmd.env(k, v);
-                }
+        // The connection's keys, by the names the manifest gives them.
+        for (k, v) in vars {
+            if !v.trim().is_empty() {
+                cmd.env(k, v);
             }
         }
         let cwd = m.cwd.clone().map(std::path::PathBuf::from).unwrap_or_else(|| home.join("tmp").join("mcp").join(&m.id));

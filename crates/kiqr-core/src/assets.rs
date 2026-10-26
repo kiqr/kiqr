@@ -132,6 +132,10 @@ pub struct Asset {
     /// When the daemon publishes it to that channel. Set, the asset is Scheduled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_at: Option<DateTime<Utc>>,
+    /// Choices for this publish the channel's publish tool takes (WordPress's
+    /// `status`: draft or publish), kept for a scheduled publish.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub publish_options: serde_json::Map<String, serde_json::Value>,
     /// Why the last scheduled publish did not happen; cleared by the next publish or schedule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_error: Option<String>,
@@ -378,6 +382,7 @@ pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
         source,
         channel: None,
         publish_at: None,
+        publish_options: Default::default(),
         publish_error: None,
         archived: false,
         publications: Vec::new(),

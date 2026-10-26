@@ -284,3 +284,29 @@ a.mk-author:hover { color: var(--accent); }
 .ab-list.cols2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .ab-list.cols2 > li { margin: 0; min-width: 0; }
 @media (max-width: 900px) { .ab-list.cols2 { grid-template-columns: 1fr; } }
+
+/* accounts: one setup of an ability per card, each with its own keys */
+.acc { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: var(--r); background: var(--panel-2); border: 1px solid var(--line); }
+.acc.off { border-color: color-mix(in oklab, var(--warn) 30%, var(--line)); }
+.acc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.acc-head .grow { flex: 1; }
+.acc-name { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; background: none; border: 0; padding: 0; color: var(--fg); font: inherit; font-size: 13.5px; cursor: pointer; text-align: left; }
+.acc-name b { font-weight: 600; }
+.acc-name .mono { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.acc-name .input { max-width: 240px; }
+.acc-def { color: var(--accent); }
+.acc-confirm { display: inline-flex; align-items: center; gap: 6px; }
+.acc-keys { display: flex; flex-direction: column; gap: 10px; }
+.acc-keys .ab-sign { padding-bottom: 8px; }
+.acc-more { align-self: flex-start; background: none; border: 0; padding: 0; color: var(--accent); font-size: 12.5px; cursor: pointer; }
+.acc-add { align-self: flex-start; }
+.acc-form { margin: 4px 0 0; }
+.chan-kinds { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
+.chan-kinds .nm { color: var(--muted); margin-right: 4px; }
+.chan-kinds .chip { cursor: pointer; }
+.channel .acc-keys { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.channel .acc-more { display: block; margin-top: 8px; }
+@media (max-width: 860px) {
+  .acc-name .input { max-width: 100%; }
+  .teach-form.acc-form .grid { grid-template-columns: 1fr; }
+}
