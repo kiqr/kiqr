@@ -11,6 +11,7 @@ import { api, type Ability, type Contract } from "../api";
 import { Markdown } from "../markdown";
 import { AccountList } from "./Accounts";
 import { SecretField } from "./SecretField";
+import { SignInById } from "./SignIns";
 import { Switch } from "./Switch";
 import { InstallPanel } from "./Marketplace";
 import { parseInstructions, TeachForm, type TeachDraft } from "./TeachForm";
@@ -411,6 +412,12 @@ function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Abi
             ))}
           </div>
           <p className="muted sm">KIQR's own key, on this machine; every project uses it.</p>
+          {a.id === "unblockingapi" && (
+            <>
+              <p className="ab-or">Or sign in to your account instead of a key</p>
+              <SignInById id="unblockingapi" label="Sign in with UnblockingAPI" />
+            </>
+          )}
         </>
       ) : (
         <AccountList slug={slug} ability={{ id: a.id, name: a.name, auth: a.auth, connect: a.connect }} kinds={a.kinds ?? []} onChange={onChange} />

@@ -105,8 +105,23 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
         }
     }
     let callback_url = format!("{}/api/connect/callback", origin.origin().ascii_serialization());
+    // A service that only calls back over https, and KIQR on plain http: when
+    // this KIQR is signed in to kiqr.cloud, the service calls back to a
+    // single-use relay there, which sends the browser on to this KIQR; else
+    // the service shows the values and the user pastes them.
+    let relayed = if matches!(c.callback, Callback::Https) && origin.scheme() != "https" && c.flow == Flow::Redirect {
+        match crate::signins::open_relay(&app, &callback_url).await {
+            Ok((_, link)) => Some(link),
+            Err(e) => {
+                tracing::info!(error = %e, "no kiqr.cloud relay; the user pastes instead");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let offered = match c.callback {
-        Callback::Https if origin.scheme() != "https" => None,
+        Callback::Https if origin.scheme() != "https" => relayed.as_deref(),
         _ => Some(callback_url.as_str()),
     };
     let state = connect::random_token();
@@ -122,7 +137,7 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
             p.insert(state, Pending { ability: m.id.clone(), connection: conn.id.clone(), project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
         }
     }
-    Ok(Json(json!({ "url": url, "callback": with_callback, "connection": conn.id, "fields": c.returns.keys().filter(|k| !c.needs.contains(k)).collect::<Vec<_>>() })))
+    Ok(Json(json!({ "url": url, "callback": with_callback, "relayed": relayed.is_some(), "connection": conn.id, "fields": c.returns.keys().filter(|k| !c.needs.contains(k)).collect::<Vec<_>>() })))
 }
 
 async fn callback(State(app): State<App>, Query(q): Query<BTreeMap<String, String>>) -> (StatusCode, Html<String>) {

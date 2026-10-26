@@ -74,9 +74,8 @@ async fn read_web(State(app): State<App>, Path(slug): Path<String>, Query(q): Qu
     if !cfg.core_on("read-web") {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, "reading the web is switched off under Setup → Abilities".into()));
     }
-    let escalate = cfg.core_on("unblockingapi");
-    // The project's own UnblockingAPI account, else the machine's.
-    let key = if escalate { kiqr_core::secrets::lookup(app.store.home(), Some(&slug), "UNBLOCKINGAPI_KEY") } else { None };
+    // The project's own UnblockingAPI key, else the machine's key or sign-in.
+    let key = crate::signins::unblocking_auth(&app, &slug).await;
     let max = q.max_chars.unwrap_or(20_000).min(100_000);
     let page = kiqr_core::fetch::read_page(&url, key, max).await.map_err(|e| bad(e.to_string()))?;
     Ok(Json(page))

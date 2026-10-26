@@ -49,6 +49,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::seemo::routes())
         .merge(crate::ext::routes())
         .merge(crate::connect::routes())
+        .merge(crate::signins::routes())
         .merge(crate::accounts::routes())
         .merge(crate::networks::routes())
         .merge(crate::market::routes())
@@ -339,7 +340,7 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
                 project.crawl.ai_concurrency.unwrap_or(cfg.crawl.ai_concurrency),
                 cfg.core_on("unblockingapi"),
                 // The project's own UnblockingAPI account, else the machine's; none when that ability is off.
-                if cfg.core_on("unblockingapi") { kiqr_core::secrets::lookup(app.store.home(), Some(&project.slug), "UNBLOCKINGAPI_KEY") } else { None },
+                crate::signins::unblocking_auth(&app, &project.slug).await,
                 extractor.clone(),
             )?
             .with_control(control)

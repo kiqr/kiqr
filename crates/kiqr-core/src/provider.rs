@@ -55,8 +55,16 @@ pub async fn available(spec: &str) -> bool {
 /// the machine's `.env`, never an ability's connection.
 pub const CORE_KEYS: &[&str] = &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "UNBLOCKINGAPI_KEY", "KIQR_CLOUD_TOKEN"];
 
+/// Where KIQR keeps its own sign-ins (kiqr.cloud, UnblockingAPI by account):
+/// tokens, their expiry, and the client id this machine registered. Set by
+/// the daemon only, never typed.
+pub const SIGNIN_KEYS: &[&str] = &[
+    "KIQR_CLOUD_TOKEN", "KIQR_CLOUD_REFRESH_TOKEN", "KIQR_CLOUD_TOKEN_EXPIRES_AT", "KIQR_CLOUD_CLIENT_ID", "KIQR_CLOUD_ACCOUNT",
+    "UNBLOCKINGAPI_TOKEN", "UNBLOCKINGAPI_REFRESH_TOKEN", "UNBLOCKINGAPI_TOKEN_EXPIRES_AT", "UNBLOCKINGAPI_CLIENT_ID", "UNBLOCKINGAPI_ACCOUNT",
+];
+
 pub fn is_core_key(k: &str) -> bool {
-    CORE_KEYS.contains(&k)
+    CORE_KEYS.contains(&k) || SIGNIN_KEYS.contains(&k)
 }
 
 pub fn has_env(k: &str) -> bool {

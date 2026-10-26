@@ -313,6 +313,8 @@ export type Ability = {
 };
 export type Contract = { id: string; label: string; tool: string; configured: string | null; active: { id: string; name: string } | null; candidates: { id: string; name: string; ready: boolean }[] };
 export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts: Contract[]; broken: { folder: string; scope: Scope; error: string }[]; guide: Ability | null; index: string; index_fetched?: boolean; env_file: string; project_env_file: string | null };
+/** One of KIQR's own sign-ins: kiqr.cloud, UnblockingAPI. `waiting` while a device code is shown. */
+export type SignIn = { id: string; name: string; signed_in: boolean; account: string | null; waiting: { user_code: string; verification_uri: string; verification_uri_complete?: string | null } | null };
 /** A key on one account: set or not, never its value. */
 export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean };
 /** One account of an ability in this project, with its own keys. With a `kind` it is a channel: where the project publishes. */
@@ -462,6 +464,12 @@ export const api = {
   startConnect: (slug: string, id: string, b: { connection?: string; label?: string; kind?: string; destination?: Record<string, string>; origin: string; values: Record<string, string> }) =>
     req<{ url: string; callback: boolean; connection: string; fields: string[] }>(`/api/projects/${slug}/connect/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(b) }),
 
+  // KIQR's own sign-ins: kiqr.cloud, and UnblockingAPI by account
+  signIns: () => req<{ signins: SignIn[]; cloud_url: string }>("/api/signins"),
+  /** `redirect`: open `url`. `device`: show the code and where to enter it; the daemon waits for the approval. */
+  startSignIn: (id: string, origin: string) => req<{ mode: "redirect"; url: string } | { mode: "device"; user_code: string; verification_uri: string; verification_uri_complete?: string | null }>(`/api/signins/${id}/start`, { method: "POST", body: JSON.stringify({ origin }) }),
+  signOut: (id: string) => req<{ signed_in: boolean }>(`/api/signins/${id}`, { method: "DELETE" }),
+
   // Accounts: one setup of an ability in a project, with its own keys
   accounts: (slug: string, ability?: string) => req<{ connections: Account[] }>(`/api/projects/${slug}/connections${ability ? `?ability=${encodeURIComponent(ability)}` : ""}`),
   createAccount: (slug: string, b: { ability: string; label?: string; secrets?: Record<string, string>; same_as?: string }) => req<Account>(`/api/projects/${slug}/connections`, { method: "POST", body: JSON.stringify(b) }),
@@ -499,6 +507,7 @@ let demoConfig: Config = {
 };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  if (path.startsWith("/api/signins")) return Promise.resolve({ signins: [{ id: "kiqr-cloud", name: "kiqr.cloud", signed_in: false, account: null, waiting: null }, { id: "unblockingapi", name: "UnblockingAPI", signed_in: false, account: null, waiting: null }], cloud_url: "https://kiqr.cloud" } as T);
   if (/\/(chats|approvals|tasks|calendar|channels|connections|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;

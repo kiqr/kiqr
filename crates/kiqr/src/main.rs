@@ -90,6 +90,11 @@ enum Command {
         #[arg(long)]
         asset: Option<String>,
     },
+    /// KIQR's own sign-ins: `kiqr signin` lists them, `kiqr signin kiqr-cloud` or
+    /// `kiqr signin unblockingapi` signs in (a code to enter, or a link to open)
+    Signin { id: Option<String> },
+    /// Sign out of one of KIQR's own sign-ins
+    Signout { id: String },
     /// A project's accounts of its abilities, each with its own keys (typed, never shown)
     Accounts {
         #[command(subcommand)]
@@ -606,6 +611,32 @@ impl Client {
                 }
                 let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/email"), &body).await?;
                 println!("sent \"{}\" to {} via {}", v["subject"].as_str().unwrap_or(""), v["to"].as_str().unwrap_or(""), v["connection"].as_str().unwrap_or(""));
+            }
+            Command::Signin { id } => match id {
+                None => {
+                    let v: serde_json::Value = self.get("/api/signins").await?;
+                    for r in v["signins"].as_array().cloned().unwrap_or_default() {
+                        let s = |k: &str| r[k].as_str().unwrap_or("").to_string();
+                        let state = if r["signed_in"].as_bool() == Some(true) { format!("signed in{}", if s("account").is_empty() { String::new() } else { format!(" as {}", s("account")) }) } else { "not signed in".into() };
+                        println!("{:<14} {:<14} {state}", s("id"), s("name"));
+                    }
+                }
+                Some(id) => {
+                    // The daemon's own address is on this computer: a link to open, or a code.
+                    let v: serde_json::Value = self.post(&format!("/api/signins/{id}/start"), &serde_json::json!({ "origin": self.base })).await?;
+                    if v["mode"] == "device" {
+                        let code = v["user_code"].as_str().unwrap_or("");
+                        let code = if code.len() == 8 { format!("{}-{}", &code[..4], &code[4..]) } else { code.to_string() };
+                        println!("Open {} and enter {code}", v["verification_uri"].as_str().unwrap_or(""));
+                        println!("KIQR waits for the approval; `kiqr signin` shows when it is done.");
+                    } else {
+                        println!("Open this link to sign in:\n{}", v["url"].as_str().unwrap_or(""));
+                    }
+                }
+            },
+            Command::Signout { id } => {
+                self.delete(&format!("/api/signins/{id}")).await?;
+                println!("Signed out of {id}.");
             }
             Command::Accounts { cmd } => match cmd {
                 AccountsCmd::Ls { slug } => {
@@ -1234,6 +1265,10 @@ fn print_event(ev: &Event) {
         EventKind::ExtensionPaused { id, paused } => format!("ability  {id} {}", if *paused { "paused" } else { "on again" }),
         EventKind::SecretSet { name, set, project } => format!("secret   {name} {}{}", if *set { "set" } else { "cleared" }, project.as_ref().map(|p| format!(" for {p}")).unwrap_or_default()),
         EventKind::SuggestionsChanged {} => return,
+        EventKind::SignInChanged { id, signed_in, error } => match error {
+            Some(e) => format!("sign-in  {id} failed: {e}"),
+            None => format!("sign-in  {id} {}", if *signed_in { "signed in" } else { "signed out" }),
+        },
         EventKind::ConnectFinished { ability, ok, error, connection } => match (ok, error) {
             (true, _) => format!("connect  {ability} connected{}", connection.as_ref().map(|c| format!(" as {c}")).unwrap_or_default()),
             (false, e) => format!("connect  {ability} failed: {}", e.clone().unwrap_or_default()),

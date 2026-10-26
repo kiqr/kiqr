@@ -21,6 +21,7 @@ pub mod fetch;
 pub mod marketing;
 pub mod markdown;
 pub mod metrics;
+pub mod oauth;
 pub mod paths;
 pub mod profile;
 pub mod project;

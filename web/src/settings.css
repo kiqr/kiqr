@@ -322,3 +322,10 @@ a.mk-author:hover { color: var(--accent); }
 .acc-links { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; }
 .lnk-btn { background: none; border: 0; padding: 0; color: var(--muted); font: 12.5px var(--sans); cursor: pointer; text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
 .lnk-btn:hover { color: var(--accent); }
+
+/* KIQR's own sign-ins (kiqr.cloud, UnblockingAPI) */
+.signin { display: flex; flex-direction: column; gap: 8px; }
+.signin .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.signin .code-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.signin .code { font-size: 18px; letter-spacing: .12em; padding: 4px 10px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line-2); }
+.signin .err { color: var(--bad); }

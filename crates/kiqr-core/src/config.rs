@@ -17,6 +17,9 @@ pub struct Config {
     /// One not listed uses the built-in one, else the only ready one.
     pub abilities: std::collections::BTreeMap<String, String>,
     pub marketplace: MarketplaceConfig,
+    /// kiqr.cloud: accounts, and the relay that finishes sign-ins for a KIQR agent.
+    #[serde(default)]
+    pub cloud: CloudConfig,
     /// Built-in abilities the user switched off (`write`, `read-web`, `tasks`…).
     pub core_off: Vec<String>,
 }
@@ -34,6 +37,18 @@ impl Config {
 #[serde(default)]
 pub struct MarketplaceConfig {
     pub url: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudConfig {
+    pub url: String,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self { url: "https://kiqr.cloud".into() }
+    }
 }
 
 impl Default for MarketplaceConfig {
@@ -85,7 +100,7 @@ pub struct AgentConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default(), marketplace: MarketplaceConfig::default(), core_off: vec![] }
+        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default(), marketplace: MarketplaceConfig::default(), cloud: CloudConfig::default(), core_off: vec![] }
     }
 }
 impl Default for AgentConfig {

@@ -4,7 +4,7 @@
 
 use crate::events::{EventBus, EventKind};
 use crate::extract::Extractor;
-use crate::fetch::{obstacle, Fetched, Fetcher, LocalFetcher, UnblockingFetcher};
+use crate::fetch::{obstacle, Fetched, Fetcher, LocalFetcher, UnblockingAuth, UnblockingFetcher};
 use crate::markdown;
 use crate::project::{CrawlSummary, Project};
 use crate::Store;
@@ -169,8 +169,8 @@ pub fn cached_left_site(store: &Store, slug: &str, key: &str) -> bool {
 impl Crawler {
     /// `unblocking_key`: the UnblockingAPI key for this project's pages (its
     /// own, else the machine's), used only when escalation is on.
-    pub fn new(store: Store, bus: EventBus, concurrency: usize, ai_concurrency: usize, escalate: bool, unblocking_key: Option<String>, extractor: Option<Arc<Extractor>>) -> Result<Self> {
-        let unblocking = if escalate { UnblockingFetcher::with_key(unblocking_key).map(Arc::new) } else { None };
+    pub fn new(store: Store, bus: EventBus, concurrency: usize, ai_concurrency: usize, escalate: bool, unblocking: Option<UnblockingAuth>, extractor: Option<Arc<Extractor>>) -> Result<Self> {
+        let unblocking = if escalate { UnblockingFetcher::with_auth(unblocking).map(Arc::new) } else { None };
         Ok(Self {
             store,
             bus,

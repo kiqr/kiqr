@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Bot, Check, Cloud, Cpu, Database, FolderGit2, HardDrive, KeyRound, Radar, Server, Settings as SettingsIcon, Sparkles, Terminal, X, type LucideIcon } from "lucide-react";
 import { api, useAsync, useEvents, type Config, type Health } from "../api";
 import { SecretField } from "./SecretField";
+import { SignInById } from "./SignIns";
 import "../settings.css";
 
 type Tab = { id: string; label: string; icon: LucideIcon };
@@ -143,6 +144,9 @@ function General({ h, config }: { h?: Health; config?: Config }) {
           </motion.div>
         ))}
       </div>
+      <Card icon={Cloud} title="kiqr.cloud" text="Connects this KIQR agent with your third-party apps: WordPress, UnblockingAPI and more, signed in with one click instead of keys you copy. Optional; it keeps your account and nothing else.">
+        <SignInById id="kiqr-cloud" />
+      </Card>
       <Card icon={Server} title="This installation" text="KIQR runs here, on your machine. Nothing leaves it except the pages it fetches and the model calls you configure.">
         <Rows
           rows={[

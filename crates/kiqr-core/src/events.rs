@@ -112,6 +112,8 @@ pub enum EventKind {
     /// the values went (None: the machine); `error` says why it failed.
     /// What Seemo suggests installing changed (a profile found, an ability installed, one waved away).
     SuggestionsChanged {},
+    /// One of KIQR's own sign-ins (kiqr.cloud, UnblockingAPI) changed: signed in, out, or it failed.
+    SignInChanged { id: String, signed_in: bool, #[serde(default)] error: Option<String> },
     ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] connection: Option<String> },
 
     // Abilities and channels.
@@ -169,6 +171,7 @@ impl EventKind {
                 | EventKind::ExtensionPaused { .. }
                 | EventKind::SecretSet { .. }
                 | EventKind::ConnectFinished { .. }
+                | EventKind::SignInChanged { .. }
                 | EventKind::SuggestionsChanged { .. }
                 | EventKind::MediaCreated { .. }
                 | EventKind::ConnectionSaved { .. }

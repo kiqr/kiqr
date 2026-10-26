@@ -18,6 +18,7 @@ mod performance;
 mod publish;
 mod scheduler;
 mod seemo;
+mod signins;
 mod smtp;
 mod web;
 
@@ -57,6 +58,8 @@ pub struct App {
     pub mcp: Arc<mcp_host::McpHost>,
     /// Sign-ins waiting for their callback, and tokens minted for service accounts.
     pub connects: connect::Shared,
+    /// KIQR's own sign-ins (kiqr.cloud, UnblockingAPI): flows in progress, servers found.
+    pub signins: signins::Shared,
 }
 
 impl App {
@@ -117,6 +120,7 @@ pub async fn run(home: Home) -> Result<()> {
         renderer: Arc::new(kiqr_core::render::Renderer::new(home.render_dir())),
         mcp: Arc::new(mcp_host::McpHost::default()),
         connects: Default::default(),
+        signins: Default::default(),
     };
     match app.renderer.chrome() {
         Some(c) => tracing::info!("images: SVG via resvg, HTML via {}", c.display()),
