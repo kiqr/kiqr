@@ -54,6 +54,10 @@ pub struct AuthKey {
     /// properties it can see): the UI offers them as a list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub choices: Option<Choices>,
+    /// A token a sign-in keeps that may also be typed (a personal access
+    /// token instead of signing in): shown as a field like any key.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub typed: bool,
 }
 
 /// Where a key's choices come from: a request through the account, the list
@@ -276,6 +280,13 @@ pub struct ChannelKind {
 
 /// What an ability may do on a channel.
 pub const ROLES: &[&str] = &["publish", "read", "reply", "manage"];
+
+impl ExtraTool {
+    /// Does more than read: Seemo's call asks the user first.
+    pub fn acts(&self) -> bool {
+        !self.role.is_empty() && self.role != "read"
+    }
+}
 
 impl ChannelKind {
     /// `does`, else `publish`.
@@ -905,10 +916,41 @@ pub fn host_allowed(url: &url::Url, hosts: &[String]) -> bool {
     })
 }
 
+/// Where the `}}` that closes the `{{` at the start of `s` is, past any
+/// `{{…}}` or `${…}` inside it.
+fn closing(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut want: Vec<&[u8]> = vec![b"}}"];
+    let mut i = 2;
+    while i < b.len() {
+        let rest = &b[i..];
+        if rest.starts_with(b"{{") {
+            want.push(b"}}");
+            i += 2;
+        } else if rest.starts_with(b"${") {
+            want.push(b"}");
+            i += 2;
+        } else if want.last().is_some_and(|w| rest.starts_with(w)) {
+            let w = want.pop()?;
+            if want.is_empty() {
+                return Some(i);
+            }
+            i += w.len();
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
 /// Fill `{{arg}}` / `{{arg|default}}` from the arguments and `${ENV}` from
 /// `env`. A missing argument with no default becomes empty; a missing
 /// variable stays as written so the caller can refuse.
 pub fn fill(template: &str, args: &Value, env: impl Fn(&str) -> Option<String>) -> String {
+    fill_with(template, args, &env)
+}
+
+fn fill_with(template: &str, args: &Value, env: &dyn Fn(&str) -> Option<String>) -> String {
     let mut out = String::new();
     let mut rest = template;
     loop {
@@ -932,7 +974,7 @@ pub fn fill(template: &str, args: &Value, env: impl Fn(&str) -> Option<String>) 
         out.push_str(&rest[..at]);
         rest = &rest[at..];
         if is_arg {
-            let Some(end) = rest.find("}}") else {
+            let Some(end) = closing(rest) else {
                 out.push_str(rest);
                 return out;
             };
@@ -941,7 +983,8 @@ pub fn fill(template: &str, args: &Value, env: impl Fn(&str) -> Option<String>) 
             let v = lookup(args, key).filter(|v| !v.is_null());
             match v.as_ref() {
                 Some(Value::String(s)) if !s.is_empty() => out.push_str(s),
-                Some(Value::String(_)) | None => out.push_str(default.unwrap_or("")),
+                // The default may hold placeholders of its own: `{{repo|${GITHUB_REPO}}}`, `{{title|{{tag}}}}`.
+                Some(Value::String(_)) | None => out.push_str(&fill_with(default.unwrap_or(""), args, env)),
                 Some(other) => out.push_str(&other.to_string()),
             }
             rest = &rest[end + 2..];
@@ -1138,6 +1181,18 @@ pub fn install_builtin_text(store: &crate::Store, path: &std::path::Path, body: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fill_defaults_hold_placeholders() {
+        let env = |k: &str| (k == "REPO").then(|| "acme/app".to_string());
+        let args = serde_json::json!({ "number": 7, "tag": "v1.2" });
+        assert_eq!(fill("https://x.test/repos/{{repo|${REPO}}}/issues/{{number}}", &args, env), "https://x.test/repos/acme/app/issues/7");
+        assert_eq!(fill("{{repo|${REPO}}}", &serde_json::json!({ "repo": "other/lib" }), env), "other/lib");
+        assert_eq!(fill("{{title|{{tag}}}}", &args, env), "v1.2");
+        assert_eq!(fill("{{title|{{tag}}}} done", &serde_json::json!({ "title": "Big" }), env), "Big done");
+        assert_eq!(fill("{{a}}-{{b|x}}", &serde_json::json!({ "a": 1 }), env), "1-x");
+        assert_eq!(fill("{{broken", &args, env), "{{broken");
+    }
+
     use super::*;
     use serde_json::json;
 

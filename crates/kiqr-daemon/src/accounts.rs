@@ -93,7 +93,7 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
             v["ready"] = json!(ready(app, slug, c, m));
             v["missing"] = json!(c.missing(app.store.home(), slug, m));
             // `written`: a sign-in keeps it (a token), never typed; `choices`: a list read through the account.
-            let written = kiqr_core::connect::written_tokens(&m.connect);
+            let written: Vec<String> = kiqr_core::connect::written_tokens(&m.connect).into_iter().filter(|w| !m.auth.iter().any(|a| &a.env == w && a.typed)).collect();
             // Signed in one way or another (a token kept, a key file set): what a key's `choices` are read with.
             v["signed_in"] = json!(m.connect.iter().any(|w| w.satisfied(&|k: &str| keys.contains_key(k))));
             v["auth"] = json!(m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": keys.contains_key(&a.env), "written": written.contains(&a.env), "choices": a.choices.is_some() })).collect::<Vec<_>>());

@@ -178,6 +178,9 @@ pub enum CallSpec {
     Ability { ability: String },
     /// `POST /api/projects/{slug}/ext/{ext}/tools/{tool}` with the arguments.
     Ext { ext: String, tool: String },
+    /// An ability's tool that acts (a reply, a change): an `action` approval
+    /// first, and the tool runs on the user's yes.
+    Action { ext: String, tool: String },
 }
 
 impl Tool {

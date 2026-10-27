@@ -224,7 +224,8 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
                 label: if t.label.trim().is_empty() { format!("Using {}", m.name) } else { t.label.clone() },
                 description: if t.description.trim().is_empty() { format!("A tool of the connection {}.", m.name) } else { t.description.clone() },
                 input_schema: if t.input.is_null() { json!({ "type": "object", "properties": {}, "additionalProperties": true }) } else { t.input.clone() },
-                call: CallSpec::Ext { ext: m.id.clone(), tool: t.name.clone() },
+                // A tool that acts asks first, like a publish; reading runs at once.
+                call: if t.acts() { CallSpec::Action { ext: m.id.clone(), tool: t.name.clone() } } else { CallSpec::Ext { ext: m.id.clone(), tool: t.name.clone() } },
                 cost: t.provide.cost.clone(),
             });
             let last = out.pop().expect("just pushed");
@@ -842,7 +843,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         (Some(c), true) => Some(account_turn(slug, &c.id).await),
         _ => None,
     };
-    let act = conn.as_ref().and_then(|c| action(m, tool, c, &args));
+    let act = conn.as_ref().and_then(|c| action(m, tool, c, &args, &target_env(app, slug, m, c)));
     if let (Some(c), Some(a)) = (&conn, &act) {
         if let Err((why, e)) = check_action(app, slug, m, c, a).await {
             app.bus.emit(Some(slug), EventKind::ActionRefused { connection: c.id.clone(), ability: m.id.clone(), why: why.to_string(), message: e.to_string() });
@@ -888,6 +889,55 @@ pub(crate) async fn key_choices(app: &App, slug: &str, conn: &Connection, name: 
         .collect())
 }
 
+/// What an `action` approval shows before the yes: which ability's tool does
+/// what, through which account, with which arguments, and on what.
+pub(crate) async fn action_preview(app: &App, slug: &str, payload: &Value) -> Result<Value, ApiError> {
+    let id = payload["ability"].as_str().unwrap_or_default();
+    let tool = payload["tool"].as_str().unwrap_or_default();
+    let m = {
+        let reg = app.registry.read().await;
+        reg.connection(slug, id).map(|(_, m)| m.clone())
+    }
+    .ok_or_else(|| bad(format!("the ability '{id}' is not installed or is off here")))?;
+    if project_off(app, slug).contains(&m.id) {
+        return Err(bad(format!("{} is switched off for this project", m.name)));
+    }
+    let t = m.tools.iter().find(|t| t.name == tool).filter(|t| t.acts()).ok_or_else(|| bad(format!("{} has no tool '{tool}' that acts", m.name)))?;
+    let args = payload["args"].clone();
+    let conn = pick_connection(app, slug, &m, args["connection"].as_str()).map_err(|e| bad(e.to_string()))?.ok_or_else(|| bad(format!("{} has no account here yet", m.name)))?;
+    let shown: Vec<Value> = args.as_object().map(|o| o.iter().filter(|(k, _)| k.as_str() != "connection" && k.as_str() != "by").map(|(k, v)| json!({ "key": k, "value": v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()) })).collect()).unwrap_or_default();
+    Ok(json!({
+        "ability": m.id,
+        "ability_name": m.name,
+        "tool": t.name,
+        "label": if t.label.is_empty() { t.name.clone() } else { t.label.clone() },
+        "description": t.description,
+        "role": t.role,
+        "target": extensions::fill(&t.target, &args, target_env(app, slug, &m, &conn)).trim(),
+        "connection": conn.id,
+        "account": conn.label,
+        "args": args,
+        "fields": shown,
+        // A channel the user let Seemo act through on its own: the card is the record.
+        "asks_first": !conn.is_channel() || conn.asks_first,
+    }))
+}
+
+/// Run an approved action: the ability's tool through the account the card named.
+pub(crate) async fn do_action(app: &App, slug: &str, preview: &Value) -> Result<Value, ApiError> {
+    let id = preview["ability"].as_str().unwrap_or_default();
+    let tool = preview["tool"].as_str().unwrap_or_default();
+    let m = {
+        let reg = app.registry.read().await;
+        reg.connection(slug, id).map(|(_, m)| m.clone())
+    }
+    .ok_or_else(|| bad(format!("the ability '{id}' is not installed or is off here")))?;
+    let t = m.tools.iter().find(|t| t.name == tool).cloned().ok_or_else(|| bad(format!("{} has no tool '{tool}'", m.name)))?;
+    let out = execute(app, slug, &m, &t.provide, None, Some(tool), &preview["args"], preview["connection"].as_str()).await.map_err(|e| bad(format!("{e:#}")))?;
+    let url = out.text.clone().filter(|x| x.starts_with("http")).or_else(|| ["html_url", "url", "link"].iter().find_map(|k| out.json.get(*k).and_then(|u| u.as_str()).map(str::to_string)));
+    Ok(json!({ "done": true, "url": url, "text": out.text, "result": out.json, "note": "Done. Say in one line what was done where, with the link." }))
+}
+
 /// Accounts being driven right now, by `slug/id`.
 static TURNS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> = std::sync::LazyLock::new(Default::default);
 
@@ -899,15 +949,28 @@ async fn account_turn(slug: &str, id: &str) -> tokio::sync::OwnedMutexGuard<()> 
 
 /// What a call does on its account, when it does more than read: the tool's
 /// `role` (or `publish` for a channel kind's publish tool) and its `target`.
-fn action(m: &Manifest, tool: Option<&str>, c: &Connection, args: &Value) -> Option<Activity> {
+fn action(m: &Manifest, tool: Option<&str>, c: &Connection, args: &Value, env: &impl Fn(&str) -> Option<String>) -> Option<Activity> {
     let t = tool.and_then(|n| m.tools.iter().find(|t| t.name == n));
     let publishes = c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind && k.publishes() && Some(k.publish.as_str()) == tool);
     let role = t.map(|t| t.role.clone()).filter(|r| !r.is_empty()).or_else(|| publishes.then(|| "publish".to_string()))?;
     if role == "read" {
         return None;
     }
-    let target = t.map(|t| extensions::fill(&t.target, args, |_| None)).unwrap_or_default().trim().to_string();
+    let target = t.map(|t| extensions::fill(&t.target, args, env)).unwrap_or_default().trim().to_string();
     Some(Activity { at: chrono::Utc::now(), ability: m.id.clone(), role, tool: tool.unwrap_or_default().to_string(), target, url: None })
+}
+
+/// The account's keys a target may name (`${GITHUB_REPO}`): never a secret.
+/// Targets are logged and shown, so a token, a password or anything a
+/// sign-in keeps stays out even when a manifest names it.
+fn target_env(app: &App, slug: &str, m: &Manifest, c: &Connection) -> impl Fn(&str) -> Option<String> + Clone {
+    let env = kiqr_core::connections::env_for(app.store.home(), slug, Some(c), m);
+    let written = kiqr_core::connect::written_tokens(&m.connect);
+    move |k: &str| {
+        let u = k.to_ascii_uppercase();
+        let secret = ["TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "FILE"].iter().any(|w| u.contains(w)) || written.iter().any(|w| w == k);
+        if secret { None } else { env(k) }
+    }
 }
 
 /// Refuse an action already done on the same target through this account,

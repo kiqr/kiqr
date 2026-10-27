@@ -301,7 +301,7 @@ fn core_item(c: &extensions::CoreAbility) -> IndexItem {
         provides: vec![],
         channels: vec![],
         sources: vec![],
-        auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false, options: vec![], placeholder: String::new(), choices: None }).collect(),
+        auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false, options: vec![], placeholder: String::new(), choices: None, typed: false }).collect(),
         connect: None,
         trust: "official".into(),
         transport: "builtin".into(),

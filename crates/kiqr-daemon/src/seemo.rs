@@ -477,11 +477,12 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
         "email" => crate::publish::email_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         "plan" => crate::marketing::plan_preview(&app, &slug, &b.payload)?,
         "campaign" => crate::marketing::campaign_preview(&app, &slug, &b.payload)?,
+        "action" => crate::ext::action_preview(&app, &slug, &b.payload).await?,
         other => return Err(bad(format!("unknown approval kind '{other}'"))),
     };
     // A channel the user let Seemo publish through on its own: the card is
     // put in the chat as a record and answered at once with the outcome.
-    let auto = b.kind == "publish" && preview["asks_first"].as_bool() == Some(false);
+    let auto = matches!(b.kind.as_str(), "publish" | "action") && preview["asks_first"].as_bool() == Some(false);
     let mut preview = preview;
     if auto {
         preview["auto"] = json!(true);
@@ -490,9 +491,10 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
     let (id, preview) = open_approval(&app, &slug, &b.kind, preview, b.chat, b.task, !auto).await?;
     if auto {
         let approval = app.approvals.read().await.get(&id).cloned().ok_or_else(|| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "the approval vanished".into()))?;
-        let decision = match crate::publish::do_publish(&app, &slug, &preview, &by).await {
+        let done = if b.kind == "action" { crate::ext::do_action(&app, &slug, &preview).await } else { crate::publish::do_publish(&app, &slug, &preview, &by).await };
+        let decision = match done {
             Ok(v) => Decision { status: "approved".into(), result: v },
-            Err(ApiError(_, msg)) => Decision { status: "failed".into(), result: json!({ "failed": true, "error": msg, "note": "The publish failed. Say so in one line; do not retry unless asked." }) },
+            Err(ApiError(_, msg)) => Decision { status: "failed".into(), result: json!({ "failed": true, "error": msg, "note": "It failed. Say so in one line; do not retry unless asked." }) },
         };
         finish_approval(&app, &approval, decision.clone()).await;
         return Ok((StatusCode::CREATED, Json(json!({ "id": id, "status": decision.status, "result": decision.result, "preview": preview }))));
@@ -636,6 +638,11 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
             "campaign" => match crate::marketing::approve_campaign(&app, &slug, &approval).await {
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
+            },
+            // A refusal (a repeat, the day's cap) is the outcome, not an error the card keeps asking about.
+            "action" => match crate::ext::do_action(&app, &slug, &approval.payload).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(ApiError(_, msg)) => Decision { status: "failed".into(), result: json!({ "failed": true, "error": msg, "note": "It failed. Say so in one line; do not retry unless asked." }) },
             },
             _ => match approve_config(&app, &approval).await {
                 Ok(v) => Decision { status: "approved".into(), result: v },

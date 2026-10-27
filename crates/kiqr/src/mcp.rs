@@ -123,6 +123,7 @@ async fn call(client: &Client, scope: &Scope, name: &str, mut args: Value) -> Va
             args["by"] = json!(by);
             answer(request(client, "POST", &format!("/api/projects/{}/abilities/{ability}", scope.project), Some(args)).await)
         }
+        CallSpec::Action { ext, tool: t } => approval_call(client, scope, "action", json!({ "ability": ext, "tool": t, "args": args })).await,
         CallSpec::Ext { ext, tool: t } => {
             args["by"] = json!(by);
             post_tool(client, &format!("/api/projects/{}/ext/{ext}/tools/{t}", scope.project), args).await

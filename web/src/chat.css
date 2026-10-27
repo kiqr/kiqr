@@ -182,6 +182,8 @@
 .ccard .kvs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .ccard .kvs li { display: flex; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; }
 .ccard .kvs code { font: 12px var(--mono); }
+.ccard .kvs .to.clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ccard .kvs .to { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ccard .kvs .from { color: var(--dim); text-decoration: line-through; }
 .ccard .kvs .to { color: var(--accent); font: 500 13px var(--mono); }
 .ccard .kvs .to::before { content: "\2192"; color: var(--dim); margin-right: 6px; }

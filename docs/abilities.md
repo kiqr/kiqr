@@ -50,6 +50,9 @@ projects/<slug>/connections/<id>/.env              the keys, never committed, mo
   ```
 
   Every action (a call whose role is not `read`) is logged on the account, `connections/<id>/activity.jsonl` (never committed): when, which ability, the role, the tool, the target and the link it returned. The cap counts today's (UTC) actions there. `GET /api/projects/{slug}/connections/{id}/activity` lists them, newest first, with today's count and the cap.
+
+  A tool that acts asks first. When Seemo calls one, the chat (or the task's chat) gets an `action` card: the tool's label, the ability, the account, what it acts on and the arguments; the call runs on the user's yes, through the same turn, cap and log as any call, and a refusal (a repeat, the cap) comes back as the card's outcome. A channel the user lets Seemo act through on its own (`asks_first: false`) runs at once and the card is the record, as for publishing. Reading runs at once. The user's own click (`POST …/ext/{ability}/tools/{tool}`) is the yes. A target may name the account's keys (`${GITHUB_REPO}`) but never a secret: tokens, passwords, keys, key files and what a sign-in keeps are left out.
+- A sign-in's token may also be typed (`typed: true` on its key): a personal access token instead of signing in, shown as a field.
 - A channel is an account with a `kind`. A new one can start with the keys of another account of the same ability (`same_as`: the same mail account to another address); the keys are copied, so changing one later does not change the other.
 - `kiqr accounts ls|add|set|default|rm|activity` (`ls` shows each account's service, the abilities that use it and a channel's publisher); routes under `/api/projects/{slug}/connections`, channels under `/channels` as before. Accounts and channels in the UI say which abilities use them ("Used by", with what each does on a channel), a channel with several publishers has a select for the one that publishes, each has its activity, and an ability's Accounts tab names the other abilities it shares them with. Seemo reads the log with `channel_activity` before it replies or posts. Every logged action emits `AccountActed`; a refused one emits `ActionRefused` (`why`: `duplicate` or `cap`).
 - Homes from before accounts are moved once at start: each channel keeps its id with a copy of its ability's keys, an ability a project had keys for becomes its first account (a channel when its kind needs no destination), the ability's keys leave the project's `.env`, and an ability switched off for the machine becomes switched off in every project. Installing an ability later does the same for keys a project's `.env` still holds.
@@ -179,7 +182,7 @@ Every URL's host must be in `hosts` (or come from a `${VAR}` host). Variables in
 
 ### Placeholders
 
-- `{{arg}}` and `{{arg|default}}`: the tool's arguments. A string that is exactly one placeholder takes the argument's own JSON value (numbers stay numbers).
+- `{{arg}}` and `{{arg|default}}`: the tool's arguments. A string that is exactly one placeholder takes the argument's own JSON value (numbers stay numbers). A default may hold placeholders of its own: `{{repo|${GITHUB_REPO}}}` (the argument, else the account's key), `{{title|{{tag}}}}`.
 - `${NAME}`: a variable from `.env`, filled by the daemon at call time. The model never sees values. `${NAME|default}` uses the default when the variable is not set; `${NAME|urlencode}` encodes the value for a place in a URL path.
 - `map`: replace an argument before templating: `map: { orientation: { landscape: 1536x1024, portrait: 1024x1536, "*": 1024x1024 } }`.
 

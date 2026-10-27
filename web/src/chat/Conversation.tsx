@@ -3,7 +3,7 @@
 // running). Used full-size on the Chats page and compact in the widget.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, Target, X } from "lucide-react";
+import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, Target, X, Zap } from "lucide-react";
 import { api, useAsync, useEvents, type Card, type Message, type Step, type Streaming, type Task } from "../api";
 import { Markdown } from "../markdown";
 import { ago } from "../pages/Project";
@@ -177,6 +177,28 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
       </div>
     );
   }
+  if (card.approval_kind === "action") {
+    const p = card.payload as Record<string, unknown>;
+    const url = card.result?.url as string | undefined;
+    return (
+      <div className={`ccard ${card.status}`} data-id={id}>
+        <p className="cap">
+          <Zap size={13} /> {card.status === "approved" ? (p.auto ? `Done by Seemo with ${String(p.ability_name ?? "")}` : `Done with ${String(p.ability_name ?? "")}`) : card.status === "failed" ? `Not done: ${String(card.result?.error ?? "")}` : `${String(p.ability_name ?? "Action")} ${card.status}`}
+        </p>
+        <p className="ttl">
+          {String(p.label ?? p.tool ?? "")}
+          {!!p.target && <span className="muted"> · {String(p.target)}</span>}
+        </p>
+        {url && (
+          <p className="sm">
+            <a href={url} target="_blank" rel="noreferrer">
+              {url} <ExternalLink size={11} />
+            </a>
+          </p>
+        )}
+      </div>
+    );
+  }
   if (card.approval_kind === "config") {
     const changes = (card.payload.changes as { key: string; from: unknown; to: unknown }[] | undefined) ?? [];
     return (
@@ -233,6 +255,7 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
   const isChannel = card.approval_kind === "channel";
   const isPlan = card.approval_kind === "plan";
   const isCampaign = card.approval_kind === "campaign";
+  const isAction = card.approval_kind === "action";
   const objectives = (p.objectives as { id: string; title: string; why?: string; kpi_label?: string; kpi?: string; target?: number | null; unit?: string; by?: string | null }[] | undefined) ?? [];
   const replaces = p.replaces as { version: number; period: string } | null | undefined;
   const next = ((p.next as string[]) ?? []).slice(0, 3);
@@ -240,15 +263,36 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
   const abilityText = String(p.text ?? "");
   const files = (p.files as { name: string; bytes: number }[] | undefined) ?? [];
   const scheduled = isPublish && typeof p.at === "string" && p.at;
-  const caption = isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a channel" : isPlan ? (replaces ? "Seemo proposes a revised plan" : "Seemo proposes a marketing plan") : isCampaign ? (p.update ? "Seemo proposes a campaign change" : "Seemo proposes a campaign") : "Seemo proposes a settings change";
-  const yes = isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isChannel ? "Add the channel" : isPlan ? "Approve the plan" : isCampaign ? (p.update ? "Apply" : "Add the campaign") : "Apply";
+  const caption = isAction ? `Seemo wants to use ${String(p.ability_name ?? "an ability")}` : isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a channel" : isPlan ? (replaces ? "Seemo proposes a revised plan" : "Seemo proposes a marketing plan") : isCampaign ? (p.update ? "Seemo proposes a campaign change" : "Seemo proposes a campaign") : "Seemo proposes a settings change";
+  const yes = isAction ? "Do it" : isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isChannel ? "Add the channel" : isPlan ? "Approve the plan" : isCampaign ? (p.update ? "Apply" : "Add the campaign") : "Apply";
   const no = "Decline";
   return (
     <div className="ccard pending">
       <p className="cap">
-        {isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : isPlan || isCampaign ? <Target size={13} /> : <Settings2 size={13} />} {caption}
+        {isAction ? <Zap size={13} /> : isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : isPlan || isCampaign ? <Target size={13} /> : <Settings2 size={13} />} {caption}
       </p>
-      {isPlan ? (
+      {isAction ? (
+        <>
+          <p className="ttl">{String(p.label ?? p.tool ?? "")}</p>
+          <p className="sched">
+            through <b>{String(p.account ?? "")}</b>
+            {!!p.target && <span className="muted"> · on {String(p.target)}</span>}
+          </p>
+          <ul className="kvs">
+            {((p.fields as { key: string; value: string }[]) ?? []).map((f) => (
+              <li key={f.key}>
+                <code>{f.key}</code> <span className={`to ${more ? "" : "clip"}`}>{f.value}</span>
+              </li>
+            ))}
+          </ul>
+          {((p.fields as { value: string }[]) ?? []).some((f) => f.value.length > 160) && !compact && (
+            <button className="btn t sm" onClick={() => setMore((m) => !m)}>
+              {more ? "Less" : "Read it all"}
+            </button>
+          )}
+          {!!p.description && <p className="muted sm">{String(p.description)}</p>}
+        </>
+      ) : isPlan ? (
         <>
           <p className="ttl">{String(p.period ?? "")}</p>
           {!!p.summary && <p className="sched">{String(p.summary)}</p>}
