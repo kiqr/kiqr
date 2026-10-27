@@ -1,0 +1,11 @@
+/* kiqr.cloud in the sidebar footer, styled like the Settings link beside it */
+.cloud-status { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; border-radius: var(--r-sm); color: var(--muted); text-decoration: none; background: none; border: 0; font: inherit; text-align: left; cursor: pointer; transition: color 150ms, background 150ms; }
+.cloud-status:hover { background: var(--panel-2); color: var(--fg); }
+.cloud-status svg { flex: none; }
+.cloud-status .txt { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.cloud-status .txt small { color: var(--dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-status.on svg { color: var(--accent); }
+.cloud-status .dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.cloud-status.signin { color: var(--accent); }
+.cloud-status.signin:hover { background: var(--accent-soft); color: var(--accent); }
+.cloud-status:disabled { opacity: .7; cursor: default; }

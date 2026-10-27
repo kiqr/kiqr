@@ -26,6 +26,7 @@ import { DEMO } from "./demo";
 import { api, useAsync, useEvents, type AssetType, type Project, type TypeCount } from "./api";
 import { assetIcon } from "./assetIcons";
 import { SeemoWidget } from "./SeemoWidget";
+import { CloudStatus } from "./CloudStatus";
 import { TODO_EVENTS } from "./pages/Todo";
 
 type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number; hot?: boolean };
@@ -151,6 +152,7 @@ export function Shell() {
           </nav>
         )}
         <div className="side-foot">
+          <CloudStatus />
           <NavLink to="/settings">
             <Settings size={16} /> Settings
           </NavLink>
