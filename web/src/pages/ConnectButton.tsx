@@ -81,6 +81,7 @@ export function ConnectButton({ slug, ability, connect, auth, account, fresh, la
           </span>
         )}
       </div>
+      {connect.via_cloud && !waiting && <p className="muted sm ab-cloud">Signs in through kiqr.cloud, which finishes the sign-in for this KIQR and keeps nothing.</p>}
       {waiting === "paste" && <p className="muted sm">Approve in the tab that opened. It shows {returned.join(" and ") || "the key"} once, because it only sends them back to KIQR over https: paste them into this account below.</p>}
       {error && <p className="err sm">{error}</p>}
     </div>

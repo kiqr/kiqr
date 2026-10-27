@@ -50,6 +50,25 @@ pub struct AuthKey {
     /// the UI shows a list, and anything else is refused.
     #[serde(alias = "enum", skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// Values read from the service once the account is signed in (the
+    /// properties it can see): the UI offers them as a list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Choices>,
+}
+
+/// Where a key's choices come from: a request through the account, the list
+/// in its answer, and in each item the value and what to call it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Choices {
+    pub request: HttpRequest,
+    /// A pointer to the items; `*` steps into every element of an array.
+    pub list: String,
+    /// In each item: the value saved, and the label shown (the value when empty).
+    pub value: String,
+    pub label: String,
+    /// Taken off the front of the value (`properties/` of `properties/123`).
+    pub strip: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -309,8 +328,10 @@ pub struct Manifest {
     /// day, across every ability of the service; the lowest declared wins.
     pub daily_cap: Option<u32>,
     pub auth: Vec<AuthKey>,
-    /// How the keys can be got with one button instead of typed in (`docs/abilities.md`, "Signing in").
-    pub connect: Option<crate::connect::Connect>,
+    /// How the keys can be got with one button instead of typed in (`docs/abilities.md`,
+    /// "Signing in"): one block, or a list of ways (the first with a button is the button).
+    #[serde(deserialize_with = "crate::connect::one_or_many", skip_serializing_if = "Vec::is_empty")]
+    pub connect: Vec<crate::connect::Connect>,
     pub hosts: Vec<String>,
     /// The mail server, for `transport: smtp`.
     pub smtp: Option<SmtpSpec>,
@@ -358,7 +379,7 @@ impl Default for Manifest {
             exclusive: false,
             daily_cap: None,
             auth: vec![],
-            connect: None,
+            connect: vec![],
             hosts: vec![],
             smtp: None,
             provides: Default::default(),
@@ -698,8 +719,15 @@ pub fn validate(m: &Manifest) -> Result<()> {
             bail!("hosts holds '{h}', which is not a host name");
         }
     }
-    if let Some(c) = &m.connect {
+    for c in &m.connect {
         crate::connect::validate(m, c)?;
+    }
+    for a in &m.auth {
+        if let Some(ch) = &a.choices {
+            if ch.request.url.trim().is_empty() || ch.list.trim().is_empty() || ch.value.trim().is_empty() {
+                bail!("the choices of {} need a request, a list and a value", a.env);
+            }
+        }
     }
     let mut names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
     names.sort_unstable();
@@ -999,9 +1027,37 @@ pub fn pointer<'a>(v: &'a Value, p: &str) -> Option<&'a Value> {
     v.pointer(&ptr)
 }
 
-/// Does the manifest's auth say the connection has what it needs?
+/// Does the manifest's auth say the connection has what it needs? The keys
+/// it requires, and, when it offers ways to sign in, one of them set up (else
+/// the first's key is named).
 pub fn missing_keys(m: &Manifest, has: impl Fn(&str) -> bool) -> Vec<String> {
-    m.auth.iter().filter(|a| !a.optional && !has(&a.env)).map(|a| a.env.clone()).collect()
+    let mut out: Vec<String> = m.auth.iter().filter(|a| !a.optional && !has(&a.env)).map(|a| a.env.clone()).collect();
+    if !m.connect.is_empty() && !m.connect.iter().any(|c| c.satisfied(&has)) {
+        let proof = m.connect[0].proof().to_string();
+        if !proof.is_empty() && !out.contains(&proof) {
+            out.push(proof);
+        }
+    }
+    out
+}
+
+/// Every value at a pointer whose segments may be `*` (each element of an
+/// array): `/accountSummaries/*/propertySummaries/*`.
+pub fn pointer_all<'a>(v: &'a Value, p: &str) -> Vec<&'a Value> {
+    let mut at = vec![v];
+    for seg in p.trim().trim_start_matches('/').split('/').filter(|s| !s.is_empty()) {
+        at = at
+            .into_iter()
+            .flat_map(|x| -> Vec<&Value> {
+                if seg == "*" {
+                    x.as_array().map(|a| a.iter().collect()).unwrap_or_default()
+                } else {
+                    x.pointer(&format!("/{seg}")).into_iter().collect()
+                }
+            })
+            .collect();
+    }
+    at
 }
 
 /// Frontmatter of a SKILL.md; the folder name stands in for a missing name.

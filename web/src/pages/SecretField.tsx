@@ -28,8 +28,9 @@ export function Hint({ text }: { text: string }) {
   );
 }
 
-export function SecretField({ name, label, help, placeholder, set, optional, options, slug, account, onSaved }: { name: string; label: string; help?: string; placeholder?: string; set: boolean | string | null; optional?: boolean; options?: string[]; slug?: string; account?: string; onSaved?: () => void }) {
+export function SecretField({ name, label, help, placeholder, set, optional, options, choices, slug, account, onSaved }: { name: string; label: string; help?: string; placeholder?: string; set: boolean | string | null; optional?: boolean; options?: string[]; /** Read its values through the account (a signed-in service's list). */ choices?: boolean; slug?: string; account?: string; onSaved?: () => void }) {
   const [value, setValue] = useState("");
+  const [read, setRead] = useState<{ value: string; label: string }[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(!!set);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +39,12 @@ export function SecretField({ name, label, help, placeholder, set, optional, opt
     setDone(!!set);
     setEditing(!set);
   }, [set]);
+  // A list read through the account: shown as a select; typing stays possible when it cannot be read.
+  useEffect(() => {
+    if (!choices || !slug || !account || !editing) return;
+    api.accountChoices(slug, account, name).then((r) => setRead(r.choices)).catch(() => setRead([]));
+  }, [choices, slug, account, name, editing]);
+  const listed = read && read.length > 0 ? read : null;
   const save = async () => {
     setBusy(true);
     setError(null);
@@ -62,7 +69,7 @@ export function SecretField({ name, label, help, placeholder, set, optional, opt
       </span>
       {editing ? (
         <span className="in">
-          <FieldInput mono secret options={options} placeholder={done ? "new value" : placeholder || "paste it here"} value={value} onChange={setValue} onEnter={() => value.trim() && void save()} ariaLabel={label} />
+          <FieldInput mono secret={!listed} options={listed ? listed.map((c) => c.value) : options} labels={listed ? Object.fromEntries(listed.map((c) => [c.value, c.label])) : undefined} placeholder={done ? "new value" : placeholder || "paste it here"} value={value} onChange={setValue} onEnter={() => value.trim() && void save()} ariaLabel={label} />
           <button className="btn g sm" disabled={busy || !value.trim()} onClick={() => void save()}>
             {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Save
           </button>

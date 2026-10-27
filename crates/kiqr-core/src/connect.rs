@@ -9,6 +9,15 @@
 //!   token URL, and the access token is refreshed before it runs out.
 //! - `service_account`: no browser. A key file on this machine signs a JWT
 //!   that the token URL exchanges for an access token, minted at call time.
+//! - `cloud`: oauth2 for a provider whose app needs a client secret (Google,
+//!   LinkedIn). kiqr.cloud holds the secret: it builds the consent URL, the
+//!   provider comes back through its relay, and it exchanges and refreshes
+//!   for this KIQR without keeping a token. The manifest names the provider
+//!   and the scopes; URLs and client ids live on kiqr.cloud.
+//!
+//! A manifest may offer several (`connect:` as a list): the first with a
+//! button is the button, the others are alternatives (a key file instead of
+//! signing in). An account is ready with any one of them set up.
 //!
 //! The values land in the same `.env` variables the manifest's `auth` names,
 //! so readiness, `${…}` and hosts work as for typed keys. This module is
@@ -29,6 +38,7 @@ pub enum Flow {
     Redirect,
     Oauth2,
     ServiceAccount,
+    Cloud,
 }
 
 /// What the service accepts as a callback. `https`: only an https one (a
@@ -85,6 +95,8 @@ pub struct Connect {
     pub refresh_env: String,
     /// service_account: the variable that holds the path of the key file.
     pub key_file: String,
+    /// cloud: the provider kiqr.cloud signs in to (`google`).
+    pub provider: String,
 }
 
 impl Connect {
@@ -96,7 +108,7 @@ impl Connect {
     /// Every variable this flow writes into `.env`.
     pub fn writes(&self) -> Vec<String> {
         let mut v: Vec<String> = self.returns.keys().cloned().collect();
-        if self.flow == Flow::Oauth2 {
+        if self.stores_token() {
             v.push(self.token_env.clone());
             if !self.refresh_env.is_empty() {
                 v.push(self.refresh_env.clone());
@@ -107,22 +119,82 @@ impl Connect {
         v.dedup();
         v
     }
+
+    /// The flow keeps a token (and its refresh token) on the account.
+    pub fn stores_token(&self) -> bool {
+        matches!(self.flow, Flow::Oauth2 | Flow::Cloud)
+    }
+
+    /// Opens a page in the browser (as opposed to a key file on this machine).
+    pub fn has_button(&self) -> bool {
+        self.flow != Flow::ServiceAccount
+    }
+
+    /// Is this way of signing in set up on an account, given what it holds?
+    pub fn satisfied(&self, has: &impl Fn(&str) -> bool) -> bool {
+        match self.flow {
+            Flow::Redirect => self.returns.keys().all(|k| has(k)),
+            Flow::Oauth2 | Flow::Cloud => has(&self.token_env) || (!self.refresh_env.is_empty() && has(&self.refresh_env)),
+            Flow::ServiceAccount => has(&self.key_file),
+        }
+    }
+
+    /// The variable to name when it is not: what the user is missing.
+    pub fn proof(&self) -> &str {
+        match self.flow {
+            Flow::ServiceAccount => &self.key_file,
+            Flow::Redirect => self.returns.keys().next().map(String::as_str).unwrap_or(""),
+            _ => &self.token_env,
+        }
+    }
+}
+
+/// The way a call signs in, of those a manifest offers: the first set up on
+/// the account, else the first (whose error then says what is missing).
+pub fn pick<'a>(all: &'a [Connect], has: &impl Fn(&str) -> bool) -> Option<&'a Connect> {
+    all.iter().find(|c| c.satisfied(has)).or_else(|| all.first())
+}
+
+/// One `connect` block or a list of them.
+pub fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<Connect>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Box<Connect>),
+        Many(Vec<Connect>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(d)? {
+        None => vec![],
+        Some(OneOrMany::One(c)) => vec![*c],
+        Some(OneOrMany::Many(v)) => v,
+    })
 }
 
 /// What the UI needs to offer the button: the label, the flow, what to ask
-/// first, and what the user pastes when the service shows it instead of
-/// sending it back.
-pub fn view(c: Option<&Connect>) -> Value {
-    match c {
-        Some(c) if c.flow != Flow::ServiceAccount => json!({
+/// first, what the user pastes when the service shows it instead of sending
+/// it back, and whether it goes through kiqr.cloud.
+pub fn view(all: &[Connect]) -> Value {
+    match all.iter().find(|c| c.has_button()) {
+        Some(c) => json!({
             "label": if c.label.is_empty() { "Connect".to_string() } else { c.label.clone() },
             "flow": c.flow,
             "needs": c.needs,
             "returns": c.returns.keys().collect::<Vec<_>>(),
             "https_only": c.callback == Callback::Https,
+            "via_cloud": c.flow == Flow::Cloud,
+            "provider": (!c.provider.is_empty()).then(|| c.provider.clone()),
         }),
-        _ => Value::Null,
+        None => Value::Null,
     }
+}
+
+/// The keys a sign-in writes and a person never types (a token, its refresh
+/// token, its expiry): left out of the fields the UI shows.
+pub fn written_tokens(all: &[Connect]) -> Vec<String> {
+    let mut v: Vec<String> = all.iter().filter(|c| c.stores_token()).flat_map(|c| [c.token_env.clone(), c.refresh_env.clone(), c.expires_env()]).filter(|s| !s.is_empty()).collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 /// Checked with the rest of the manifest.
@@ -181,10 +253,28 @@ pub fn validate(m: &Manifest, c: &Connect) -> Result<()> {
             if !declared(&c.key_file) {
                 bail!("a service_account connect reads its key file from key_file, which auth must declare");
             }
-            if !valid_env_name(&c.token_env) || declared(&c.token_env) {
-                bail!("a service_account connect needs a token_env that auth does not declare (the token is minted, not stored)");
+            // Minted, never stored: auth may name it only as optional (another way of signing in keeps it).
+            if !valid_env_name(&c.token_env) || m.auth.iter().any(|a| a.env == c.token_env && !a.optional) {
+                bail!("a service_account connect needs a token_env that auth does not require (the token is minted, not stored)");
             }
             check_host("token_url", &c.token_url)?;
+        }
+        Flow::Cloud => {
+            if !crate::tools::valid_ext_id(&c.provider) {
+                bail!("a cloud connect names its provider (`google`): lowercase letters, digits and dashes");
+            }
+            if c.scopes.is_empty() {
+                bail!("a cloud connect needs the scopes it asks for");
+            }
+            if !declared(&c.token_env) {
+                bail!("a cloud connect keeps its token in token_env, which auth must declare");
+            }
+            if !c.refresh_env.is_empty() && !valid_env_name(&c.refresh_env) {
+                bail!("refresh_env '{}' is not a variable name", c.refresh_env);
+            }
+            if !c.authorize_url.is_empty() || !c.token_url.is_empty() || !c.client_id.is_empty() || !c.client_secret.is_empty() {
+                bail!("a cloud connect leaves the URLs and the client to kiqr.cloud");
+            }
         }
     }
     Ok(())
@@ -247,6 +337,7 @@ pub fn start_url(c: &Connect, env: &impl Fn(&str) -> Option<String>, app_id: &st
             Ok(u.to_string())
         }
         Flow::ServiceAccount => bail!("a service account signs in without a browser"),
+        Flow::Cloud => bail!("kiqr.cloud builds this sign-in's page"),
     }
 }
 
@@ -412,7 +503,7 @@ connect:
     #[test]
     fn redirect_round_trip() {
         let m = parse_manifest(WP).unwrap();
-        let c = m.connect.clone().unwrap();
+        let c = m.connect[0].clone();
         let env = |k: &str| (k == "SITE").then(|| "https://blog.test".to_string());
         let u = start_url(&c, &env, "abc", "st", Some("https://kiqr.local/api/connect/callback"), "v").unwrap();
         assert!(u.starts_with("https://blog.test/authorize?app_name=KIQR&app_id=abc&success_url="));
@@ -429,7 +520,7 @@ connect:
 
     #[test]
     fn site_must_be_set_first() {
-        let c = parse_manifest(WP).unwrap().connect.unwrap();
+        let c = parse_manifest(WP).unwrap().connect[0].clone();
         assert!(start_url(&c, &|_| None, "a", "s", None, "v").unwrap_err().to_string().contains("${SITE}"));
     }
 
@@ -463,7 +554,7 @@ connect:
 
     #[test]
     fn oauth2() {
-        let c = parse_manifest(OAUTH).unwrap().connect.unwrap();
+        let c = parse_manifest(OAUTH).unwrap().connect[0].clone();
         let env = |k: &str| (k == "SVC_CLIENT_ID").then(|| "cid".to_string());
         let u = start_url(&c, &env, "", "st", Some("http://127.0.0.1:7878/api/connect/callback"), "verifier").unwrap();
         assert!(u.contains("client_id=cid") && u.contains("state=st") && u.contains("scope=read+write") && u.contains("code_challenge_method=S256") && u.contains("access_type=offline"));
@@ -500,12 +591,65 @@ connect:
   key_file: KEY_FILE
   token_env: READER_TOKEN
 "#;
-        let c = parse_manifest(sa).unwrap().connect.unwrap();
+        let c = parse_manifest(sa).unwrap().connect[0].clone();
         let key = ServiceKey { client_email: "bot@x.test".into(), private_key_pem: String::new() };
         let unsigned = jwt_unsigned(&c, &key, 10);
         let claims: Value = serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(unsigned.split('.').nth(1).unwrap()).unwrap()).unwrap();
         assert_eq!(claims["aud"], "https://auth.test/token");
         assert_eq!(claims["exp"], 3610);
         assert!(parse_manifest(&sa.replace("token_env: READER_TOKEN", "token_env: KEY_FILE")).is_err());
+    }
+
+    /// Sign in through kiqr.cloud, or use a key file: two ways, one account.
+    const BOTH: &str = r#"
+id: numbers
+name: Read numbers
+transport: http
+auth:
+  - { env: PROP, label: Property }
+  - { env: NUM_TOKEN, label: Token, optional: true }
+  - { env: KEY_FILE, label: Key file, optional: true }
+hosts: [api.test, auth.test]
+connect:
+  - { label: Connect with the service, flow: cloud, provider: svc, scopes: [read], token_env: NUM_TOKEN, refresh_env: NUM_REFRESH }
+  - { flow: service_account, token_url: https://auth.test/token, scopes: [read], key_file: KEY_FILE, token_env: NUM_TOKEN }
+"#;
+
+    #[test]
+    fn cloud_or_a_key_file() {
+        let m = parse_manifest(BOTH).unwrap();
+        assert_eq!(m.connect.len(), 2);
+        let v = view(&m.connect);
+        assert_eq!((v["label"].as_str(), v["via_cloud"].as_bool(), v["provider"].as_str()), (Some("Connect with the service"), Some(true), Some("svc")));
+        assert_eq!(written_tokens(&m.connect), vec!["NUM_REFRESH", "NUM_TOKEN", "NUM_TOKEN_EXPIRES_AT"]);
+        let has = |set: &'static [&'static str]| move |k: &str| set.contains(&k);
+        // Nothing yet: the property and the first way's token are missing.
+        assert_eq!(crate::extensions::missing_keys(&m, has(&[])), vec!["PROP", "NUM_TOKEN"]);
+        // Either way is enough.
+        assert!(crate::extensions::missing_keys(&m, has(&["PROP", "NUM_REFRESH"])).is_empty());
+        assert!(crate::extensions::missing_keys(&m, has(&["PROP", "KEY_FILE"])).is_empty());
+        assert_eq!(pick(&m.connect, &has(&["KEY_FILE"])).unwrap().flow, Flow::ServiceAccount);
+        assert_eq!(pick(&m.connect, &has(&["NUM_TOKEN", "KEY_FILE"])).unwrap().flow, Flow::Cloud);
+        assert_eq!(pick(&m.connect, &has(&[])).unwrap().flow, Flow::Cloud);
+        // The cloud keeps the URLs and the client.
+        assert!(parse_manifest(&BOTH.replace("provider: svc,", "provider: svc, token_url: https://auth.test/token,")).is_err());
+        assert!(parse_manifest(&BOTH.replace("provider: svc, scopes: [read],", "provider: svc, scopes: [],")).is_err());
+        // A key file's minted token may not be a required key.
+        assert!(parse_manifest(&BOTH.replace("{ env: NUM_TOKEN, label: Token, optional: true }", "{ env: NUM_TOKEN, label: Token }")).is_err());
+        // One block still reads as one way.
+        assert_eq!(parse_manifest(WP).unwrap().connect.len(), 1);
+    }
+
+    #[test]
+    fn choices_from_an_answer() {
+        let answer = json!({ "accountSummaries": [
+            { "displayName": "Acme", "propertySummaries": [{ "property": "properties/1", "displayName": "acme.com" }, { "property": "properties/2", "displayName": "shop" }] },
+            { "displayName": "Other", "propertySummaries": [{ "property": "properties/9", "displayName": "other.org" }] },
+            { "displayName": "Empty" }
+        ] });
+        let items = crate::extensions::pointer_all(&answer, "/accountSummaries/*/propertySummaries/*");
+        assert_eq!(items.iter().filter_map(|i| i["property"].as_str()).collect::<Vec<_>>(), vec!["properties/1", "properties/2", "properties/9"]);
+        assert_eq!(crate::extensions::pointer_all(&answer, "/accountSummaries/0/displayName")[0], "Acme");
+        assert!(crate::extensions::pointer_all(&answer, "/nothing/*").is_empty());
     }
 }

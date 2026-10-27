@@ -85,17 +85,20 @@ export function ActivityLog({ slug, a }: { slug: string; a: Account }) {
  * missing (pasting what the service showed).
  */
 export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Account; onChange: () => void; only?: "missing" }) {
-  const [open, setOpen] = useState(!a.connect || only === "missing");
+  // Signed in (a token is kept) but something is still to choose (the property): open on that.
+  const signedIn = a.signed_in ?? a.auth.some((k) => k.written && k.set);
+  const [open, setOpen] = useState(!a.connect || only === "missing" || (signedIn && a.missing.length > 0));
   const [more, setMore] = useState(false);
-  const shown = a.auth.filter((k) => (only === "missing" ? a.missing.includes(k.env) : more || !k.optional || k.set));
-  const hidden = only !== "missing" && !more && a.auth.some((k) => k.optional && !k.set);
+  const typed = a.auth.filter((k) => !k.written);
+  const shown = typed.filter((k) => (only === "missing" ? a.missing.includes(k.env) : more || !k.optional || k.set));
+  const hidden = only !== "missing" && !more && typed.some((k) => k.optional && !k.set);
   return (
     <div className="acc-keys">
       {a.connect && only !== "missing" && <ConnectButton slug={slug} ability={a.ability} account={a.id} connect={a.connect} auth={a.auth} label={a.ready ? "Connect again" : a.connect.label} onDone={onChange} />}
       {open ? (
         <div className="set-keys">
           {shown.map((k) => (
-            <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} placeholder={k.placeholder} set={k.set} optional={k.optional} options={k.options} slug={slug} account={a.id} onSaved={onChange} />
+            <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} placeholder={k.placeholder} set={k.set} optional={k.optional} options={k.options} choices={k.choices && signedIn} slug={slug} account={a.id} onSaved={onChange} />
           ))}
         </div>
       ) : null}

@@ -417,7 +417,7 @@ pub(crate) async fn known_secret(app: &App, name: &str) -> bool {
     if crate::api::SECRETS.contains(&name) {
         return true;
     }
-    let uses = |m: &Manifest| m.auth.iter().any(|a| a.env == name) || m.connect.as_ref().is_some_and(|c| c.writes().iter().any(|w| w == name)) || m.env.contains(&name.to_string()) || m.tools.iter().any(|t| t.provide.command.as_ref().is_some_and(|c| c.env.contains(&name.to_string())));
+    let uses = |m: &Manifest| m.auth.iter().any(|a| a.env == name) || m.connect.iter().any(|c| c.writes().iter().any(|w| w == name)) || m.env.contains(&name.to_string()) || m.tools.iter().any(|t| t.provide.command.as_ref().is_some_and(|c| c.env.contains(&name.to_string())));
     let reg = app.registry.read().await;
     reg.entries.iter().filter_map(|e| e.manifest.as_ref()).any(uses) || extensions::shipped_all().iter().any(|(_, m)| uses(m))
 }
@@ -858,6 +858,34 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         app.bus.emit(Some(slug), EventKind::AccountActed { connection: c.id.clone(), ability: a.ability, role: a.role, target: a.target, url: a.url });
     }
     Ok(out)
+}
+
+/// The values a key can take, read through the account once it is signed in
+/// (a key's `choices`: the properties it can see), as `{value, label}`.
+pub(crate) async fn key_choices(app: &App, slug: &str, conn: &Connection, name: &str) -> Result<Vec<Value>> {
+    let (m, ch) = {
+        let reg = app.registry.read().await;
+        let found = reg.of_service(slug, conn.service()).into_iter().find_map(|m| m.auth.iter().find(|a| a.env == name).and_then(|a| a.choices.clone()).map(|ch| (m.clone(), ch)));
+        found.ok_or_else(|| anyhow!("{name} has no list to choose from"))?
+    };
+    if m.transport != Transport::Http {
+        bail!("{} reads choices over http only", m.name);
+    }
+    let stored = kiqr_core::connections::env_for(app.store.home(), slug, Some(conn), &m);
+    let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, &m, Some(conn)).await?);
+    let env = move |k: &str| minted.get(k).cloned().or_else(|| stored(k));
+    let out = http_exec(&m, &ch.request, &json!({}), &ResultMap::default(), &env, &Files::default()).await?;
+    let mut seen = std::collections::BTreeSet::new();
+    Ok(extensions::pointer_all(&out.json, &ch.list)
+        .into_iter()
+        .filter_map(|item| {
+            let raw = extensions::pointer(item, &ch.value)?;
+            let raw = raw.as_str().map(str::to_string).unwrap_or_else(|| raw.to_string());
+            let value = raw.strip_prefix(ch.strip.as_str()).unwrap_or(&raw).to_string();
+            let label = (!ch.label.is_empty()).then(|| extensions::pointer(item, &ch.label).and_then(|l| l.as_str()).map(str::to_string)).flatten().unwrap_or_else(|| value.clone());
+            seen.insert(value.clone()).then(|| json!({ "value": value, "label": label }))
+        })
+        .collect())
 }
 
 /// Accounts being driven right now, by `slug/id`.

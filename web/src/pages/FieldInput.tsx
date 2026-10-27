@@ -6,6 +6,8 @@ type Props = {
   value: string;
   onChange: (v: string) => void;
   options?: string[];
+  /** What to call each option, when not the value itself (a property's name). */
+  labels?: Record<string, string>;
   placeholder?: string;
   /** Secret text (a password, a key): masked. Ignored for a choice. */
   secret?: boolean;
@@ -16,7 +18,7 @@ type Props = {
   ariaLabel?: string;
 };
 
-export function FieldInput({ value, onChange, options, placeholder, secret, mono, optional, onEnter, ariaLabel }: Props) {
+export function FieldInput({ value, onChange, options, labels, placeholder, secret, mono, optional, onEnter, ariaLabel }: Props) {
   if (options && options.length > 0)
     return (
       <select className={`input ${mono ? "mono" : ""}`} value={value} aria-label={ariaLabel} onChange={(e) => onChange(e.target.value)}>
@@ -25,7 +27,7 @@ export function FieldInput({ value, onChange, options, placeholder, secret, mono
         </option>
         {options.map((o) => (
           <option key={o} value={o}>
-            {o}
+            {labels?.[o] ? `${labels[o]} (${o})` : o}
           </option>
         ))}
       </select>

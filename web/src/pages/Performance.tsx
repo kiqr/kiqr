@@ -107,7 +107,7 @@ export function PerformancePage() {
                     return (
                       <div className="pcard perf-top" key={k}>
                         <p className="cap">
-                          {dim === "query" ? "Top queries" : dim === "page" ? "Top pages" : dim === "event" ? "Key events" : dim === "channel" ? "By channel" : dim} · {metric.replace("_", " ")}
+                          {dim === "query" ? "Top queries" : dim === "page" ? "Top pages" : dim === "event" ? "Key events" : dim === "channel" ? "By channel" : dim === "source" ? "Sources" : dim} · {metric.replace("_", " ")}
                         </p>
                         <table>
                           <tbody>

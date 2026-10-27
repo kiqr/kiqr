@@ -138,7 +138,7 @@ A connection can offer one button instead of typed keys. `connect` names a gener
 ```yaml
 connect:
   label: Connect with WordPress
-  flow: redirect                 # redirect | oauth2 | service_account
+  flow: redirect                 # redirect | oauth2 | service_account | cloud
   needs: [WP_SITE]               # asked first; the page lives on it
   url: "${WP_SITE}/wp-admin/authorize-application.php?app_name=KIQR&app_id={{app_id}}"
   callback_params: [success_url, reject_url]   # where KIQR's callback URL goes
@@ -149,7 +149,31 @@ connect:
 
 - **redirect**: the browser opens `url`; the service comes back to KIQR's callback (`/api/connect/callback`, under the address the UI runs on) with the values as query parameters, mapped by `returns`. `callback: https` means the service refuses a plain-http callback. When KIQR is signed in to kiqr.cloud, the callback is a single-use relay there (`https://kiqr.cloud/r/<id>`) that sends the browser straight on to KIQR, and nothing is pasted; otherwise KIQR opens the page without a callback and the user pastes what it shows.
 - **oauth2**: authorization code with PKCE. `authorize_url`, `token_url`, `client_id` (and `client_secret` when the provider wants one, both usually `${VAR}`), `scopes`, extra `params`. The access token goes to `token_env` (declared in `auth`), the refresh token to `refresh_env`, the expiry to `<token_env>_EXPIRES_AT`; KIQR refreshes before a call when it is about to run out.
-- **service_account**: no browser. `key_file` names the variable holding the path of a JSON key (`client_email`, `private_key`); KIQR signs a JWT for `scopes`, exchanges it at `token_url`, and offers the token to requests as `${<token_env>}` (not declared in `auth`, never stored), minted again when it runs out.
+- **service_account**: no browser. `key_file` names the variable holding the path of a JSON key (`client_email`, `private_key`); KIQR signs a JWT for `scopes`, exchanges it at `token_url`, and offers the token to requests as `${<token_env>}` (never stored; `auth` may name it only as optional), minted again when it runs out.
+- **cloud**: oauth2 for a provider whose app needs a client secret (Google first). kiqr.cloud holds the app, so the manifest names only the `provider` and the `scopes` (no URLs, no client): kiqr.cloud builds the consent page, the provider comes back through its relay to this KIQR's callback, and kiqr.cloud exchanges the code (with KIQR's PKCE verifier) and refreshes the token with the secret added, keeping nothing. The token lands in `token_env` (declared in `auth`), the refresh token in `refresh_env`, as for oauth2. It needs KIQR signed in to kiqr.cloud (Settings → kiqr.cloud); the button says it goes through kiqr.cloud.
+
+`connect` may be a list of ways to sign in, like typed keys beside a button: the first with a button is the button, the rest are alternatives (a service account's key file instead of signing in). An account is ready with its required keys and any one way set up; a call uses the one set up, the first when several are. Keys a sign-in keeps (a token) are never shown as fields. Google Analytics in the marketplace is the worked example:
+
+```yaml
+auth:
+  - { env: GA4_PROPERTY_ID, label: GA4 property, choices: { … } }
+  - { env: GA4_TOKEN, label: Google sign-in, optional: true }
+  - { env: GOOGLE_SERVICE_ACCOUNT_FILE, label: Service account key file, optional: true }
+connect:
+  - { label: Connect with Google, flow: cloud, provider: google, scopes: [https://www.googleapis.com/auth/analytics.readonly], token_env: GA4_TOKEN, refresh_env: GA4_REFRESH_TOKEN }
+  - { flow: service_account, key_file: GOOGLE_SERVICE_ACCOUNT_FILE, token_url: https://oauth2.googleapis.com/token, scopes: [https://www.googleapis.com/auth/analytics.readonly], token_env: GA4_TOKEN }
+```
+
+A key may read its values from the service once the account is signed in (`choices`), so the user picks instead of typing (the analytics property): a request through the account, a pointer to the items (`*` steps into every element of an array), and in each item the value, its label and a prefix to strip. The UI shows a list; typing stays possible. `GET /api/projects/{slug}/connections/{id}/choices/{name}`.
+
+```yaml
+choices:
+  request: { method: GET, url: "https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200", headers: { Authorization: "Bearer ${GA4_TOKEN}" } }
+  list: /accountSummaries/*/propertySummaries/*
+  value: /property
+  label: /displayName
+  strip: "properties/"
+```
 
 Every URL's host must be in `hosts` (or come from a `${VAR}` host). Variables in `needs` and `returns` must be declared in `auth`.
 

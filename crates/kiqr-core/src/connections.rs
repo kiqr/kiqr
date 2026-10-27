@@ -267,7 +267,7 @@ pub fn env_file(home: &Home, slug: &str, id: &str) -> PathBuf {
 /// sign-in writes, what its program or commands are given.
 pub fn key_names(m: &Manifest) -> Vec<String> {
     let mut v: Vec<String> = m.auth.iter().map(|a| a.env.clone()).collect();
-    if let Some(c) = &m.connect {
+    for c in &m.connect {
         v.extend(c.writes());
         if !c.key_file.is_empty() {
             v.push(c.key_file.clone());

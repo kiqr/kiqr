@@ -27,6 +27,7 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/connections/{id}/secrets/{name}", put(put_secret))
         .route("/api/projects/{slug}/connections/{id}/default", post(make_default))
         .route("/api/projects/{slug}/connections/{id}/activity", get(activity))
+        .route("/api/projects/{slug}/connections/{id}/choices/{name}", get(choices))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -91,8 +92,12 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
             v["connection_name"] = json!(m.name);
             v["ready"] = json!(ready(app, slug, c, m));
             v["missing"] = json!(c.missing(app.store.home(), slug, m));
-            v["auth"] = json!(m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": keys.contains_key(&a.env) })).collect::<Vec<_>>());
-            v["connect"] = kiqr_core::connect::view(m.connect.as_ref());
+            // `written`: a sign-in keeps it (a token), never typed; `choices`: a list read through the account.
+            let written = kiqr_core::connect::written_tokens(&m.connect);
+            // Signed in one way or another (a token kept, a key file set): what a key's `choices` are read with.
+            v["signed_in"] = json!(m.connect.iter().any(|w| w.satisfied(&|k: &str| keys.contains_key(k))));
+            v["auth"] = json!(m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": keys.contains_key(&a.env), "written": written.contains(&a.env), "choices": a.choices.is_some() })).collect::<Vec<_>>());
+            v["connect"] = kiqr_core::connect::view(&m.connect);
             if let Some(k) = m.channels.iter().find(|k| k.kind == c.kind) {
                 v["kind_label"] = json!(k.label);
                 v["kind_name"] = json!(k.display_name());
@@ -285,6 +290,13 @@ struct SecretBody {
 async fn put_secret(State(app): State<App>, Path((slug, id, name)): Path<(String, String, String)>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
     let set = crate::ext::set_connection_secret(&app, &slug, &id, &name, &b.value).await?;
     Ok(Json(json!({ "name": name, "set": set, "connection": id })))
+}
+
+/// What a key can be set to, read through the account (a key's `choices`).
+async fn choices(State(app): State<App>, Path((slug, id, name)): Path<(String, String, String)>) -> ApiResult<Value> {
+    let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let list = crate::ext::key_choices(&app, &slug, &c, &name).await.map_err(|e| bad(format!("{e:#}")))?;
+    Ok(Json(json!({ "name": name, "choices": list })))
 }
 
 #[derive(Deserialize, Default)]

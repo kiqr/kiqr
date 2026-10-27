@@ -96,7 +96,7 @@ pub async fn view(app: &App, slug: &str, only: Option<&str>) -> Result<Value, Ap
                 "series": series.iter().map(|(d, v)| json!({ "date": d, "value": v })).collect::<Vec<_>>(),
             }));
         }
-        for (metric, dim) in [("clicks", "query"), ("clicks", "page"), ("impressions", "query"), ("key_events", "event"), ("sessions", "channel"), ("published", "channel")] {
+        for (metric, dim) in [("clicks", "query"), ("clicks", "page"), ("impressions", "query"), ("sessions", "page"), ("key_events", "page"), ("key_events", "event"), ("sessions", "channel"), ("sessions", "source"), ("published", "channel")] {
             let t = snap.top(metric, dim, 25);
             if !t.is_empty() {
                 tops.insert(format!("{id}.{metric}.{dim}"), json!(t.iter().map(|(k, v)| json!({ "key": k, "value": v })).collect::<Vec<_>>()));

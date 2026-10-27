@@ -254,7 +254,7 @@ export type AccountSummary = { id: string; label: string; default: boolean; chan
 /** A kind of channel an ability publishes to, and what a channel of it needs. */
 export type KindInfo = { kind: string; label: string; name: string; destination: Record<string, unknown> };
 /** How an ability signs in with one button (its manifest's `connect`): what to ask first, what comes back. */
-export type ConnectInfo = { label: string; flow: "redirect" | "oauth2"; needs: string[]; returns: string[]; https_only: boolean };
+export type ConnectInfo = { label: string; flow: "redirect" | "oauth2" | "cloud"; needs: string[]; returns: string[]; https_only: boolean; /** kiqr.cloud finishes this sign-in (it holds the provider's app). */ via_cloud?: boolean; provider?: string | null };
 /** One instructions file of an ability, and where its text is overridden. */
 export type InstructionFile = { file: string; label: string; project_copy: boolean; machine_copy: boolean };
 /** One ability: what Seemo can do. Core ones are code; the rest are folders with instructions (SKILL.md), a connection (extension.yaml), or both. */
@@ -318,7 +318,7 @@ export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts
 /** One of KIQR's own sign-ins: kiqr.cloud, UnblockingAPI. `waiting` while a device code is shown. */
 export type SignIn = { id: string; name: string; signed_in: boolean; account: string | null; per_project?: boolean; scope?: "project" | "machine" | null; waiting: { user_code: string; verification_uri: string; verification_uri_complete?: string | null } | null };
 /** A key on one account: set or not, never its value. */
-export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean };
+export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean; /** A sign-in keeps it (a token): never typed. */ written?: boolean; /** Its values are read through the account once it is signed in. */ choices?: boolean };
 /** One account of an ability in this project, with its own keys. With a `kind` it is a channel: where the project publishes. */
 export type Account = {
   id: string;
@@ -343,6 +343,8 @@ export type Account = {
   destination_text: string;
   icon?: string;
   error?: string;
+  /** Signed in one way or another (a token kept, a key file set). */
+  signed_in?: boolean;
   /** The service it is an account of; every ability of that service on here uses it. */
   service?: string;
   /** Those abilities, with what each does on this channel (empty for a plain account). */
@@ -487,6 +489,7 @@ export const api = {
   updateAccount: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
   deleteAccount: (slug: string, id: string) => req<void>(`/api/projects/${slug}/connections/${id}`, { method: "DELETE" }),
   /** One key of an account; an empty value clears it. Never read back. */
+  accountChoices: (slug: string, id: string, name: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/connections/${id}/choices/${name}`),
   setAccountSecret: (slug: string, id: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/connections/${id}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
   /** The account its ability uses when nothing names one. */
   defaultAccount: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}/default`, { method: "POST", body: "{}" }),

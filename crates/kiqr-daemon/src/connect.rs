@@ -76,10 +76,8 @@ struct StartBody {
 
 async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, String)>, Json(b): Json<StartBody>) -> ApiResult<Value> {
     let m = manifest(&app, &slug, &ability).await.ok_or_else(|| bad(format!("{ability} is not installed for this project")))?;
-    let c = m.connect.clone().ok_or_else(|| bad(format!("{} signs in with keys only", m.name)))?;
-    if c.flow == Flow::ServiceAccount {
-        return Err(bad(format!("{} signs in with a key file on this machine; set it under Connect", m.name)));
-    }
+    // The way with a button; a key file (`service_account`) is typed in instead.
+    let c = m.connect.iter().find(|c| c.has_button()).cloned().ok_or_else(|| bad(format!("{} signs in with keys only", m.name)))?;
     let origin = url::Url::parse(b.origin.trim()).map_err(|_| bad("origin is not a URL"))?;
     if !matches!(origin.scheme(), "http" | "https") {
         return Err(bad("origin must be http or https"));
@@ -87,7 +85,7 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
     let conn = match b.connection.as_deref().filter(|c| !c.trim().is_empty()) {
         Some(id) => {
             let c = Connection::load(&app.store, &slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-            if c.ability != m.id {
+            if c.service() != m.service() {
                 return Err(bad(format!("'{id}' is not an account of {}", m.name)));
             }
             c
@@ -105,6 +103,20 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
         }
     }
     let callback_url = format!("{}/api/connect/callback", origin.origin().ascii_serialization());
+    // kiqr.cloud holds the provider's app: it builds the page, the provider comes back through its relay.
+    if c.flow == Flow::Cloud {
+        let verifier = connect::random_token();
+        let started = crate::signins::cloud_connect(&app, &c.provider, "start", json!({ "return_to": callback_url, "scopes": c.scopes, "params": c.params, "code_challenge": connect::pkce_challenge(&verifier) }))
+            .await
+            .map_err(|e| bad(format!("{e:#}")))?;
+        let (Some(url), Some(state)) = (started["url"].as_str(), started["state"].as_str()) else {
+            return Err(bad("kiqr.cloud did not say where to sign in"));
+        };
+        let mut p = app.connects.pending.lock().await;
+        p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
+        p.insert(state.to_string(), Pending { ability: m.id.clone(), connection: conn.id.clone(), project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
+        return Ok(Json(json!({ "url": url, "callback": true, "relayed": true, "connection": conn.id, "fields": [] })));
+    }
     // A service that only calls back over https, and KIQR on plain http: when
     // this KIQR is signed in to kiqr.cloud, the service calls back to a
     // single-use relay there, which sends the browser on to this KIQR; else
@@ -171,6 +183,11 @@ async fn finish(app: &App, f: &Pending, q: &BTreeMap<String, String>) -> Result<
             let form = connect::code_form(&f.connect, &env, &code, &f.callback, &f.verifier);
             token_request(&f.connect, &env, &form).await?
         }
+        Flow::Cloud => {
+            let code = connect::read_code(&f.connect, q)?;
+            let body = crate::signins::cloud_connect(app, &f.connect.provider, "token", json!({ "code": code, "code_verifier": f.verifier })).await?;
+            connect::read_token(&f.connect, &body, chrono::Utc::now().timestamp())?
+        }
         Flow::ServiceAccount => bail!("a service account has no callback"),
     };
     for (n, v) in values {
@@ -213,16 +230,29 @@ fn page(status: StatusCode, msg: &str) -> (StatusCode, Html<String>) {
 
 /// Variables a call needs beyond the connection's `.env`: a service
 /// account's token, minted (and kept until it runs out). An oauth2 token about
-/// to expire is refreshed into the connection first. Nothing for a manifest
-/// without `connect`, or a call through no connection.
+/// to expire is refreshed into the connection first (through kiqr.cloud for
+/// `cloud`). Of several ways to sign in, the one set up on the account is
+/// used. Nothing for a manifest without `connect`, or a call through no connection.
 pub async fn call_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Connection>) -> Result<BTreeMap<String, String>> {
-    let Some(c) = &m.connect else { return Ok(BTreeMap::new()) };
     let Some(conn) = conn else { return Ok(BTreeMap::new()) };
     let home = app.store.home();
     let env = kiqr_core::connections::env_for(home, slug, Some(conn), m);
+    let Some(c) = connect::pick(&m.connect, &|k: &str| env(k).is_some()) else { return Ok(BTreeMap::new()) };
     let now = chrono::Utc::now().timestamp();
     match c.flow {
         Flow::Redirect => Ok(BTreeMap::new()),
+        Flow::Cloud => {
+            if !connect::needs_refresh(c, &env, now) {
+                return Ok(BTreeMap::new());
+            }
+            let Some(refresh) = (!c.refresh_env.is_empty()).then(|| env(&c.refresh_env)).flatten() else { return Ok(BTreeMap::new()) };
+            let body = crate::signins::cloud_connect(app, &c.provider, "refresh", json!({ "refresh_token": refresh })).await.with_context(|| format!("{} needs connecting again", m.name))?;
+            let values = connect::read_token(c, &body, now)?;
+            for (n, v) in &values {
+                crate::ext::set_connection_secret(app, slug, &conn.id, n, v).await.map_err(|e| anyhow!(e.1))?;
+            }
+            Ok(values.into_iter().collect())
+        }
         Flow::Oauth2 => {
             if !connect::needs_refresh(c, &env, now) {
                 return Ok(BTreeMap::new());

@@ -317,6 +317,22 @@ pub async fn unblocking_auth(app: &App, slug: &str) -> Option<kiqr_core::fetch::
     token(app, UNBLOCKINGAPI).await.map(UnblockingAuth::Token)
 }
 
+/// One step of signing in to a provider whose app kiqr.cloud holds (`flow:
+/// cloud`): `start` (the consent page, coming back through a relay),
+/// `token` (a code for tokens) or `refresh`. kiqr.cloud adds the client
+/// secret and keeps nothing; the answer is the provider's token response.
+pub async fn cloud_connect(app: &App, provider: &str, step: &str, body: Value) -> Result<Value> {
+    let token = token(app, CLOUD).await.ok_or_else(|| anyhow!("sign in to kiqr.cloud first (Settings → kiqr.cloud): it finishes this sign-in"))?;
+    let url = format!("{}/api/v1/connect/{provider}/{step}", cloud_url(app).await);
+    let resp = reqwest::Client::builder().user_agent(kiqr_core::fetch::USER_AGENT).timeout(Duration::from_secs(40)).build()?.post(&url).bearer_auth(token).json(&body).send().await.context("reaching kiqr.cloud")?;
+    let status = resp.status();
+    let v: Value = resp.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        bail!("kiqr.cloud answered {status}: {}", oauth::error_text(&v));
+    }
+    Ok(v)
+}
+
 /// A relay on kiqr.cloud back to `return_to` (one of this KIQR's callbacks):
 /// `(relay id, https URL to hand the service)`. Needs a kiqr.cloud sign-in.
 pub async fn open_relay(app: &App, return_to: &str) -> Result<(String, String)> {
