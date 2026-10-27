@@ -588,6 +588,12 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "channels": m.map(|m| m.channels.iter().map(|c| c.label.clone()).collect::<Vec<_>>()).unwrap_or_else(|| item.channels.iter().map(|c| c.display_name().to_string()).collect()),
         "sources": m.map(|m| m.sources.keys().cloned().collect::<Vec<_>>()).unwrap_or_else(|| item.sources.clone()),
         "tools": m.map(|m| m.tools.len() + if m.transport == Transport::Mcp { m.expose.len() } else { 0 }).unwrap_or(0),
+        // The tools themselves, for the ability's window: its own, and an MCP server's exposed ones by name.
+        "tool_list": m.map(|m| {
+            let own = m.tools.iter().map(|t| json!({ "name": t.name, "label": t.label, "description": t.description, "role": if t.role.is_empty() { "read" } else { t.role.as_str() } }));
+            let exposed = m.expose.iter().filter(|e| m.transport == Transport::Mcp && e.as_str() != "all").map(|e| json!({ "name": e, "label": "", "description": "", "role": "" }));
+            own.chain(exposed).collect::<Vec<_>>()
+        }).unwrap_or_default(),
         "trust": item.trust,
         "transport": m.map(|m| serde_json::to_value(m.transport).unwrap_or(Value::Null)).unwrap_or_else(|| json!(item.transport)),
         "runs_program": m.map(|m| matches!(m.transport, Transport::Mcp | Transport::Command)).unwrap_or(item.transport == "mcp" || item.transport == "command"),

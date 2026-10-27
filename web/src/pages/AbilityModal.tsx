@@ -163,6 +163,40 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
   );
 }
 
+const ROLE_CHIP: Record<string, string> = { publish: "publishes", reply: "replies", manage: "changes things" };
+
+/** The tools Seemo gets from this ability: what each does, in its own words, and which act rather than read. */
+function ToolList({ a }: { a: Ability }) {
+  const [all, setAll] = useState(false);
+  const tools = a.tool_list ?? [];
+  if (!tools.length) return null;
+  const shown = all ? tools : tools.slice(0, 6);
+  return (
+    <>
+      <p className="cap">
+        Tools Seemo can use <span className="n">{tools.length}</span>
+      </p>
+      <ul className="ab-tools">
+        {shown.map((t) => (
+          <li key={t.name}>
+            <div className="hd">
+              <b>{t.label || t.name}</b>
+              <code>{t.name}</code>
+              {ROLE_CHIP[t.role] && <span className="chip warn sm">{ROLE_CHIP[t.role]}</span>}
+            </div>
+            {t.description && <p>{t.description}</p>}
+          </li>
+        ))}
+      </ul>
+      {tools.length > shown.length && (
+        <button className="lnk sm ab-tools-more" onClick={() => setAll(true)}>
+          Show all {tools.length}
+        </button>
+      )}
+    </>
+  );
+}
+
 function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?: () => void }) {
   const parts = partsOf(a, true);
   const needs = needsOf(a);
@@ -197,6 +231,7 @@ function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?
           </li>
         ))}
       </ul>
+      <ToolList a={a} />
       {needs.length > 0 && (
         <>
           <p className="cap">

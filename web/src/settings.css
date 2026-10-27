@@ -240,6 +240,14 @@ a.mk-author:hover { color: var(--accent); }
 .ab-incl { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px 16px; }
 .ab-incl li { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; padding: 8px 10px; border-radius: var(--r); border: 1px solid var(--line); background: color-mix(in oklab, var(--bg) 40%, transparent); }
 .ab-incl li svg { color: var(--accent); flex: none; margin-top: 2px; }
+.ab-tools { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px 16px; align-items: start; }
+.ab-tools li { padding: 8px 10px; border-radius: var(--r); border: 1px solid var(--line); background: color-mix(in oklab, var(--bg) 40%, transparent); min-width: 0; }
+.ab-tools .hd { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 8px; font-size: 13.5px; }
+.ab-tools .hd b { font-weight: 500; }
+.ab-tools code { font: 11.5px var(--mono); color: var(--muted); }
+.ab-tools p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.cap .n { margin-left: 4px; color: var(--muted); font-weight: 400; }
+.ab-tools-more { margin-top: 6px; background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; }
 .ab-incl li.warn svg { color: var(--warn); }
 .ab-ov .cap { display: flex; align-items: center; gap: 10px; }
 .ab-ov .ab-cap-act { margin-left: auto; text-transform: none; letter-spacing: 0; font-size: 12px; background: none; border: 0; padding: 0; cursor: pointer; }
