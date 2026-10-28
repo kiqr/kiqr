@@ -1,13 +1,14 @@
 // Your business → Plan: the marketing plan Seemo owns. Objectives for the
 // period, each with its KPI and target; the campaigns under them with what
-// was made for each. Seemo proposes the plan on a card from a chat; here the
+// was made for each. Seemo proposes the plan in a chat; here the
 // user reads it, asks for a new one, and keeps campaigns by hand if they like.
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, Calendar, Check, ListChecks, Loader2, MessagesSquare, Plus, Sparkles, Target, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Calendar, Check, ListChecks, Loader2, MessagesSquare, Plus, Send, Sparkles, Target, Trash2, X } from "lucide-react";
 import { api, useAsync, useEvents, type Campaign, type Objective, type PerfKpi } from "../api";
 import { fmt } from "./Performance";
 import { openSeemo } from "../SeemoWidget";
+import { networkName, useNetworks } from "../networks";
 import { ago } from "./Project";
 import { whenAt } from "./AssetActions";
 import "../profile.css";
@@ -54,14 +55,9 @@ export function PlanPage() {
         <div>
           <p className="cap">Marketing</p>
           <h1 className="d2">Plan</h1>
-          <p className="muted">The marketing plan Seemo works from: a few objectives for the period, each with a number to reach, and the campaigns under them. Seemo proposes it from the brief; you approve it on a card.</p>
+          <p className="muted">The marketing plan Seemo works from: a few objectives for the period, each with a number to reach, and the campaigns under them. Seemo proposes it from what it knows about the business; you approve it.</p>
         </div>
         <div className="cm-acts">
-          {plan && (
-            <span className="chip" title={`Version ${plan.version}, ${plan.updated_by}`}>
-              {plan.period} · v{plan.version}
-            </span>
-          )}
           <button className="btn p" disabled={asking} onClick={() => void ask(plan ? `Review the marketing plan against what has happened since v${plan.version} and propose a revised one with propose_plan if the facts changed; otherwise tell me it still stands and why.` : ASK_FOR_PLAN)}>
             {asking ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />} {plan ? "Ask Seemo to review it" : "Ask Seemo for a plan"}
           </button>
@@ -85,22 +81,19 @@ export function PlanPage() {
       )}
 
       {plan && (
-        <section className="plan-sec">
-          {plan.summary && <p className="plan-sum">{plan.summary}</p>}
-          <h2>
-            Objectives <span className="n">{plan.objectives.length}</span>
-          </h2>
-          <ul className="plan-objs">
-            {plan.objectives.map((o) => (
-              <ObjectiveRow key={o.id} o={o} kpi={kpiLabel(o.kpi)} campaigns={campaigns.filter((c) => c.objective === o.id)} measured={perf.data?.kpis.find((k) => k.objective === o.id) ?? null} slug={slug} />
-            ))}
-          </ul>
-          {plan.channels.length > 0 && (
-            <p className="muted sm">
-              Channels in play: {plan.channels.join(", ")}. <Link to={`/p/${slug}/channels`}>Channels</Link>
-            </p>
-          )}
-        </section>
+        <>
+          <PlanHero slug={slug} period={plan.period} version={plan.version} summary={plan.summary} channels={plan.channels} progress={overall(plan.objectives, perf.data?.kpis ?? [])} />
+          <section className="plan-sec">
+            <h2>
+              Objectives <span className="n">{plan.objectives.length}</span>
+            </h2>
+            <div className="plan-goals">
+              {plan.objectives.map((o) => (
+                <ObjectiveCard key={o.id} o={o} kpi={kpiLabel(o.kpi)} campaigns={campaigns.filter((c) => c.objective === o.id)} measured={perf.data?.kpis.find((k) => k.objective === o.id) ?? null} slug={slug} />
+              ))}
+            </div>
+          </section>
+        </>
       )}
 
       <section className="plan-sec">
@@ -124,38 +117,135 @@ export function PlanPage() {
   );
 }
 
-function ObjectiveRow({ o, kpi, campaigns, measured, slug }: { o: Objective; kpi: string; campaigns: Campaign[]; measured: PerfKpi | null; slug: string }) {
-  const target = o.target != null ? `${o.target}${o.unit ? ` ${o.unit}` : ""}` : null;
+/** KPIs where a smaller number is the better one (a search position). */
+const LOWER_IS_BETTER = new Set(["rank_positions"]);
+
+/** How far an objective is towards its target, 0 to 1, when something measures it. */
+function progressOf(o: Objective, m: PerfKpi | null): number | null {
+  if (!m?.measured || m.value == null || o.target == null || o.target === 0) return null;
+  const r = LOWER_IS_BETTER.has(o.kpi) ? o.target / Math.max(m.value, 1e-9) : m.value / o.target;
+  return Math.max(0, Math.min(1, r));
+}
+
+/** The measured objectives' progress, averaged; null when none is measured yet. */
+function overall(objectives: Objective[], kpis: PerfKpi[]): { pct: number; measured: number; total: number } | null {
+  const active = objectives.filter((o) => o.status === "active");
+  const done = objectives.filter((o) => o.status === "done").length;
+  const parts = active.map((o) => progressOf(o, kpis.find((k) => k.objective === o.id) ?? null)).filter((p): p is number => p != null);
+  if (parts.length + done === 0) return null;
+  const pct = (parts.reduce((a, b) => a + b, 0) + done) / (parts.length + done);
+  return { pct, measured: parts.length + done, total: active.length + done };
+}
+
+function PlanHero({ slug, period, version, summary, channels, progress }: { slug: string; period: string; version: number; summary: string; channels: string[]; progress: { pct: number; measured: number; total: number } | null }) {
+  const R = 34;
+  const C = 2 * Math.PI * R;
+  const networks = useNetworks(slug);
   return (
-    <li className={`plan-obj ${o.status}`}>
-      <span className="ic">
-        <Target size={15} />
-      </span>
-      <div className="min0">
-        <p className="nm">
-          {o.title}
-          {o.status !== "active" && <span className="chip">{o.status}</span>}
+    <section className="pcard plan-hero">
+      <div className="plan-hero-main">
+        <p className="plan-period">
+          <span className="chip acc">{period}</span>
+          <span className="v">version {version}</span>
         </p>
-        {o.why && <p className="ds">{o.why}</p>}
-        <p className="meta">
-          <span className="chip acc">{kpi}</span>
-          {measured?.measured && measured.value != null && (
-            <Link className="now" to={`/p/${slug}/performance`}>
-              now {fmt(measured.value, o.unit)}
-              {o.target != null ? ` of ${target}` : ""}
-            </Link>
-          )}
-          {target && !(measured?.measured && measured.value != null) && <span>target {target}</span>}
-          {o.by && (
-            <span>
-              <Calendar size={11} /> by {new Date(o.by).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}
-            </span>
-          )}
-          {campaigns.length > 0 && <span>{campaigns.length === 1 ? "1 campaign" : `${campaigns.length} campaigns`}</span>}
-        </p>
+        {summary && <p className="plan-sum">{summary}</p>}
+        {channels.length > 0 && (
+          <p className="plan-chans">
+            <span className="cap">Channels in play</span>
+            {channels.map((c) => (
+              <Link key={c} className="tk" to={`/p/${slug}/channels`}>
+                <Send size={11} /> {networkName(c, networks)}
+              </Link>
+            ))}
+          </p>
+        )}
       </div>
-    </li>
+      <div className="plan-ring" title={progress ? `${progress.measured} of ${progress.total} objectives measured` : "Nothing measured yet"}>
+        <svg viewBox="0 0 80 80" aria-hidden="true">
+          <defs>
+            <linearGradient id="plan-ring-g" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0" stopColor="var(--accent)" />
+              <stop offset="1" stopColor="var(--accent-2)" />
+            </linearGradient>
+          </defs>
+          <circle className="track" cx="40" cy="40" r={R} />
+          {progress && <circle className="fill" cx="40" cy="40" r={R} strokeDasharray={`${C * progress.pct} ${C}`} />}
+        </svg>
+        <div className="plan-ring-c">
+          <b>{progress ? `${Math.round(progress.pct * 100)}%` : "–"}</b>
+          <small>{progress ? "towards the targets" : "not measured yet"}</small>
+        </div>
+      </div>
+    </section>
   );
+}
+
+function ObjectiveCard({ o, kpi, campaigns, measured, slug }: { o: Objective; kpi: string; campaigns: Campaign[]; measured: PerfKpi | null; slug: string }) {
+  const target = o.target != null ? fmt(o.target, o.unit) : null;
+  const p = o.status === "done" ? 1 : progressOf(o, measured);
+  const has = measured?.measured && measured.value != null;
+  const lower = LOWER_IS_BETTER.has(o.kpi);
+  const change = has && measured!.prev ? (measured!.value! - measured!.prev) / measured!.prev : null;
+  const good = change == null ? null : lower ? change < 0 : change > 0;
+  return (
+    <article className={`plan-goal ${o.status}`}>
+      <div className="plan-goal-top">
+        <h3>{o.title}</h3>
+        {o.status !== "active" ? (
+          <span className={`chip ${o.status === "done" ? "ok" : ""}`}>{o.status}</span>
+        ) : (
+          change != null &&
+          Math.abs(change) >= 0.005 && (
+            <span className={`delta ${good ? "up" : "down"}`} title={`Against the ${measured!.window_days} days before`}>
+              {change > 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+              {Math.round(Math.abs(change) * 100)}%
+            </span>
+          )
+        )}
+      </div>
+      {o.why && <p className="ds">{o.why}</p>}
+      <div className={`plan-bar${p == null ? " unmeasured" : ""}`} role="progressbar" aria-label={`${o.title}: progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={p == null ? undefined : Math.round(p * 100)}>
+        <span style={{ width: `${Math.round((p ?? 0) * 100)}%` }} />
+      </div>
+      <div className="plan-goal-num">
+        <span className="kpi">{kpi}</span>
+        {has ? (
+          <Link to={`/p/${slug}/performance`}>
+            <b>{fmt(measured!.value, o.unit)}</b>
+            {target ? ` of ${target}` : ""}
+          </Link>
+        ) : target ? (
+          <span>
+            target <b>{target}</b>
+          </span>
+        ) : (
+          <span>no target</span>
+        )}
+      </div>
+      <p className="plan-goal-foot">
+        {o.by && (
+          <span>
+            <Calendar size={11} /> by {new Date(o.by).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}
+          </span>
+        )}
+        {campaigns.length > 0 && <span>{campaigns.length === 1 ? "1 campaign" : `${campaigns.length} campaigns`}</span>}
+        {o.status === "active" && !has && (
+          <Link to={`/p/${slug}/performance`} className="need">
+            Not measured yet
+          </Link>
+        )}
+      </p>
+    </article>
+  );
+}
+
+/** Where today is between a campaign's start and end, 0 to 1. */
+function through(start?: string | null, end?: string | null): number | null {
+  if (!start || !end) return null;
+  const a = Date.parse(start);
+  const b = Date.parse(end);
+  if (!(b > a)) return null;
+  return Math.max(0, Math.min(1, (Date.now() - a) / (b - a)));
 }
 
 function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChange: () => void }) {
@@ -172,6 +262,7 @@ function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChan
     }
   };
   const dates = [c.start, c.end].filter(Boolean).map((d) => new Date(d!).toLocaleDateString([], { day: "numeric", month: "short" }));
+  const at = c.status === "active" ? through(c.start, c.end) : null;
   return (
     <div className={`pcard plan-camp ${c.status}`}>
       <div className="row">
@@ -206,6 +297,16 @@ function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChan
         </div>
       </div>
       {c.goal && <p className="ds">{c.goal}</p>}
+      {at != null && (
+        <div className="plan-time" title={at >= 1 ? "Its dates have passed" : `${Math.round(at * 100)}% of the way through its dates`}>
+          <span className="lbl">{dates[0]}</span>
+          <div className="line">
+            <span style={{ width: `${Math.round(at * 100)}%` }} />
+            {at > 0 && at < 1 && <i style={{ left: `${Math.round(at * 100)}%` }} />}
+          </div>
+          <span className="lbl">{dates[1]}</span>
+        </div>
+      )}
       <p className="meta">
         {c.objective_title && (
           <span>
@@ -213,7 +314,7 @@ function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChan
           </span>
         )}
         {c.channels.length > 0 && <span>{c.channels.join(", ")}</span>}
-        {dates.length > 0 && (
+        {dates.length > 0 && at == null && (
           <span>
             <Calendar size={11} /> {dates.join(" to ")}
           </span>
