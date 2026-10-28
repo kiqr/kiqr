@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" font-family="Geist, Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <clipPath id="frame"><rect width="1280" height="440" rx="28"/></clipPath>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="70"/></filter>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="rgba(148,170,220,.16)"/></pattern>
+    <radialGradient id="dotmask" cx="50%" cy="0%" r="80%"><stop offset=".3" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+    <mask id="fade"><rect width="1280" height="440" fill="url(#dotmask)"/></mask>
+    <linearGradient id="grad" x1="0" x2="1"><stop offset="0" stop-color="#5eead4"/><stop offset=".55" stop-color="#8b9cff"/><stop offset="1" stop-color="#c4b5fd"/></linearGradient>
+    <linearGradient id="line" x1="0" x2="1"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#8b9cff"/></linearGradient>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="440" fill="#05070d"/>
+    <ellipse cx="160" cy="20" rx="320" ry="200" fill="rgba(94,234,212,.30)" filter="url(#blur)"/>
+    <ellipse cx="1160" cy="60" rx="360" ry="230" fill="rgba(139,156,255,.32)" filter="url(#blur)"/>
+    <ellipse cx="640" cy="460" rx="300" ry="160" fill="rgba(196,181,253,.16)" filter="url(#blur)"/>
+    <rect width="1280" height="440" fill="url(#dots)" mask="url(#fade)"/>
+
+    <!-- the mark: two points, connected -->
+    <g transform="translate(72 64) scale(1.6)">
+      <path d="M7 18 C 11 18, 15 8, 19 8" fill="none" stroke="url(#line)" stroke-width="2" stroke-linecap="round"/>
+      <rect x="3" y="14.5" width="7" height="7" rx="2" fill="#d7ff43"/>
+      <circle cx="19.5" cy="8" r="4" fill="#8b9cff"/>
+    </g>
+    <text x="124" y="92" fill="#eef2fb" font-size="24" font-weight="700" letter-spacing="1">KIQR</text>
+
+    <text x="76" y="166" fill="#5eead4" font-size="15" font-weight="600" letter-spacing="2.4">OPEN SOURCE · RUNS LOCALLY</text>
+    <text x="72" y="238" fill="#eef2fb" font-size="66" font-weight="700" letter-spacing="-2.4">Meet Seemo,</text>
+    <text x="72" y="308" fill="url(#grad)" font-size="66" font-weight="700" letter-spacing="-2.4">your CMO.</text>
+    <text x="76" y="360" fill="#9aa6bf" font-size="19">Give it your website. Get a marketing plan, the work,</text>
+    <text x="76" y="388" fill="#9aa6bf" font-size="19">and the numbers. You approve every step.</text>
+
+    <!-- a chat, like the one on kiqr.dev -->
+    <g transform="translate(720 52)">
+      <rect width="488" height="300" rx="20" fill="rgba(16,22,38,.72)" stroke="rgba(148,170,220,.22)"/>
+      <circle cx="30" cy="32" r="5" fill="#d7ff43"/>
+      <text x="46" y="37" fill="#eef2fb" font-size="15" font-weight="600">Seemo</text>
+      <circle cx="420" cy="32" r="3.5" fill="#5eead4"/><circle cx="436" cy="32" r="3.5" fill="rgba(148,170,220,.3)"/><circle cx="452" cy="32" r="3.5" fill="rgba(148,170,220,.3)"/>
+      <line x1="0" y1="58" x2="488" y2="58" stroke="rgba(148,170,220,.12)"/>
+
+      <rect x="150" y="76" width="314" height="40" rx="14" fill="rgba(94,234,212,.14)" stroke="rgba(94,234,212,.3)"/>
+      <text x="166" y="101" fill="#eef2fb" font-size="14">What should we focus on this quarter?</text>
+
+      <text x="24" y="144" fill="#9aa6bf" font-size="14">Two goals for Q4. I'd skip paid ads for now.</text>
+
+      <g transform="translate(24 160)">
+        <rect width="440" height="54" rx="12" fill="rgba(24,32,54,.7)" stroke="rgba(148,170,220,.12)"/>
+        <text x="14" y="22" fill="#eef2fb" font-size="13.5" font-weight="600">More online orders</text>
+        <text x="426" y="22" fill="#5eead4" font-size="12.5" text-anchor="end">96 of 150</text>
+        <rect x="14" y="34" width="412" height="6" rx="3" fill="rgba(148,170,220,.14)"/>
+        <rect x="14" y="34" width="264" height="6" rx="3" fill="url(#line)"/>
+      </g>
+      <g transform="translate(24 222)">
+        <rect width="440" height="54" rx="12" fill="rgba(24,32,54,.7)" stroke="rgba(148,170,220,.12)"/>
+        <text x="14" y="22" fill="#eef2fb" font-size="13.5" font-weight="600">Grow the newsletter</text>
+        <text x="426" y="22" fill="#5eead4" font-size="12.5" text-anchor="end">820 of 2,000</text>
+        <rect x="14" y="34" width="412" height="6" rx="3" fill="rgba(148,170,220,.14)"/>
+        <rect x="14" y="34" width="169" height="6" rx="3" fill="url(#line)"/>
+      </g>
+    </g>
+    <g transform="translate(720 368)">
+      <rect width="156" height="34" rx="17" fill="#d7ff43"/>
+      <text x="78" y="22" fill="#11160a" font-size="14" font-weight="600" text-anchor="middle">Approve the plan</text>
+      <rect x="168" width="110" height="34" rx="17" fill="rgba(16,22,38,.72)" stroke="rgba(148,170,220,.22)"/>
+      <text x="223" y="22" fill="#eef2fb" font-size="14" text-anchor="middle">Change it</text>
+    </g>
+  </g>
+  <rect x=".5" y=".5" width="1279" height="439" rx="27.5" fill="none" stroke="rgba(148,170,220,.18)"/>
+</svg>
