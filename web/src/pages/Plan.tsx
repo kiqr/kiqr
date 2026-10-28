@@ -4,7 +4,7 @@
 // user reads it, asks for a new one, and keeps campaigns by hand if they like.
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Calendar, Check, ListChecks, Loader2, MessagesSquare, Plus, Send, Sparkles, Target, Trash2, X } from "lucide-react";
+import { AlertTriangle, Calendar, Check, ListChecks, Loader2, MessagesSquare, Plus, Send, Sparkles, Target, Trash2, X } from "lucide-react";
 import { api, useAsync, useEvents, type Campaign, type Objective, type PerfKpi } from "../api";
 import { fmt } from "./Performance";
 import { openSeemo } from "../SeemoWidget";
@@ -83,10 +83,14 @@ export function PlanPage() {
       {plan && (
         <>
           <PlanHero slug={slug} period={plan.period} version={plan.version} summary={plan.summary} channels={plan.channels} progress={overall(plan.objectives, perf.data?.kpis ?? [])} />
-          <section className="plan-sec">
-            <h2>
-              Objectives <span className="n">{plan.objectives.length}</span>
-            </h2>
+          <section className="gl plan-sec">
+            <div className="gl-top">
+              <span className="gl-ic">
+                <Target size={14} />
+              </span>
+              <b>Objectives</b>
+              <span className="gl-meta">{plan.objectives.length}</span>
+            </div>
             <div className="plan-goals">
               {plan.objectives.map((o) => (
                 <ObjectiveCard key={o.id} o={o} kpi={kpiLabel(o.kpi)} campaigns={campaigns.filter((c) => c.objective === o.id)} measured={perf.data?.kpis.find((k) => k.objective === o.id) ?? null} slug={slug} />
@@ -96,17 +100,23 @@ export function PlanPage() {
         </>
       )}
 
-      <section className="plan-sec">
-        <h2>
-          Campaigns <span className="n">{campaigns.length}</span>
-          {!adding && (
-            <button className="btn t sm" onClick={() => setAdding(true)}>
-              <Plus size={13} /> New campaign
-            </button>
-          )}
-        </h2>
+      <section className="gl plan-sec">
+        <div className="gl-top">
+          <span className="gl-ic">
+            <Sparkles size={14} />
+          </span>
+          <b>Campaigns</b>
+          <span className="gl-meta">
+            {campaigns.length}
+            {!adding && (
+              <button className="btn t sm" onClick={() => setAdding(true)}>
+                <Plus size={13} /> New campaign
+              </button>
+            )}
+          </span>
+        </div>
         {adding && <CampaignForm slug={slug} objectives={plan?.objectives ?? []} onDone={() => (setAdding(false), data.reload())} />}
-        {data.data && campaigns.length === 0 && !adding && <p className="muted sm">None yet. A campaign is one initiative towards an objective, a launch or a content series, with the assets and tasks made for it. Seemo proposes them; you can add one here too.</p>}
+        {data.data && campaigns.length === 0 && !adding && <p className="muted sm gl-empty">None yet. A campaign is one initiative towards an objective, a launch or a content series, with the assets and tasks made for it. Seemo proposes them; you can add one here too.</p>}
         <div className="plan-camps">
           {campaigns.map((c) => (
             <CampaignCard key={c.id} slug={slug} c={c} onChange={data.reload} />
@@ -141,39 +151,57 @@ function PlanHero({ slug, period, version, summary, channels, progress }: { slug
   const R = 34;
   const C = 2 * Math.PI * R;
   const networks = useNetworks(slug);
+  const [all, setAll] = useState(false);
+  const long = summary.length > 280;
   return (
-    <section className="pcard plan-hero">
-      <div className="plan-hero-main">
-        <p className="plan-period">
-          <span className="chip acc">{period}</span>
-          <span className="v">version {version}</span>
-        </p>
-        {summary && <p className="plan-sum">{summary}</p>}
-        {channels.length > 0 && (
-          <p className="plan-chans">
-            <span className="cap">Channels in play</span>
-            {channels.map((c) => (
-              <Link key={c} className="tk" to={`/p/${slug}/channels`}>
-                <Send size={11} /> {networkName(c, networks)}
-              </Link>
-            ))}
-          </p>
-        )}
+    <section className="gl plan-hero">
+      <div className="gl-top">
+        <span className="gl-ic">
+          <Target size={14} />
+        </span>
+        <b>Marketing plan</b>
+        <span className="gl-meta">
+          <span className="chip acc">{period}</span> v{version}
+        </span>
       </div>
-      <div className="plan-ring" title={progress ? `${progress.measured} of ${progress.total} objectives measured` : "Nothing measured yet"}>
-        <svg viewBox="0 0 80 80" aria-hidden="true">
-          <defs>
-            <linearGradient id="plan-ring-g" x1="0" x2="1" y1="0" y2="1">
-              <stop offset="0" stopColor="var(--accent)" />
-              <stop offset="1" stopColor="var(--accent-2)" />
-            </linearGradient>
-          </defs>
-          <circle className="track" cx="40" cy="40" r={R} />
-          {progress && <circle className="fill" cx="40" cy="40" r={R} strokeDasharray={`${C * progress.pct} ${C}`} />}
-        </svg>
-        <div className="plan-ring-c">
-          <b>{progress ? `${Math.round(progress.pct * 100)}%` : "–"}</b>
-          <small>{progress ? "towards the targets" : "not measured yet"}</small>
+      <div className="plan-hero-body">
+        <div className="plan-hero-main">
+          {summary && (
+            <p className={`plan-sum${long && !all ? " clamp" : ""}`}>
+              {summary}
+            </p>
+          )}
+          {long && (
+            <button className="btn t sm plan-more" onClick={() => setAll(!all)}>
+              {all ? "Show less" : "Read all"}
+            </button>
+          )}
+          {channels.length > 0 && (
+            <p className="plan-chans">
+              <span className="cap">Channels</span>
+              {channels.map((c) => (
+                <Link key={c} className="tk" to={`/p/${slug}/channels`}>
+                  <Send size={11} /> {networkName(c, networks)}
+                </Link>
+              ))}
+            </p>
+          )}
+        </div>
+        <div className="plan-ring" title={progress ? `${progress.measured} of ${progress.total} objectives measured` : "Nothing measured yet"}>
+          <svg viewBox="0 0 80 80" aria-hidden="true">
+            <defs>
+              <linearGradient id="plan-ring-g" x1="0" x2="1" y1="0" y2="1">
+                <stop offset="0" stopColor="var(--accent)" />
+                <stop offset="1" stopColor="var(--accent-2)" />
+              </linearGradient>
+            </defs>
+            <circle className="track" cx="40" cy="40" r={R} />
+            {progress && progress.pct > 0 && <circle className="fill" cx="40" cy="40" r={R} strokeDasharray={`${C * progress.pct} ${C}`} />}
+          </svg>
+          <div className="plan-ring-c">
+            <b>{progress ? `${Math.round(progress.pct * 100)}%` : "–"}</b>
+            <small>{progress ? `${progress.measured} of ${progress.total} measured` : "not measured yet"}</small>
+          </div>
         </div>
       </div>
     </section>
@@ -188,7 +216,7 @@ function ObjectiveCard({ o, kpi, campaigns, measured, slug }: { o: Objective; kp
   const change = has && measured!.prev ? (measured!.value! - measured!.prev) / measured!.prev : null;
   const good = change == null ? null : lower ? change < 0 : change > 0;
   return (
-    <article className={`plan-goal ${o.status}`}>
+    <article className={`gbox plan-goal ${o.status}`}>
       <div className="plan-goal-top">
         <h3>{o.title}</h3>
         {o.status !== "active" ? (
@@ -197,14 +225,14 @@ function ObjectiveCard({ o, kpi, campaigns, measured, slug }: { o: Objective; kp
           change != null &&
           Math.abs(change) >= 0.005 && (
             <span className={`delta ${good ? "up" : "down"}`} title={`Against the ${measured!.window_days} days before`}>
-              {change > 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+              {change > 0 ? "+" : "−"}
               {Math.round(Math.abs(change) * 100)}%
             </span>
           )
         )}
       </div>
       {o.why && <p className="ds">{o.why}</p>}
-      <div className={`plan-bar${p == null ? " unmeasured" : ""}`} role="progressbar" aria-label={`${o.title}: progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={p == null ? undefined : Math.round(p * 100)}>
+      <div className="plan-bar" role="progressbar" aria-label={`${o.title}: progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={p == null ? undefined : Math.round(p * 100)}>
         <span style={{ width: `${Math.round((p ?? 0) * 100)}%` }} />
       </div>
       <div className="plan-goal-num">
@@ -214,27 +242,26 @@ function ObjectiveCard({ o, kpi, campaigns, measured, slug }: { o: Objective; kp
             <b>{fmt(measured!.value, o.unit)}</b>
             {target ? ` of ${target}` : ""}
           </Link>
+        ) : o.status === "active" ? (
+          <Link className="connect" to={`/p/${slug}/performance`}>
+            Connect a source
+          </Link>
         ) : target ? (
           <span>
             target <b>{target}</b>
           </span>
-        ) : (
-          <span>no target</span>
-        )}
+        ) : null}
       </div>
-      <p className="plan-goal-foot">
-        {o.by && (
-          <span>
-            <Calendar size={11} /> by {new Date(o.by).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}
-          </span>
-        )}
-        {campaigns.length > 0 && <span>{campaigns.length === 1 ? "1 campaign" : `${campaigns.length} campaigns`}</span>}
-        {o.status === "active" && !has && (
-          <Link to={`/p/${slug}/performance`} className="need">
-            Not measured yet
-          </Link>
-        )}
-      </p>
+      {(o.by || campaigns.length > 0) && (
+        <p className="plan-goal-foot">
+          {o.by && (
+            <span>
+              <Calendar size={11} /> by {new Date(o.by).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}
+            </span>
+          )}
+          {campaigns.length > 0 && <span>{campaigns.length === 1 ? "1 campaign" : `${campaigns.length} campaigns`}</span>}
+        </p>
+      )}
     </article>
   );
 }
@@ -264,7 +291,7 @@ function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChan
   const dates = [c.start, c.end].filter(Boolean).map((d) => new Date(d!).toLocaleDateString([], { day: "numeric", month: "short" }));
   const at = c.status === "active" ? through(c.start, c.end) : null;
   return (
-    <div className={`pcard plan-camp ${c.status}`}>
+    <div className={`gbox plan-camp ${c.status}`}>
       <div className="row">
         <h3>
           {c.title}

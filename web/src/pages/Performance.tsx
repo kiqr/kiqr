@@ -59,27 +59,37 @@ export function PerformancePage() {
       )}
 
       {d && connected.length === 0 && (
-        <div className="pcard none">
-          <BarChart3 size={22} className="ac2" />
-          <p className="t">No source connected yet</p>
-          <p className="muted">Install an analytics ability from the marketplace (Setup → Abilities, under Analytics) and connect it with this project's keys. What KIQR publishes is counted either way.</p>
-          <Link className="btn g" to={`/p/${slug}/abilities#marketplace`}>
-            <Sparkles size={14} /> Open the marketplace
+        <div className="gl perf-connect">
+          <span className="gl-ic big">
+            <BarChart3 size={18} />
+          </span>
+          <div className="min0">
+            <b>Connect your analytics</b>
+            <p className="muted">Google Analytics, Search Console or Plausible, from the marketplace. Until then only what KIQR publishes is counted.</p>
+          </div>
+          <Link className="btn p" to={`/p/${slug}/abilities#marketplace`}>
+            <Sparkles size={14} /> Find an analytics ability
           </Link>
         </div>
       )}
 
       {d && d.kpis.length > 0 && (
-        <section className="perf-sec">
-          <h2>
-            Plan KPIs <span className="n">{d.plan_period ?? ""}</span>
-            <Link className="lnk sm" to={`/p/${slug}/plan`}>
-              The plan
-            </Link>
-          </h2>
-          <div className="perf-tiles">
+        <section className="gl perf-sec">
+          <div className="gl-top">
+            <span className="gl-ic">
+              <Target size={14} />
+            </span>
+            <b>Plan KPIs</b>
+            <span className="gl-meta">
+              {d.plan_period ?? ""}
+              <Link className="lnk sm" to={`/p/${slug}/plan`}>
+                The plan
+              </Link>
+            </span>
+          </div>
+          <div className="perf-tiles kpis">
             {d.kpis.map((k) => (
-              <KpiTile key={k.objective} k={k} />
+              <KpiTile key={k.objective} k={k} slug={slug} />
             ))}
           </div>
         </section>
@@ -89,11 +99,17 @@ export function PerformancePage() {
         d.sources
           .filter((s) => bySource(s.id).length > 0)
           .map((s) => (
-            <section className="perf-sec" key={s.id}>
-              <h2>
-                {s.label} <span className="n">{s.provider && s.provider !== "kiqr" ? `via ${s.provider}` : ""}</span>
-                {s.taken_at && <small className="muted">taken {ago(s.taken_at)}</small>}
-              </h2>
+            <section className="gl perf-sec" key={s.id}>
+              <div className="gl-top">
+                <span className="gl-ic">
+                  <BarChart3 size={14} />
+                </span>
+                <b>{s.label}</b>
+                <span className="gl-meta">
+                  {s.provider && s.provider !== "kiqr" ? `via ${s.provider}` : ""}
+                  {s.taken_at && <span>· {ago(s.taken_at)}</span>}
+                </span>
+              </div>
               <div className="perf-tiles">
                 {bySource(s.id).map((m) => (
                   <MetricTile key={m.metric} m={m} />
@@ -105,7 +121,7 @@ export function PerformancePage() {
                   .map(([k, rows]) => {
                     const [, metric, dim] = k.split(".");
                     return (
-                      <div className="pcard perf-top" key={k}>
+                      <div className="gbox perf-top" key={k}>
                         <p className="cap">
                           {dim === "query" ? "Top queries" : dim === "page" ? "Top pages" : dim === "event" ? "Key events" : dim === "channel" ? "By channel" : dim === "source" ? "Sources" : dim} · {metric.replace("_", " ")}
                         </p>
@@ -127,8 +143,13 @@ export function PerformancePage() {
           ))}
 
       {d && (
-        <section className="perf-sec">
-          <h2>Sources</h2>
+        <section className="gl perf-sec">
+          <div className="gl-top">
+            <span className="gl-ic">
+              <Sparkles size={14} />
+            </span>
+            <b>Sources</b>
+          </div>
           <ul className="perf-sources">
             {d.sources
               .filter((s) => s.id !== "kiqr")
@@ -200,44 +221,42 @@ function Spark({ series, lower }: { series: { date: string; value: number }[]; l
 function MetricTile({ m }: { m: PerfMetric }) {
   const unit = m.metric === "conversion_rate" || m.metric === "ctr" ? "%" : "";
   return (
-    <div className="pcard perf-tile">
-      <p className="cap">{m.label}</p>
+    <div className="gbox perf-tile">
+      <span className="lbl">{m.label}</span>
       <p className="big">
         {fmt(m.last7, unit)} <Trend now={m.last7} prev={m.prev7} lower={m.lower_is_better} />
       </p>
-      <p className="muted sm">last 7 days · {fmt(m.last30, unit)} in 30</p>
+      <span className="sub">last 7 days · {fmt(m.last30, unit)} in 30</span>
       <Spark series={m.series} lower={m.lower_is_better} />
     </div>
   );
 }
 
-function KpiTile({ k }: { k: PerfKpi }) {
-  const pct = k.target && k.value != null ? Math.min(100, Math.round((k.value / k.target) * 100)) : null;
+function KpiTile({ k, slug }: { k: PerfKpi; slug: string }) {
+  const lower = k.kpi === "rank_positions" || k.kpi === "cac";
+  const raw = k.target && k.value != null ? (lower ? k.target / Math.max(k.value, 1e-9) : k.value / k.target) : null;
+  const pct = raw == null ? null : Math.min(100, Math.round(raw * 100));
   return (
-    <div className={`pcard perf-tile kpi ${k.measured ? "" : "dim"}`}>
-      <p className="cap">
-        <Target size={12} /> {k.label ?? k.kpi}
-      </p>
+    <div className={`gbox perf-tile kpi ${k.measured ? "" : "dim"}`}>
+      <span className="lbl">{k.label ?? k.kpi}</span>
       <p className="ttl">{k.title}</p>
       {k.measured ? (
         <>
           <p className="big">
-            {fmt(k.value, k.unit)} <Trend now={k.value} prev={k.prev} lower={k.kpi === "rank_positions" || k.kpi === "cac"} />
+            {fmt(k.value, k.unit)} <Trend now={k.value} prev={k.prev} lower={lower} />
           </p>
-          {k.target != null && (
-            <>
-              <p className="muted sm">
-                of {fmt(k.target, k.unit)} · {pct}%
-              </p>
-              <div className="bar">
-                <i style={{ width: `${pct ?? 0}%` }} />
-              </div>
-            </>
-          )}
-          {k.target == null && <p className="muted sm">last {k.window_days} days · no target set</p>}
+          <div className="plan-bar">
+            <span style={{ width: `${pct ?? 0}%` }} />
+          </div>
+          <span className="sub">{k.target != null ? `of ${fmt(k.target, k.unit)} · ${pct}%` : `last ${k.window_days} days · no target`}</span>
         </>
       ) : (
-        <p className="muted sm">{k.source ? `Needs a ${k.source} source` : "Nothing measures this KPI yet"}</p>
+        <>
+          <div className="plan-bar" />
+          <span className="sub">
+            <Link to={`/p/${slug}/abilities#marketplace`}>{k.source ? `Connect a ${k.source} source` : "Connect a source"}</Link>
+          </span>
+        </>
       )}
     </div>
   );
