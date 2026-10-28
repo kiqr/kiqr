@@ -4,12 +4,11 @@
 // user reads it, asks for a new one, and keeps campaigns by hand if they like.
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, Calendar, Check, ListChecks, Loader2, MessagesSquare, Plus, Send, Sparkles, Target, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, ListChecks, Loader2, MessagesSquare, Plus, Send, Sparkles, Target, Trash2, X } from "lucide-react";
 import { api, useAsync, useEvents, type Campaign, type Objective, type PerfKpi } from "../api";
 import { fmt } from "./Performance";
 import { openSeemo } from "../SeemoWidget";
 import { networkName, useNetworks } from "../networks";
-import { ago } from "./Project";
 import { whenAt } from "./AssetActions";
 import "../profile.css";
 import "../chat.css";
@@ -215,31 +214,31 @@ function ObjectiveCard({ o, kpi, campaigns, measured, slug }: { o: Objective; kp
   const lower = LOWER_IS_BETTER.has(o.kpi);
   const change = has && measured!.prev ? (measured!.value! - measured!.prev) / measured!.prev : null;
   const good = change == null ? null : lower ? change < 0 : change > 0;
+  const by = o.by ? new Date(o.by).toLocaleDateString([], { day: "numeric", month: "short" }) : null;
+  const tip = [o.why, by && `By ${by}`, campaigns.length > 0 && (campaigns.length === 1 ? "1 campaign" : `${campaigns.length} campaigns`)].filter(Boolean).join(" · ");
   return (
-    <article className={`gbox plan-goal ${o.status}`}>
-      <div className="plan-goal-top">
+    <article className={`gbox plan-row ${o.status}`} title={tip}>
+      <div className="plan-row-top">
         <h3>{o.title}</h3>
         {o.status !== "active" ? (
-          <span className={`chip ${o.status === "done" ? "ok" : ""}`}>{o.status}</span>
-        ) : (
-          change != null &&
-          Math.abs(change) >= 0.005 && (
-            <span className={`delta ${good ? "up" : "down"}`} title={`Against the ${measured!.window_days} days before`}>
-              {change > 0 ? "+" : "−"}
-              {Math.round(Math.abs(change) * 100)}%
-            </span>
-          )
-        )}
+          <span className="fig dim">{o.status}</span>
+        ) : change != null && Math.abs(change) >= 0.005 ? (
+          <span className={`fig ${good ? "" : "bad"}`}>
+            {change > 0 ? "+" : "−"}
+            {Math.round(Math.abs(change) * 100)}%
+          </span>
+        ) : p != null ? (
+          <span className="fig dim">{Math.round(p * 100)}%</span>
+        ) : null}
       </div>
-      {o.why && <p className="ds">{o.why}</p>}
       <div className="plan-bar" role="progressbar" aria-label={`${o.title}: progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={p == null ? undefined : Math.round(p * 100)}>
         <span style={{ width: `${Math.round((p ?? 0) * 100)}%` }} />
       </div>
-      <div className="plan-goal-num">
-        <span className="kpi">{kpi}</span>
+      <div className="plan-row-num">
+        <span>{kpi}</span>
         {has ? (
           <Link to={`/p/${slug}/performance`}>
-            <b>{fmt(measured!.value, o.unit)}</b>
+            <b>{fmt(measured!.value)}</b>
             {target ? ` of ${target}` : ""}
           </Link>
         ) : o.status === "active" ? (
@@ -248,20 +247,10 @@ function ObjectiveCard({ o, kpi, campaigns, measured, slug }: { o: Objective; kp
           </Link>
         ) : target ? (
           <span>
-            target <b>{target}</b>
+            of <b>{target}</b>
           </span>
         ) : null}
       </div>
-      {(o.by || campaigns.length > 0) && (
-        <p className="plan-goal-foot">
-          {o.by && (
-            <span>
-              <Calendar size={11} /> by {new Date(o.by).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}
-            </span>
-          )}
-          {campaigns.length > 0 && <span>{campaigns.length === 1 ? "1 campaign" : `${campaigns.length} campaigns`}</span>}
-        </p>
-      )}
     </article>
   );
 }
@@ -278,6 +267,7 @@ function through(start?: string | null, end?: string | null): number | null {
 function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChange: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [open, setOpen] = useState(false);
   const run = async (what: string, fn: () => Promise<unknown>) => {
     setBusy(what);
     try {
@@ -288,19 +278,22 @@ function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChan
       setConfirm(false);
     }
   };
-  const dates = [c.start, c.end].filter(Boolean).map((d) => new Date(d!).toLocaleDateString([], { day: "numeric", month: "short" }));
-  const at = c.status === "active" ? through(c.start, c.end) : null;
+  const day = (d: string) => new Date(d).toLocaleDateString([], { day: "numeric", month: "short" });
+  const at = through(c.start, c.end);
+  const published = c.assets.filter((a) => a.status === "published").length;
+  // The bar: how far through its dates, else how much of what was made went out.
+  const p = c.status === "done" ? 1 : at ?? (c.assets.length ? published / c.assets.length : null);
+  const when = c.start && c.end ? `${day(c.start)} – ${day(c.end)}` : c.start ? `from ${day(c.start)}` : c.end ? `until ${day(c.end)}` : null;
+  const items = c.assets.length + c.tasks.length;
+  const tip = [c.goal, c.objective_title && `For: ${c.objective_title}`, c.channels.length > 0 && c.channels.join(", "), c.created_by.startsWith("chat:") ? "Proposed by Seemo" : null].filter(Boolean).join(" · ");
   return (
-    <div className={`gbox plan-camp ${c.status}`}>
-      <div className="row">
-        <h3>
-          {c.title}
-          <span className={`chip ${c.status === "active" ? "ok" : ""}`}>{c.status}</span>
-        </h3>
-        <div className="acts">
+    <article className={`gbox plan-row camp ${c.status}`} title={tip}>
+      <div className="plan-row-top">
+        <h3>{c.title}</h3>
+        <span className="acts">
           {c.status === "active" ? (
             <button className="btn t sm" disabled={!!busy} title="Mark it done" onClick={() => void run("done", () => api.updateCampaign(slug, c.id, { status: "done" }))}>
-              {busy === "done" ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Done
+              {busy === "done" ? <Loader2 size={12} className="spin" /> : <Check size={12} />} Done
             </button>
           ) : (
             <button className="btn t sm" disabled={!!busy} onClick={() => void run("active", () => api.updateCampaign(slug, c.id, { status: "active" }))}>
@@ -312,43 +305,32 @@ function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChan
               <button className="btn t sm bad" disabled={!!busy} onClick={() => void run("rm", () => api.deleteCampaign(slug, c.id))}>
                 Remove
               </button>
-              <button className="btn t sm" onClick={() => setConfirm(false)}>
-                <X size={13} />
+              <button className="btn t sm" aria-label="Keep it" onClick={() => setConfirm(false)}>
+                <X size={12} />
               </button>
             </>
           ) : (
             <button className="btn t sm" aria-label="Remove" title="Remove the campaign; its assets and tasks stay" onClick={() => setConfirm(true)}>
-              <Trash2 size={13} />
+              <Trash2 size={12} />
             </button>
           )}
-        </div>
+        </span>
+        <span className={`fig ${c.status === "active" ? "" : "dim"}`}>{c.status !== "active" ? c.status : at === 0 ? "upcoming" : at != null && at < 1 ? `${Math.round(at * 100)}%` : "active"}</span>
       </div>
-      {c.goal && <p className="ds">{c.goal}</p>}
-      {at != null && (
-        <div className="plan-time" title={at >= 1 ? "Its dates have passed" : `${Math.round(at * 100)}% of the way through its dates`}>
-          <span className="lbl">{dates[0]}</span>
-          <div className="line">
-            <span style={{ width: `${Math.round(at * 100)}%` }} />
-            {at > 0 && at < 1 && <i style={{ left: `${Math.round(at * 100)}%` }} />}
-          </div>
-          <span className="lbl">{dates[1]}</span>
-        </div>
-      )}
-      <p className="meta">
-        {c.objective_title && (
-          <span>
-            <Target size={11} /> {c.objective_title}
-          </span>
+      <div className="plan-bar">
+        <span style={{ width: `${Math.round((p ?? 0) * 100)}%` }} />
+      </div>
+      <div className="plan-row-num">
+        <span>{when ?? (c.objective_title || "no dates")}</span>
+        {items > 0 ? (
+          <button className="lnk" onClick={() => setOpen(!open)} aria-expanded={open}>
+            <b>{published}</b> of {c.assets.length} out{c.tasks.length ? ` · ${c.tasks.length} task${c.tasks.length > 1 ? "s" : ""}` : ""}
+          </button>
+        ) : (
+          <span>nothing made yet</span>
         )}
-        {c.channels.length > 0 && <span>{c.channels.join(", ")}</span>}
-        {dates.length > 0 && at == null && (
-          <span>
-            <Calendar size={11} /> {dates.join(" to ")}
-          </span>
-        )}
-        <span className="muted">{c.created_by.startsWith("chat:") ? "proposed by Seemo" : "yours"} · {c.updated_at ? ago(c.updated_at) : ""}</span>
-      </p>
-      {(c.assets.length > 0 || c.tasks.length > 0) && (
+      </div>
+      {open && (
         <ul className="plan-items">
           {c.tasks.map((t) => (
             <li key={`t-${t.id}`}>
@@ -371,7 +353,7 @@ function CampaignCard({ slug, c, onChange }: { slug: string; c: Campaign; onChan
           ))}
         </ul>
       )}
-    </div>
+    </article>
   );
 }
 

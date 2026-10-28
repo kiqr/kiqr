@@ -247,13 +247,6 @@ a.stat:hover { text-decoration: none; border-color: color-mix(in oklab, var(--ac
 /* skills or abilities? */
 
 /* Your business → Plan */
-.plan-camp .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
-.plan-camp .meta span { display: inline-flex; align-items: center; gap: 4px; }
-.plan-camp .row { display: flex; align-items: flex-start; gap: 10px; }
-.plan-camp h3 { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 600; margin: 0; flex: 1 1 auto; min-width: 0; }
-.plan-camp .acts { display: flex; gap: 4px; flex: none; }
-.plan-camp .ds { font-size: 13px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
-.plan-camp.done, .plan-camp.dropped { opacity: .75; }
 .plan-items { list-style: none; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
 .plan-items li { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .plan-items li svg { color: var(--accent-2); flex: none; }
@@ -310,31 +303,7 @@ a.stat:hover { text-decoration: none; border-color: color-mix(in oklab, var(--ac
 .plan-ring-c b { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
 .plan-ring-c small { font: 10.5px var(--mono); line-height: 1.3; color: var(--dim); }
 
-.plan-goals { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
-.plan-goal.done, .plan-goal.dropped { opacity: .7; }
-.plan-goal-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.plan-goal h3 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.35; }
-.plan-goal .delta { flex: none; font: 600 12px var(--mono); }
-.plan-goal .delta.up { color: var(--accent); }
-.plan-goal .delta.down { color: var(--bad); }
-.plan-goal .ds { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.plan-goal .ds:hover { -webkit-line-clamp: unset; }
-.plan-goal-num { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; font: 12px var(--mono); color: var(--dim); }
-.plan-goal-num .kpi { white-space: nowrap; }
-.plan-goal-num > :last-child { margin-left: auto; text-align: right; }
-.plan-goal-num a { color: var(--dim); }
-.plan-goal-num a:hover { color: var(--accent); text-decoration: none; }
-.plan-goal-num a.connect { color: var(--accent); }
-.plan-goal-num b { color: var(--fg); font-weight: 600; }
-.plan-goal-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0; font-size: 12px; color: var(--muted); }
-.plan-goal-foot span { display: inline-flex; align-items: center; gap: 4px; }
 
-.plan-camps { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
-.plan-camp { gap: 0; }
-.plan-time { display: flex; align-items: center; gap: 10px; margin-top: 10px; font: 11px var(--mono); color: var(--dim); }
-.plan-time .line { position: relative; flex: 1; height: 4px; border-radius: 999px; background: color-mix(in oklab, var(--fg) 8%, transparent); }
-.plan-time .line span { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
-.plan-time .line i { position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%; background: var(--fg); border: 2px solid var(--bg); transform: translate(-50%, -50%); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 30%, transparent); }
 
 /* Performance */
 .perf-connect { display: flex; align-items: center; gap: 16px; padding: 16px 20px; }
@@ -368,3 +337,26 @@ a.stat:hover { text-decoration: none; border-color: color-mix(in oklab, var(--ac
   .gl { animation: none; }
   .plan-ring .fill, .plan-bar span { transition: none; }
 }
+
+/* Objectives and campaigns: a title with one figure, the bar, one mono row. */
+.plan-goals, .plan-camps { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 10px; }
+.plan-row { gap: 10px; padding: 14px 16px 13px; }
+.plan-row.done, .plan-row.dropped { opacity: .65; }
+.plan-row-top { display: flex; align-items: baseline; gap: 10px; }
+.plan-row h3 { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -.01em; line-height: 1.35; }
+.plan-row .fig { flex: none; font: 600 12.5px var(--mono); color: var(--accent); }
+.plan-row .fig.bad { color: var(--bad); }
+.plan-row .fig.dim { color: var(--dim); font-weight: 500; }
+.plan-row .plan-bar { height: 8px; }
+.plan-row-num { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font: 13px var(--mono); color: var(--dim); }
+.plan-row-num > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-row-num > :last-child { flex: none; }
+.plan-row-num b { color: var(--fg); font-weight: 600; }
+.plan-row-num a, .plan-row-num .lnk { color: var(--dim); font: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.plan-row-num a:hover, .plan-row-num .lnk:hover { color: var(--accent); text-decoration: none; }
+.plan-row-num a.connect { color: var(--accent); }
+.plan-row .acts { display: flex; gap: 2px; opacity: 0; transition: opacity .2s; }
+.plan-row:hover .acts, .plan-row:focus-within .acts { opacity: 1; }
+.plan-row .acts .btn { padding: 2px 6px; }
+.plan-row .plan-items { margin-top: 2px; }
+@media (hover: none) { .plan-row .acts { opacity: 1; } }
