@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, RefreshCw, Search, Terminal, X } from "lucide-react";
 import { api, type Ability, type Scope } from "../api";
-import { AbilityIcon, Author, OneClick, oneClick } from "./abilityBits";
+import { AbilityIcon, Author, hasNewer, OneClick, oneClick } from "./abilityBits";
 
 const SHELVES: { id: string; label: string }[] = [
   { id: "all", label: "All" },
@@ -94,7 +94,7 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const newer = a.installed && !!a.updatable && !!a.latest && a.latest !== a.version;
+  const newer = a.installed && !!a.updatable && hasNewer(a);
   const update = async () => {
     setBusy(true);
     setError(null);

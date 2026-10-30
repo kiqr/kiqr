@@ -117,6 +117,15 @@ export function oneClick(a: Ability): boolean {
 }
 const ONE_CLICK_CORE = ["unblockingapi"];
 
+/** The index offers a newer version than the one installed (an older index, cached before a push, offers none). */
+export function hasNewer(a: Ability): boolean {
+  if (!a.latest || !a.version) return false;
+  const parts = (v: string) => v.replace(/^v/, "").split(/[.+-]/).slice(0, 3).map((n) => parseInt(n, 10) || 0);
+  const [l, c] = [parts(a.latest), parts(a.version)];
+  for (let i = 0; i < 3; i++) if ((l[i] ?? 0) !== (c[i] ?? 0)) return (l[i] ?? 0) > (c[i] ?? 0);
+  return false;
+}
+
 /** The label on abilities that connect with one click. */
 export function OneClick() {
   return (

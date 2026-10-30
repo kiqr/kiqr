@@ -15,7 +15,7 @@ import { SignInById } from "./SignIns";
 import { Switch } from "./Switch";
 import { InstallPanel } from "./Marketplace";
 import { parseInstructions, TeachForm, type TeachDraft } from "./TeachForm";
-import { AbilityIcon, Author, needsOf, OneClick, oneClick, partsOf, stateOf } from "./abilityBits";
+import { AbilityIcon, Author, hasNewer, needsOf, OneClick, oneClick, partsOf, stateOf } from "./abilityBits";
 
 type Tab = "overview" | "instructions" | "connect";
 
@@ -68,7 +68,7 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
             <p className="by">
               by <Author a={a} />
               {a.version && <span> · v{a.version}</span>}
-              {a.latest && a.version && a.latest !== a.version && <span className="warn"> · v{a.latest} available</span>}
+              {hasNewer(a) && <span className="warn"> · v{a.latest} available</span>}
               {a.cost && <span> · {a.cost}</span>}
               {a.core && <span> · part of KIQR</span>}
             </p>

@@ -13,7 +13,7 @@ import { Switch } from "./Switch";
 import { AbilityModal } from "./AbilityModal";
 import { Advanced, Marketplace } from "./Marketplace";
 import { TeachForm, type TeachDraft } from "./TeachForm";
-import { AbilityIcon, Author, isOn, OneClick, oneClick, RELOAD_ON, stateOf } from "./abilityBits";
+import { AbilityIcon, Author, hasNewer, isOn, OneClick, oneClick, RELOAD_ON, stateOf } from "./abilityBits";
 import "../profile.css";
 import "../settings.css";
 import "../chat.css";
@@ -193,7 +193,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
     }
   };
   const needs = !a.ready && a.installed;
-  const newer = a.installed && a.updatable && !!a.latest && a.latest !== a.version;
+  const newer = a.installed && a.updatable && hasNewer(a);
   return (
     <li className={`mk-row ab-row ${isOn(a) ? "on" : "off"}`}>
       <div className="main" role="button" tabIndex={0} onClick={() => onOpen(a)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen(a))}>
@@ -210,7 +210,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
           </p>
           <p className="ds">
             by <Author a={a} />
-            {a.version && a.latest && a.latest !== a.version && !newer && <span className="warn"> · update available</span>}
+            {hasNewer(a) && !newer && <span className="warn"> · update available</span>}
             <span className="ab-parts">
               {a.instructions.length > 0 && (
                 <button className="part" title="Read or edit how Seemo does this" onClick={(e) => (e.stopPropagation(), onOpen(a, "instructions"))}>
