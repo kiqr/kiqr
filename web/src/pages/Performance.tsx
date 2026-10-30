@@ -2,7 +2,8 @@
 // KPI with its value and target, the metrics per source with the last seven
 // days against the seven before and a 30-day line, the top queries and pages,
 // and where each number came from. Read from daily snapshots; Refresh reads
-// the sources again.
+// the sources again. Goals first; the analytics sources share one tabbed
+// panel so a second connected source does not push the rest down a screen.
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Loader2, Minus, RefreshCw, Sparkles, Target } from "lucide-react";
@@ -34,6 +35,23 @@ export function PerformancePage() {
   };
   const connected = (d?.sources ?? []).filter((s) => s.provider && s.id !== "kiqr");
   const bySource = (id: string) => (d?.metrics ?? []).filter((m) => m.source === id);
+  const tabs = (d?.sources ?? []).filter((s) => s.id !== "kiqr" && bySource(s.id).length > 0);
+  const [tab, setTab] = useState(() => {
+    try {
+      return localStorage.getItem("kiqr.perf.tab") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const pick = (id: string) => {
+    setTab(id);
+    try {
+      localStorage.setItem("kiqr.perf.tab", id);
+    } catch {
+      /* the tab is only remembered when storage works */
+    }
+  };
+  const cur = tabs.find((s) => s.id === tab) ?? tabs[0];
   return (
     <div className="prof perf">
       <div className="cm-head">
@@ -58,6 +76,43 @@ export function PerformancePage() {
         </ul>
       )}
 
+      {d && (d.kpis.length > 0 || bySource("kiqr").length > 0) && (
+        <section className="gl perf-sec">
+          <div className="gl-top">
+            <span className="gl-ic">
+              <Target size={14} />
+            </span>
+            <b>Goals</b>
+            <span className="gl-meta">
+              {d.plan_period ?? ""}
+              <Link className="lnk sm" to={`/p/${slug}/plan`}>
+                The plan
+              </Link>
+            </span>
+          </div>
+          {d.kpis.length > 0 && (
+            <div className="perf-tiles kpis">
+              {d.kpis.map((k) => (
+                <KpiTile key={k.objective} k={k} slug={slug} />
+              ))}
+            </div>
+          )}
+          {bySource("kiqr").length > 0 && (
+            <div className="perf-own">
+              <span className="cap">
+                <Sparkles size={11} /> {d.sources.find((s) => s.id === "kiqr")?.label ?? "Published by KIQR"}
+              </span>
+              {bySource("kiqr").map((m) => (
+                <span key={m.metric} className="perf-own-m">
+                  {m.label} <b>{fmt(m.last7)}</b> in 7 days <Trend now={m.last7} prev={m.prev7} lower={m.lower_is_better} /> · {fmt(m.last30)} in 30
+                </span>
+              ))}
+            </div>
+          )}
+          <Tops tops={d.tops} source="kiqr" />
+        </section>
+      )}
+
       {d && connected.length === 0 && (
         <div className="gl perf-connect">
           <span className="gl-ic big">
@@ -73,108 +128,99 @@ export function PerformancePage() {
         </div>
       )}
 
-      {d && d.kpis.length > 0 && (
+      {d && tabs.length > 0 && cur && (
         <section className="gl perf-sec">
-          <div className="gl-top">
+          <div className="gl-top perf-tabbar">
             <span className="gl-ic">
-              <Target size={14} />
+              <BarChart3 size={14} />
             </span>
-            <b>Plan KPIs</b>
-            <span className="gl-meta">
-              {d.plan_period ?? ""}
-              <Link className="lnk sm" to={`/p/${slug}/plan`}>
-                The plan
-              </Link>
-            </span>
-          </div>
-          <div className="perf-tiles kpis">
-            {d.kpis.map((k) => (
-              <KpiTile key={k.objective} k={k} slug={slug} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {d &&
-        d.sources
-          .filter((s) => bySource(s.id).length > 0)
-          .map((s) => (
-            <section className="gl perf-sec" key={s.id}>
-              <div className="gl-top">
-                <span className="gl-ic">
-                  <BarChart3 size={14} />
-                </span>
-                <b>{s.label}</b>
-                <span className="gl-meta">
-                  {s.provider && s.provider !== "kiqr" ? `via ${s.provider}` : ""}
-                  {s.taken_at && <span>· {ago(s.taken_at)}</span>}
-                </span>
-              </div>
-              <div className="perf-tiles">
-                {bySource(s.id).map((m) => (
-                  <MetricTile key={m.metric} m={m} />
+            {tabs.length > 1 ? (
+              <div className="perf-tabs" role="tablist">
+                {tabs.map((s) => (
+                  <button key={s.id} role="tab" aria-selected={s.id === cur.id} className={s.id === cur.id ? "on" : ""} onClick={() => pick(s.id)}>
+                    {s.label}
+                  </button>
                 ))}
               </div>
-              <div className="perf-tops">
-                {Object.entries(d.tops)
-                  .filter(([k]) => k.startsWith(`${s.id}.`))
-                  .map(([k, rows]) => {
-                    const [, metric, dim] = k.split(".");
-                    return (
-                      <div className="gbox perf-top" key={k}>
-                        <p className="cap">
-                          {dim === "query" ? "Top queries" : dim === "page" ? "Top pages" : dim === "event" ? "Key events" : dim === "channel" ? "By channel" : dim === "source" ? "Sources" : dim} · {metric.replace("_", " ")}
-                        </p>
-                        <table>
-                          <tbody>
-                            {rows.slice(0, 12).map((r) => (
-                              <tr key={r.key}>
-                                <td className="k">{r.key}</td>
-                                <td className="v mono">{fmt(r.value)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    );
-                  })}
-              </div>
-            </section>
-          ))}
-
-      {d && (
-        <section className="gl perf-sec">
-          <div className="gl-top">
-            <span className="gl-ic">
-              <Sparkles size={14} />
+            ) : (
+              <b>{cur.label}</b>
+            )}
+            <span className="gl-meta">
+              {cur.provider && cur.provider !== "kiqr" ? `via ${cur.provider}` : ""}
+              {cur.taken_at && <span>· {ago(cur.taken_at)}</span>}
             </span>
-            <b>Sources</b>
           </div>
-          <ul className="perf-sources">
-            {d.sources
-              .filter((s) => s.id !== "kiqr")
-              .map((s) => (
-                <li key={s.id} className={s.provider ? "on" : ""}>
-                  <b>{s.label}</b>
-                  {s.provider ? (
-                    <span>
-                      via {s.candidates.find((c) => c.id === s.provider)?.name ?? s.provider}
-                      {s.taken_at ? ` · taken ${ago(s.taken_at)}` : " · not read yet"}
-                    </span>
-                  ) : s.candidates.length ? (
-                    <span className="warn">
-                      {s.candidates.map((c) => c.name).join(", ")} installed but not connected. <Link to={`/p/${slug}/abilities#ability=${s.candidates[0].id}`}>Connect</Link>
-                    </span>
-                  ) : (
-                    <span className="muted">
-                      nothing reads it yet. <Link to={`/p/${slug}/abilities#marketplace`}>Marketplace</Link>
-                    </span>
-                  )}
-                </li>
-              ))}
-          </ul>
+          <div className="perf-tiles">
+            {bySource(cur.id).map((m) => (
+              <MetricTile key={m.metric} m={m} />
+            ))}
+          </div>
+          <Tops tops={d.tops} source={cur.id} />
         </section>
       )}
+
+      {d && (
+        <ul className="perf-sources">
+          {d.sources
+            .filter((s) => s.id !== "kiqr")
+            .map((s) => (
+              <li key={s.id} className={s.provider ? "on" : s.candidates.length ? "warn" : ""}>
+                <b>{s.label}</b>
+                {s.provider ? (
+                  <span>
+                    {s.candidates.find((c) => c.id === s.provider)?.name ?? s.provider}
+                    {s.taken_at ? ` · ${ago(s.taken_at)}` : " · not read yet"}
+                  </span>
+                ) : s.candidates.length ? (
+                  <Link to={`/p/${slug}/abilities#ability=${s.candidates[0].id}`}>Connect {s.candidates[0].name}</Link>
+                ) : (
+                  <Link to={`/p/${slug}/abilities#marketplace`}>Find a source</Link>
+                )}
+              </li>
+            ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const TOP_LABEL: Record<string, string> = { query: "Top queries", page: "Top pages", event: "Key events", channel: "By channel", source: "Sources" };
+
+/** The top lists for one source, five rows each until opened. */
+function Tops({ tops, source }: { tops: Record<string, { key: string; value: number }[]>; source: string }) {
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const lists = Object.entries(tops).filter(([k]) => k.startsWith(`${source}.`));
+  if (!lists.length) return null;
+  return (
+    <div className="perf-tops">
+      {lists.map(([k, rows]) => {
+        const [, metric, dim] = k.split(".");
+        const all = open[k];
+        return (
+          <div className="gbox perf-top" key={k}>
+            <p className="cap">
+              {TOP_LABEL[dim] ?? dim} · {metric.replace("_", " ")}
+            </p>
+            <table>
+              <tbody>
+                {rows.slice(0, all ? 25 : 5).map((r) => (
+                  <tr key={r.key}>
+                    <td className="k" title={r.key}>
+                      {r.key}
+                    </td>
+                    <td className="v mono">{fmt(r.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {rows.length > 5 && (
+              <button className="perf-more" onClick={() => setOpen({ ...open, [k]: !all })}>
+                {all ? "Show fewer" : `Show all ${Math.min(rows.length, 25)}`}
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -221,13 +267,13 @@ function Spark({ series, lower }: { series: { date: string; value: number }[]; l
 function MetricTile({ m }: { m: PerfMetric }) {
   const unit = m.metric === "conversion_rate" || m.metric === "ctr" ? "%" : "";
   return (
-    <div className="gbox perf-tile">
+    <div className="gbox perf-tile" title={`Last 7 days against the 7 before · ${fmt(m.last30, unit)} in 30 days`}>
       <span className="lbl">{m.label}</span>
       <p className="big">
         {fmt(m.last7, unit)} <Trend now={m.last7} prev={m.prev7} lower={m.lower_is_better} />
       </p>
-      <span className="sub">last 7 days · {fmt(m.last30, unit)} in 30</span>
       <Spark series={m.series} lower={m.lower_is_better} />
+      <span className="sub">7d · {fmt(m.last30, unit)} in 30d</span>
     </div>
   );
 }
@@ -239,16 +285,24 @@ function KpiTile({ k, slug }: { k: PerfKpi; slug: string }) {
   return (
     <div className={`gbox perf-tile kpi ${k.measured ? "" : "dim"}`}>
       <span className="lbl">{k.label ?? k.kpi}</span>
-      <p className="ttl">{k.title}</p>
+      <p className="ttl" title={k.title}>
+        {k.title}
+      </p>
       {k.measured ? (
         <>
           <p className="big">
-            {fmt(k.value, k.unit)} <Trend now={k.value} prev={k.prev} lower={lower} />
+            {fmt(k.value)}
+            {k.unit && (
+              <span className="unit" title={k.unit}>
+                {k.unit}
+              </span>
+            )}
+            <Trend now={k.value} prev={k.prev} lower={lower} />
           </p>
           <div className="plan-bar">
             <span style={{ width: `${pct ?? 0}%` }} />
           </div>
-          <span className="sub">{k.target != null ? `of ${fmt(k.target, k.unit)} · ${pct}%` : `last ${k.window_days} days · no target`}</span>
+          <span className="sub">{k.target != null ? `of ${fmt(k.target)} · ${pct}%` : `last ${k.window_days} days · no target`}</span>
         </>
       ) : (
         <>
