@@ -88,7 +88,7 @@ pub fn interrupt(pid: u32, grace: std::time::Duration) {
     }
     #[cfg(windows)]
     {
-        let quiet = |force: bool| {
+        let quiet = move |force: bool| {
             let mut c = std::process::Command::new("taskkill");
             c.args(["/PID", &pid.to_string(), "/T"]);
             if force {
