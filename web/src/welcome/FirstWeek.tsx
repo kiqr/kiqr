@@ -31,7 +31,7 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
       .createChat(slug, "Your first marketing plan")
       .then(async (c) => {
         setChat(c.id);
-        openSeemo(c.id);
+        openSeemo(c.id, { expanded: true });
         await api.sendMessage(slug, c.id, `${ASK_FOR_PLAN} This is our first plan together: keep it to what fits the time I have.`);
       })
       .catch(() => setPlanState("failed"));
@@ -90,7 +90,7 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
           <div className="row">
             <p className="muted">It's ready. Look it over in the chat and approve it, or ask me to change something.</p>
             {chat && (
-              <button className="btn p sm" onClick={() => openSeemo(chat)}>
+              <button className="btn p sm" onClick={() => openSeemo(chat, { expanded: true })}>
                 <MessageSquare size={13} /> Open the plan
               </button>
             )}
@@ -100,7 +100,7 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
           <div className="row">
             <p className="muted">I couldn't write the plan just now.</p>
             {chat && (
-              <button className="btn g sm" onClick={() => openSeemo(chat)}>
+              <button className="btn g sm" onClick={() => openSeemo(chat, { expanded: true })}>
                 See why
               </button>
             )}

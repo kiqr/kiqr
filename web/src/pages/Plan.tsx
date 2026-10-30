@@ -39,7 +39,7 @@ export function PlanPage() {
     setError(null);
     try {
       const c = await api.createChat(slug, plan ? "Revise the marketing plan" : "A marketing plan");
-      openSeemo(c.id);
+      openSeemo(c.id, { expanded: true });
       await api.sendMessage(slug, c.id, text);
     } catch (e) {
       setError((e as Error).message);

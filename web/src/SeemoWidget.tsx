@@ -4,22 +4,23 @@
 // getting-started guide) opens the widget with `openSeemo(chatId)`.
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Maximize2, Minus, Plus } from "lucide-react";
+import { Maximize2, MessagesSquare, Minimize2, Minus, Plus } from "lucide-react";
 import { api, useDemoSeemo, useEvents, type KiqrEvent } from "./api";
 import { Composer, Conversation } from "./chat/Conversation";
 import { activeChatKey, useChat } from "./useChat";
 
 const OPEN_EVENT = "kiqr:seemo-open";
 
-/** Open the widget on this chat, from anywhere in the app. */
-export function openSeemo(chat: string) {
-  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: { chat } }));
+/** Open the widget on this chat, from anywhere in the app; `expanded` opens it as a large chat window. */
+export function openSeemo(chat: string, opts: { expanded?: boolean } = {}) {
+  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: { chat, expanded: opts.expanded } }));
 }
 
 type Narration = { text: string; at: Date };
 
 export function SeemoWidget({ project }: { project: string | null }) {
   const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [unread, setUnread] = useState(0);
   const [crawling, setCrawling] = useState(false);
   const [building, setBuilding] = useState<string | null>(null);
@@ -49,8 +50,9 @@ export function SeemoWidget({ project }: { project: string | null }) {
 
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const id = (e as CustomEvent<{ chat: string }>).detail?.chat;
-      if (id) setActive(id);
+      const d = (e as CustomEvent<{ chat: string; expanded?: boolean }>).detail;
+      if (d?.chat) setActive(d.chat);
+      if (d?.expanded) setExpanded(true);
       setOpen(true);
       setUnread(0);
     };
@@ -116,7 +118,7 @@ export function SeemoWidget({ project }: { project: string | null }) {
   );
 
   return (
-    <div className="seemo" role="dialog" aria-label="Seemo">
+    <div className={`seemo ${expanded ? "expanded" : ""}`} role="dialog" aria-label="Seemo">
       <div className="top">
         <span className="av" />
         <div style={{ minWidth: 0 }}>
@@ -127,16 +129,20 @@ export function SeemoWidget({ project }: { project: string | null }) {
           <button onClick={startNew} aria-label="New chat" title="New chat">
             <Plus size={16} />
           </button>
+          <button onClick={() => setExpanded((x) => !x)} aria-label={expanded ? "Make smaller" : "Make larger"} title={expanded ? "Make smaller" : "Make larger"}>
+            {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+          </button>
           <a
             href={`/p/${project}/chats${active ? `/${active}` : ""}`}
             aria-label="Open in Chats"
             title="Open in Chats"
             onClick={(e) => {
               e.preventDefault();
+              setExpanded(false);
               navigate(`/p/${project}/chats${active ? `/${active}` : ""}`);
             }}
           >
-            <Maximize2 size={15} />
+            <MessagesSquare size={15} />
           </a>
           <button aria-label="Minimize" title="Minimize" onClick={() => setOpen(false)}>
             <Minus size={16} />

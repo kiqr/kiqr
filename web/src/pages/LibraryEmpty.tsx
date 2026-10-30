@@ -227,7 +227,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       } catch {
         /* private window */
       }
-      openSeemo(c.id);
+      openSeemo(c.id, { expanded: true });
       await api.sendMessage(slug, c.id, "Write three social media posts for the library as draft post assets, with an on-brand image on most of them, following the instructions for social media posts and images, and tell me when they are in.");
       if (DEMO) {
         window.setTimeout(() => {
