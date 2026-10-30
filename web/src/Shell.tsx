@@ -29,6 +29,7 @@ import { SeemoWidget } from "./SeemoWidget";
 import { CloudStatus } from "./CloudStatus";
 import { TODO_EVENTS } from "./pages/Todo";
 import { Moving, addressUrl } from "./pages/GlobalSettings";
+import { Logo } from "./Logo";
 
 type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number; hot?: boolean };
 
@@ -136,8 +137,7 @@ export function Shell() {
     <div className={`shell ${bare ? "bare" : ""} ${arriving ? "arriving" : ""}`}>
       <aside className="side">
         <div className="mark">
-          <i />
-          KIQR
+          <Logo />
         </div>
         <ProjectSwitcher projects={list} current={current} />
         {current && (
