@@ -1,0 +1,135 @@
+/* The welcome flow: a project's first build, the reveal, the first week. Tokens from tokens.css; see DESIGN.md. */
+
+.wl { max-width: 1320px; margin: 0 auto; padding: 8px 0 48px; position: relative; }
+.wl::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: radial-gradient(ellipse 60% 45% at 50% 0%, color-mix(in oklab, var(--accent-2) 14%, transparent), transparent 70%), radial-gradient(ellipse 40% 35% at 85% 100%, color-mix(in oklab, var(--accent) 8%, transparent), transparent 70%); }
+.wl-center { min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+
+.wl-head { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+.wl-head .av { width: 40px; height: 40px; border-radius: 12px; } .wl-head .av::after { inset: 12px; }
+.wl-head .cap { margin-bottom: 2px; }
+
+.wl-grid { display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1100px) { .wl-grid { grid-template-columns: minmax(0, 1.1fr) minmax(320px, .9fr) minmax(300px, .8fr); align-items: start; } }
+
+/* The site map, compact. */
+.wl-graph { position: relative; height: 360px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); overflow: hidden; }
+@media (min-width: 1100px) { .wl-graph { height: 640px; position: sticky; top: 16px; } }
+.wl-graph-foot { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 14px; font-size: 11px; color: var(--muted); }
+.wl-graph-foot .warn { color: var(--warn); }
+
+/* The middle column: the ring, the stage, what Seemo learned. */
+.wl-center-col { display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center; }
+.wl-ring { position: relative; width: 220px; height: 220px; }
+.wl-ring svg { display: block; filter: drop-shadow(0 0 24px color-mix(in oklab, var(--accent) 18%, transparent)); }
+.wl-ring-c { position: absolute; inset: 0; display: grid; place-items: center; }
+.wl-ring-c b { font: 600 52px/1 var(--sans); letter-spacing: -.04em; }
+.wl-ring-c small { font-size: 22px; color: var(--muted); margin-left: 2px; }
+.wl-ring.done .wl-ring-c { color: var(--accent); animation: wl-pop 600ms cubic-bezier(.2,1.4,.4,1) both; }
+.wl-ring.failed svg { filter: none; opacity: .4; }
+.wl-ring.failed .wl-ring-c { color: var(--warn); }
+@keyframes wl-pop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+.wl-stage h2 { font: 600 20px/1.3 var(--sans); letter-spacing: -.01em; }
+.wl-stage p { margin-top: 4px; }
+.wl-quiet { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+.wl-steps { list-style: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 14px; font-size: 12px; color: var(--dim); }
+.wl-steps li { display: inline-flex; align-items: center; gap: 6px; }
+.wl-steps .dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--line-2); display: grid; place-items: center; }
+.wl-steps .now { color: var(--fg); } .wl-steps .now .dot { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: wl-breathe 1.6s ease-in-out infinite; }
+.wl-steps .done { color: var(--muted); } .wl-steps .done .dot { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+@keyframes wl-breathe { 50% { box-shadow: 0 0 0 6px transparent; } }
+
+.wl-act, .wl-problem { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.wl-problem p { display: inline-flex; gap: 8px; align-items: flex-start; color: var(--warn); max-width: 420px; text-align: left; }
+.wl-problem .row, .wl-part .row, .wl-fix .row, .wl-plan .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wl-leave .btn, .wl-leave span { display: inline-flex; align-items: center; gap: 6px; }
+
+.wl-brandline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.wl-brandline img { height: 26px; max-width: 110px; object-fit: contain; border-radius: 6px; background: #fff1; padding: 3px; }
+.wl-brandline i { width: 22px; height: 22px; border-radius: 7px; box-shadow: inset 0 0 0 1px #ffffff26; display: inline-block; }
+.wl-brandline .cap { margin-right: 4px; }
+
+.wl-learned { width: 100%; display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.wl-learned .cap { text-align: center; }
+.wl-fact { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: var(--r); background: color-mix(in oklab, var(--accent-2) 9%, var(--panel)); border: 1px solid color-mix(in oklab, var(--accent-2) 22%, transparent); font-size: 13px; line-height: 1.45; }
+.wl-fact .lb { font-size: 11px; color: var(--accent-2); text-transform: uppercase; letter-spacing: .06em; }
+
+/* The questions. */
+.wl-side { min-width: 0; }
+@media (min-width: 1100px) { .wl-side { position: sticky; top: 16px; } }
+.wl-intake { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); padding: 18px; min-height: 260px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.wl-q { display: flex; flex-direction: column; gap: 12px; }
+.wl-q h3 { font: 600 17px/1.35 var(--sans); }
+.wl-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.wl-chip { font: 500 13px/1 var(--sans); padding: 9px 12px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--fg); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: border-color 150ms, background 150ms, transform 120ms; }
+.wl-chip:hover { border-color: rgba(94,234,212,.5); }
+.wl-chip:active { transform: scale(.97); }
+.wl-chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.wl-own { display: flex; gap: 8px; align-items: flex-end; }
+.wl-own .input { flex: 1; min-width: 0; resize: vertical; }
+.wl-next { align-self: flex-start; }
+.wl-q-foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; }
+.wl-thanks { display: flex; gap: 12px; align-items: flex-start; }
+.wl-thanks .ok { width: 30px; height: 30px; border-radius: 50%; background: var(--ok-soft); color: var(--ok); display: grid; place-items: center; flex: none; }
+
+/* The reveal and the first week: one column, centred. */
+.wl-reveal, .wl-week { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+.wl-reveal-h { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 24px; }
+.wl-reveal-h .d1 em { font-style: normal; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.wl-reveal-h .lead { color: var(--muted); font-size: 16px; max-width: 560px; }
+.wl-parts { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .wl-parts { grid-template-columns: 1fr 1fr; } .wl-part:first-child { grid-column: 1 / -1; } }
+.wl-part { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); padding: 16px; display: flex; flex-direction: column; gap: 12px; transition: border-color 200ms; }
+.wl-part.ok { border-color: color-mix(in oklab, var(--ok) 40%, transparent); }
+.wl-part header, .wl-plan header, .wl-posts header { display: flex; align-items: center; gap: 10px; }
+.wl-part header .chip, .wl-plan header .chip { margin-left: auto; }
+.wl-part h3, .wl-plan h3, .wl-posts h3 { font: 600 15px/1.3 var(--sans); }
+.wl-part .ic, .wl-plan .ic { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: color-mix(in oklab, var(--accent-2) 14%, transparent); color: var(--accent-2); flex: none; }
+.wl-part ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.wl-part li::before { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--accent-2); margin: 0 9px 2px 0; vertical-align: middle; }
+.wl-summary { font-size: 15px; line-height: 1.6; color: var(--fg); }
+.wl-fix { display: flex; flex-direction: column; gap: 8px; }
+.wl-fix .input { width: 100%; resize: vertical; }
+.wl-blocked { text-align: center; }
+.wl-cta { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 6px; }
+.wl-big { font-size: 16px; padding: 14px 22px; border-radius: var(--r); box-shadow: 0 10px 30px color-mix(in oklab, var(--accent) 22%, transparent); }
+
+.wl-plan { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.wl-plan p { display: inline-flex; align-items: center; gap: 8px; }
+.wl-objectives { list-style: none; counter-reset: o; display: flex; flex-direction: column; gap: 8px; }
+.wl-objectives li { counter-increment: o; display: flex; flex-direction: column; gap: 2px; padding-left: 30px; position: relative; }
+.wl-objectives li::before { content: counter(o); position: absolute; left: 0; top: 0; width: 20px; height: 20px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font: 600 11px/20px var(--mono); text-align: center; }
+.wl-posts { display: flex; flex-direction: column; gap: 12px; }
+.wl-posts header .mono { margin-left: auto; }
+.wl-post-grid { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .wl-post-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.wl-post-ph { min-height: 280px; border-radius: var(--r-lg); border: 1px dashed var(--line-2); display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.wl-week.leaving > * { animation: leave 380ms cubic-bezier(.5,0,.75,0) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wl-steps .now .dot, .wl-ring.done .wl-ring-c { animation: none; }
+}
+
+/* Narrow screens: what matters first — the progress, then the questions, then the map. */
+@media (max-width: 1099px) {
+  .wl-center-col { order: 1; }
+  .wl-side { order: 2; }
+  .wl-graph { order: 3; }
+}
+
+/* "While I read" as a conversation with Seemo, in the chat's own look. */
+.wl-chat { padding: 0; gap: 0; min-height: 0; }
+.wl-chat-h { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.wl-chat-h .av { width: 30px; height: 30px; border-radius: 9px; } .wl-chat-h .av::after { inset: 8px; }
+.wl-chat-h div { display: flex; flex-direction: column; line-height: 1.3; }
+.wl-chat-h b { font-size: 14px; }
+.wl-chat-h .sm { display: inline-flex; align-items: center; gap: 6px; }
+.wl-live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 var(--accent-soft); animation: wl-breathe 1.6s ease-in-out infinite; }
+.wl-conv { padding: 16px; gap: 10px; max-height: 420px; min-height: 180px; }
+.wl-conv .cm.ai .body p { font-size: 14px; line-height: 1.5; background: var(--panel-2); border: 1px solid var(--line); padding: 9px 12px; border-radius: 14px; border-top-left-radius: 4px; display: inline-block; }
+.wl-conv .cm.ai .body p.thinking { display: inline-flex; padding: 12px 14px; }
+.wl-conv .wl-av-gap { visibility: hidden; }
+.wl-conv .cm.you .ms.y { font-size: 14px; }
+.wl-reply { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 14px; border-top: 1px solid var(--line); }
+@media (prefers-reduced-motion: reduce) { .wl-live { animation: none; } }

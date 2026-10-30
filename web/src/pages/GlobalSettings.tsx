@@ -151,11 +151,12 @@ function General({ h, config }: { h?: Health; config?: Config }) {
       <Card icon={Cloud} title="kiqr.cloud" text="Connects this KIQR agent with your third-party apps: WordPress, UnblockingAPI and more, signed in with one click instead of keys you copy. Optional; it keeps your account and nothing else.">
         <SignInById id="kiqr-cloud" />
       </Card>
-      <Card icon={Server} title="This installation" text="KIQR runs here, on your machine. Nothing leaves it except the pages it fetches and the model calls you configure.">
+      <Card icon={Server} title="This installation" text="KIQR runs here, on your machine. Nothing leaves it except the pages it fetches, the model calls you configure and an anonymous usage ping you can switch off.">
         <Rows
           rows={[
             ["Version", <Version h={h} />],
             ["Updates", <AutoUpdate />],
+            ["Usage stats", <UsagePing />],
             ["Daemon", <code>http://{h?.address ?? "127.0.0.1:4040"}</code>],
             ["Home", <code>{h?.home}</code>],
             ["Secrets", <code>{h?.env_file ?? ".env"}</code>],
@@ -186,6 +187,44 @@ function AutoUpdate() {
       <Switch on={on} disabled={busy || !config.data} onChange={toggle} />
       <span>{on ? "Installed on their own, when Seemo is not working" : "KIQR says when one is out; you install it"}</span>
     </label>
+  );
+}
+
+/** The anonymous usage ping: a switch, and exactly what it sends. */
+function UsagePing() {
+  const t = useAsync(() => api.telemetry(), []);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const d = t.data;
+  const env = d?.off_by && d.off_by !== "config" ? d.off_by : null;
+  const toggle = async (next: boolean) => {
+    setBusy(true);
+    try {
+      await api.setTelemetry(next);
+      t.reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="set-ping">
+      <label className="set-auto">
+        <Switch on={!!d?.enabled} disabled={busy || !d || !!env} onChange={toggle} />
+        <span>
+          {env === "no-cloud" ? "Off: no kiqr.cloud address is set" : env ? `Off: ${env} is set` : d?.enabled ? `An anonymous ping to kiqr.cloud every ${d.every_minutes} minutes` : "Off"}
+        </span>
+      </label>
+      {d && (
+        <button className="btn t sm" onClick={() => setOpen(!open)}>
+          {open ? "Hide" : "What's sent"}
+        </button>
+      )}
+      {open && d && (
+        <pre className="set-ping-body">
+          {JSON.stringify(d.payload, null, 2)}
+        </pre>
+      )}
+    </span>
   );
 }
 

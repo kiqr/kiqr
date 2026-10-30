@@ -5,6 +5,7 @@
 mod accounts;
 mod agent;
 mod api;
+mod build;
 mod builtin;
 mod connect;
 mod ext;
@@ -20,6 +21,7 @@ mod scheduler;
 mod seemo;
 mod signins;
 mod smtp;
+mod telemetry;
 mod update;
 mod web;
 
@@ -63,6 +65,8 @@ pub struct App {
     pub signins: signins::Shared,
     /// New KIQR versions: the last check, and the one update allowed at a time.
     pub updates: Arc<update::Updates>,
+    /// Each project's first build, folded from its crawl events.
+    pub builds: build::Builds,
 }
 
 impl App {
@@ -131,6 +135,7 @@ pub async fn run(home: Home) -> Result<()> {
         connects: Default::default(),
         signins: Default::default(),
         updates: Arc::new(update::Updates::new(&exe)),
+        builds: Default::default(),
     };
     match app.renderer.chrome() {
         Some(c) => tracing::info!("images: SVG via resvg, HTML via {}", c.display()),
@@ -139,6 +144,8 @@ pub async fn run(home: Home) -> Result<()> {
     scheduler::recover(&app);
     tokio::spawn(scheduler::run(app.clone()));
     tokio::spawn(update::run(app.clone()));
+    tokio::spawn(telemetry::run(app.clone()));
+    tokio::spawn(build::run(app.clone()));
 
     // Projects crawled before brand collection existed, or whose brand was
     // built by older rules, get it saved now, in the background, so the

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Navigate, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
 import {
   BarChart3,
@@ -113,17 +113,27 @@ export function Shell() {
     if (!DEMO) api.refreshMarketplace().catch(() => {});
   }, []);
   const projects = useAsync(() => api.projects(), []);
+  // A project's first build moving on decides whether its pages are open yet.
+  useEvents(null, (e) => e.type === "build_stage" && projects.reload(), { demo: false });
   const updateAvailable = useUpdateAvailable();
   const moving = useAddressMove();
   const list = projects.data ?? [];
   const current = list.find((p) => p.slug === slug) ?? null;
-  const { pathname } = useLocation();
-  // First run: the onboarding stands alone, centred; the sidebar arrives with the first project.
-  const bare = (projects.loading || list.length === 0) && (pathname === "/projects" || pathname === "/new");
+  const { pathname, state } = useLocation();
+  // First run: the onboarding stands alone, centred; so does a project's first build (the welcome flow).
+  const welcome = pathname.startsWith("/welcome/");
+  const bare = welcome || ((projects.loading || list.length === 0) && (pathname === "/projects" || pathname === "/new"));
+  // Fresh from the welcome flow: the sidebar arrives with a little ceremony.
+  const arriving = (state as { welcome?: boolean } | null)?.welcome === true;
   const nav = useAssetNav(current?.slug);
 
+  // Until its first build is done a project is the welcome flow, whatever page was asked for.
+  if (!DEMO && current?.build && current.build.stage !== "ready" && pathname.startsWith(`/p/${current.slug}`) && !arriving) {
+    return <Navigate to={`/welcome/${current.slug}`} replace />;
+  }
+
   return (
-    <div className={`shell ${bare ? "bare" : ""}`}>
+    <div className={`shell ${bare ? "bare" : ""} ${arriving ? "arriving" : ""}`}>
       <aside className="side">
         <div className="mark">
           <i />

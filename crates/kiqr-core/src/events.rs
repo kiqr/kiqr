@@ -148,6 +148,14 @@ pub enum EventKind {
     MetricsSnapshot { source: String, provider: String, rows: usize, taken_at: DateTime<Utc> },
     MetricsFailed { source: String, provider: String, error: String },
 
+    /// A project's first build moved on: the overall percentage, the stage
+    /// (`crawling`, `reading`, `writing`, `ready`, `failed`) and the seconds left, when known.
+    BuildProgress { pct: u8, stage: String, #[serde(default)] eta_secs: Option<u64> },
+    /// The build reached another stage; `problem` is why it can't finish, when it can't.
+    BuildStage { stage: String, #[serde(default)] problem: Option<String> },
+    /// The owner answered (or skipped) a welcome question.
+    IntakeSaved,
+
     // KIQR itself: a newer release was found, installed (the daemon restarts next), or could not be installed.
     UpdateAvailable { version: String },
     Updated { from: String, to: String },
@@ -198,6 +206,7 @@ impl EventKind {
                 | EventKind::MarketplaceRefreshed { .. }
                 | EventKind::MetricsSnapshot { .. }
                 | EventKind::MetricsFailed { .. }
+                | EventKind::IntakeSaved
                 | EventKind::UpdateAvailable { .. }
                 | EventKind::Updated { .. }
                 | EventKind::UpdateFailed { .. }

@@ -203,6 +203,10 @@ pub struct Context {
     /// The marketing plan: its period and one line per active objective. Empty when there is none.
     pub plan_period: String,
     pub plan: Vec<String>,
+    /// While the first build runs: where it is, in one line (`writing the profile, about 2 minutes left`).
+    pub building: Option<String>,
+    /// What the owner said when Seemo first read the site: one line per answer.
+    pub intake: Vec<String>,
 }
 
 /// Room for the abilities list in the prompt; past it, ids only.
@@ -274,8 +278,21 @@ pub fn system_prompt(persona: &str, guide: &str, ctx: &Context, brief: Option<&B
         )),
         None => head.push_str("- This is a chat with the user.\n"),
     }
+    if !ctx.intake.is_empty() {
+        head.push_str("\n# What the owner told you\n\nTheir own words when you first read the site. Plan around them; the brief is what the website says.\n");
+        for line in &ctx.intake {
+            head.push_str(&format!("- {line}\n"));
+        }
+    }
+    if let Some(building) = &ctx.building {
+        head.push_str(&format!(
+            "\nYou are reading the website for the first time right now ({building}). Until the business profile is ready, don't propose a plan, tasks or campaigns and don't make assets: say you will once you have read everything. You can talk about what you have read so far.\n"
+        ));
+    }
     let Some(brief) = brief else {
-        head.push_str("\nThere is no business brief yet: the website has not been crawled and read. Say so when it matters, and offer to start a crawl.\n");
+        if ctx.building.is_none() {
+            head.push_str("\nThere is no business brief yet: the website has not been crawled and read. Say so when it matters, and offer to start a crawl.\n");
+        }
         return head;
     };
     head.push_str("\n# The business brief\n\nWhat the website says about the business, as JSON. Evidence and the full sections are a tool call away (`get_section`, `get_profile`).\n\n");

@@ -1,7 +1,7 @@
 //! Abilities as the user sees them, behind Setup → Abilities: one list of
 //! what Seemo can do here (core abilities that are code, shipped and
 //! installed folders, the ones the user taught), and the marketplace below
-//! it, from an index kiqr.cloud hosts (cached, with the shipped list as the
+//! it, from the marketplace repository's index (cached, with the shipped list as the
 //! offline fallback). Installing clones the ability's repository into
 //! `abilities/` (or writes a shipped one); keys go to the machine's `.env` or
 //! a project's. Nothing but writing, the renderer and web reading is on

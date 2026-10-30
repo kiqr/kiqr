@@ -4,6 +4,10 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+- A new first run: Seemo checks it has a model before it starts, then reads the site with one overall progress, the time left and what it is learning as it goes, while it asks you four quick questions. Then it shows you your business as it sees it, to confirm or fix, and makes your first plan and three posts in your brand. The rest of KIQR opens when the profile is ready.
+- Plans, posts and tasks wait until the business profile is ready, and Seemo says so instead of guessing.
+- Fixed: after a one-click sign-in (Google Analytics and the like) the property picker appears right away, without reloading the page.
+
 ## v0.2.0 — 2026-10-30
 
 - Prebuilt binaries for Linux, macOS and Windows (x86_64 and arm64), published by CI for every release.

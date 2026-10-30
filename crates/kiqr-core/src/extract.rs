@@ -339,7 +339,13 @@ impl Extractor {
         if sections.is_empty() && pages.is_empty() {
             anyhow::bail!("there is nothing to write it from yet; crawl the site first");
         }
-        let prompt = serde_json::json!({ "website": project.url, "sections": sections, "pages": page_json }).to_string();
+        let mut prompt = serde_json::json!({ "website": project.url, "sections": sections, "pages": page_json });
+        // What the owner said: for what to put first, never as a fact the site doesn't support.
+        let owner = crate::intake::Intake::load(&self.store, slug).ok().flatten().map(|i| i.lines()).unwrap_or_default();
+        if !owner.is_empty() {
+            prompt["owner_says"] = owner.into();
+        }
+        let prompt = prompt.to_string();
         let text = prov.complete(&Request { system, prompt, model, json: true, max_tokens: 16_000 }).await?;
         let value = provider::extract_json(&text)?;
 

@@ -365,3 +365,7 @@ a.mk-author:hover { color: var(--accent); }
 .set-moving h2 { font-size: 16px; margin: 0 0 6px; }
 .set-moving p { margin: 0 0 6px; font-size: 13px; line-height: 1.5; }
 .set-auto { display: inline-flex; align-items: center; gap: 10px; }
+
+/* Usage stats row: the switch, and the exact ping body on request. */
+.set-ping { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.set-ping-body { flex-basis: 100%; margin: 4px 0 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line); font: 12px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -10,6 +10,7 @@ You receive JSON with:
 - `website`: the site's URL.
 - `sections`: the merged business profile, section by section, each with fields (`name`, `value`). These were built from facts quoted from the site.
 - `pages`: every page that was read, numbered (`n`), with its `path`, its `title` when known, and up to three short `facts` from that page.
+- `owner_says` (sometimes): what the owner told Seemo in their own words: their main goal, their best customers, their time, where they post. Use it to decide what comes first (which audience leads, which content gaps matter most). It is not evidence: never put anything in the brief that the website does not support because the owner said it.
 
 Rules:
 

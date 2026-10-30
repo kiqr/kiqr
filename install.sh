@@ -246,6 +246,7 @@ else
   if [ "$autostart" = yes ]; then say "KIQR $after is installed and starts at login."; else say "KIQR $after is installed and running. Nothing here starts it at login: run kiqr start after a restart."; fi
   say "Open http://127.0.0.1:4040 or run:"
   say "  kiqr project add https://your-site.com --watch"
+  say "KIQR sends an anonymous usage ping to kiqr.cloud (no names, sites or keys); see it or stop it with: kiqr telemetry off"
   if [ -n "${SSH_CONNECTION:-}" ]; then
     say ""
     say "KIQR listens on this server only. To open it from your computer, run this there (it forwards"

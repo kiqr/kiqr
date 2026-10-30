@@ -332,7 +332,22 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
         })
         .collect();
     let plan = kiqr_core::marketing::Plan::load(&app.store, &project.slug).ok().flatten();
+    let build = crate::build::state(app, &project.slug).await;
+    let building = matches!(build.stage, crate::build::Stage::Crawling | crate::build::Stage::Reading | crate::build::Stage::Writing).then(|| {
+        let what = match build.stage {
+            crate::build::Stage::Crawling => "fetching pages",
+            crate::build::Stage::Reading => "reading the pages",
+            _ => "writing the business profile",
+        };
+        match build.eta_secs {
+            Some(s) => format!("{what}, {}% done, about {} min left", build.pct, s.div_ceil(60)),
+            None => format!("{what}, {}% done", build.pct),
+        }
+    });
+    let intake = kiqr_core::intake::Intake::load(&app.store, &project.slug).ok().flatten().map(|i| i.lines()).unwrap_or_default();
     core_agent::Context {
+        building,
+        intake,
         abilities,
         plan_period: plan.as_ref().map(|p| p.period.clone()).unwrap_or_default(),
         plan: plan.as_ref().map(|p| p.prompt_lines()).unwrap_or_default(),

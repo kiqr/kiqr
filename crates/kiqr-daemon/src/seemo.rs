@@ -466,6 +466,12 @@ fn config_preview(cfg: &Config, payload: &Value) -> Result<Value, ApiError> {
 /// From `kiqr mcp`: open an approval. The chat gets a card; the tool polls `GET`.
 async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewApproval>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let _ = Project::load(&app.store, &slug)?;
+    // A plan, a campaign or a task needs to know the business: not before the first build is done.
+    match b.kind.as_str() {
+        "plan" | "campaign" => crate::build::require_ready(&app, &slug, "I can propose a plan").await?,
+        "task" => crate::build::require_ready(&app, &slug, "tasks can be set up").await?,
+        _ => {}
+    }
     let cfg = app.config.read().await.clone();
     let names = crate::ext::connection_names(&app, &slug).await;
     let preview = match b.kind.as_str() {

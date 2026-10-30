@@ -22,6 +22,7 @@ export function SeemoWidget({ project }: { project: string | null }) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [crawling, setCrawling] = useState(false);
+  const [building, setBuilding] = useState<string | null>(null);
   const [active, setActive] = useState<string | null>(null);
   const [narration, setNarration] = useState<Narration[]>([]);
   const { pathname } = useLocation();
@@ -65,6 +66,8 @@ export function SeemoWidget({ project }: { project: string | null }) {
     if (e.type === "page_queued") setCrawling(true);
     if (e.type === "page_parsed") setCrawling((e.waiting as number) > 0);
     if (e.type === "crawl_finished") setCrawling(false);
+    // The first build, in one line, until it is ready.
+    if (e.type === "build_progress") setBuilding(e.stage === "ready" || e.stage === "failed" ? null : `${e.pct}%${e.stage === "writing" ? ", writing your profile" : ", reading the site"}`);
     if (e.type === "chat_created") setActive(e.chat as string);
     if (e.type === "chat_deleted" && e.chat === active) setActive(null);
     if (e.type === "chat_message" && e.chat === active && !open) {
@@ -76,7 +79,7 @@ export function SeemoWidget({ project }: { project: string | null }) {
   useDemoSeemo(onEvent);
 
   if (onChatsPage || !project) return null;
-  const busy = crawling || chat.busy;
+  const busy = crawling || !!building || chat.busy;
 
   if (!open) {
     return (
@@ -148,7 +151,7 @@ export function SeemoWidget({ project }: { project: string | null }) {
             <span className="av" />
             <div className="body">
               <div className="chat-md">
-                <p>{crawling ? "I'm reading the site now and will tell you what I find." : "Ask me about the business, have me write for the library, or put work on a schedule."}</p>
+                <p>{building ? `I'm learning your business (${building}). Ask me what I've read so far; plans and posts come once I'm done.` : crawling ? "I'm reading the site now and will tell you what I find." : "Ask me about the business, have me write for the library, or put work on a schedule."}</p>
               </div>
             </div>
           </div>

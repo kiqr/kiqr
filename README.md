@@ -102,7 +102,7 @@ And it keeps a rhythm. Say *"every Monday at 9, review last week and tell me wha
 
 ### Why on your machine?
 
-- **Your data stays yours.** Everything is plain files in a folder on your computer. No KIQR account, no database in someone else's cloud.
+- **Your data stays yours.** Everything is plain files in a folder on your computer. No KIQR account, no database in someone else's cloud. The one thing KIQR sends us is an anonymous usage ping (version, OS, which marketplace abilities); `kiqr telemetry off` stops it ([what it holds](https://kiqr.dev/docs/cloud#the-usage-ping)).
 - **Your AI, your bill.** It runs on the Claude or ChatGPT plan you already have. No extra subscription.
 - **Teach it like a colleague.** "Here's how we write a product update." Write it once in plain words and Seemo does it that way every time. Or install **abilities** from the [marketplace](https://kiqr.dev/abilities): Google Analytics, Search Console, Plausible, WordPress, email and more.
 

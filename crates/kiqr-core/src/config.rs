@@ -25,6 +25,9 @@ pub struct Config {
     /// New KIQR versions.
     #[serde(default)]
     pub updates: UpdatesConfig,
+    /// The anonymous usage ping to kiqr.cloud.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 /// Whether KIQR installs new versions on its own (off: it only says so).
@@ -32,6 +35,23 @@ pub struct Config {
 #[serde(default)]
 pub struct UpdatesConfig {
     pub auto: bool,
+}
+
+/// The anonymous usage ping (on unless switched off here, by `KIQR_TELEMETRY=0`
+/// or by `DO_NOT_TRACK=1`). `id` is random, made on the first ping, and ties
+/// the pings of one install together, nothing else.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self { enabled: true, id: String::new() }
+    }
 }
 
 impl Config {
@@ -110,7 +130,7 @@ pub struct AgentConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default(), marketplace: MarketplaceConfig::default(), cloud: CloudConfig::default(), core_off: vec![], updates: UpdatesConfig::default() }
+        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default(), marketplace: MarketplaceConfig::default(), cloud: CloudConfig::default(), core_off: vec![], updates: UpdatesConfig::default(), telemetry: TelemetryConfig::default() }
     }
 }
 impl Default for AgentConfig {

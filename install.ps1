@@ -119,5 +119,6 @@ if ($before) {
 } else {
   Write-Host "KIQR $after is installed and starts at logon. Open http://127.0.0.1:4040 or run:"
   Write-Host "  kiqr project add https://your-site.com --watch"
+  Write-Host "KIQR sends an anonymous usage ping to kiqr.cloud (no names, sites or keys); see it or stop it with: kiqr telemetry off"
 }
 Write-Host "Manage it with: kiqr status | start | stop | restart | update"

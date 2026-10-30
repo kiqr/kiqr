@@ -32,6 +32,8 @@ pub fn router(app: App) -> Router {
         .route("/api/projects/{slug}/crawl", post(start_crawl))
         .route("/api/projects/{slug}/crawl/limit", put(put_crawl_limit))
         .route("/api/projects/{slug}/settings", put(put_settings))
+        .route("/api/projects/{slug}/build", get(get_build))
+        .route("/api/projects/{slug}/intake", get(get_intake).put(put_intake))
         .route("/api/projects/{slug}/synthesize", post(start_synthesize))
         .route("/api/projects/{slug}/profile", get(get_profile))
         .route("/api/projects/{slug}/profile/{section}", put(put_section))
@@ -58,6 +60,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::marketing::routes())
         .merge(crate::performance::routes())
         .merge(crate::update::routes())
+        .merge(crate::telemetry::routes())
         .with_state(app)
 }
 
@@ -183,7 +186,11 @@ async fn put_config(State(app): State<App>, Json(cfg): Json<kiqr_core::Config>) 
 /// Save `config.yaml`, commit, and make the daemon use it from now on. Host
 /// and port are read once at start-up, so a change to them (`restart`)
 /// restarts the daemon on the new address as soon as nothing is running.
-pub(crate) async fn apply_config(app: &App, cfg: kiqr_core::Config, by: &str, restart: bool) -> Result<(), ApiError> {
+pub(crate) async fn apply_config(app: &App, mut cfg: kiqr_core::Config, by: &str, restart: bool) -> Result<(), ApiError> {
+    // A config sent without the install's ping id keeps it, so the install isn't counted twice.
+    if cfg.telemetry.id.is_empty() {
+        cfg.telemetry.id = app.config.read().await.telemetry.id.clone();
+    }
     cfg.save(&app.store)?;
     app.store.commit(&format!("config: update{}", if by == "you" { "" } else { " (by Seemo)" })).await?;
     *app.config.write().await = cfg;
@@ -217,8 +224,38 @@ pub(crate) async fn check_address(old: &kiqr_core::config::DaemonConfig, new: &k
     Ok(true)
 }
 
-async fn list_projects(State(app): State<App>) -> ApiResult<Vec<Project>> {
-    Ok(Json(Project::list(&app.store)?))
+async fn list_projects(State(app): State<App>) -> ApiResult<Vec<serde_json::Value>> {
+    let mut out = Vec::new();
+    for p in Project::list(&app.store)? {
+        let build = crate::build::state(&app, &p.slug).await;
+        let mut v = serde_json::to_value(p).map_err(anyhow::Error::from)?;
+        v["build"] = serde_json::to_value(build).map_err(anyhow::Error::from)?;
+        out.push(v);
+    }
+    Ok(Json(out))
+}
+
+async fn get_build(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<crate::build::BuildState> {
+    let _ = Project::load(&app.store, &slug)?;
+    Ok(Json(crate::build::state(&app, &slug).await))
+}
+
+async fn get_intake(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<kiqr_core::intake::Intake> {
+    let _ = Project::load(&app.store, &slug)?;
+    Ok(Json(kiqr_core::intake::Intake::load(&app.store, &slug)?.unwrap_or_default()))
+}
+
+/// The welcome questions, saved as they are answered.
+async fn put_intake(State(app): State<App>, Path(slug): Path<String>, Json(mut i): Json<kiqr_core::intake::Intake>) -> ApiResult<kiqr_core::intake::Intake> {
+    let _ = Project::load(&app.store, &slug)?;
+    i.goal_note = kiqr_core::profile::truncate_chars(i.goal_note.trim(), 300);
+    i.customers = kiqr_core::profile::truncate_chars(i.customers.trim(), 500);
+    i.networks.truncate(20);
+    i.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    i.save(&app.store, &slug)?;
+    app.store.commit(&format!("project({slug}): what the owner told Seemo")).await?;
+    app.bus.emit(Some(&slug), EventKind::IntakeSaved);
+    Ok(Json(i))
 }
 
 #[derive(Deserialize)]
@@ -247,6 +284,7 @@ async fn get_project(State(app): State<App>, Path(slug): Path<String>) -> ApiRes
     let jobs: Vec<String> = app.jobs.read().await.iter().filter_map(|k| k.strip_suffix(&suffix).map(str::to_string)).collect();
     let mut v = serde_json::to_value(project).map_err(anyhow::Error::from)?;
     v["jobs"] = serde_json::json!(jobs);
+    v["build"] = serde_json::to_value(crate::build::state(&app, &slug).await).map_err(anyhow::Error::from)?;
     Ok(Json(v))
 }
 
@@ -365,15 +403,12 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
         let extractor = if provider::available(&cfg.models.extract).await {
             Some(app.extractor(&cfg))
         } else {
-            app.bus.emit(
-                Some(&project.slug),
-                EventKind::SeemoSays {
-                    text: format!(
-                        "I'll read the site now, but I can't extract facts yet: the model `{}` isn't available. Add an API key to .env or install the CLI, then run the profile build.",
-                        cfg.models.extract
-                    ),
-                },
+            let text = format!(
+                "I'll read the site now, but I can't extract facts yet: the model `{}` isn't available. Add an API key to .env or install the CLI, then run the profile build.",
+                cfg.models.extract
             );
+            crate::build::problem(&app, &project.slug, format!("The model `{}` isn't available, so I can read the pages but not understand them.", cfg.models.extract)).await;
+            app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text });
             None
         };
         let result = async {
@@ -400,10 +435,15 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
         match result {
             Err(e) => {
                 tracing::error!(slug = %project.slug, error = %e, "crawl failed");
+                crate::build::problem(&app, &project.slug, format!("The crawl stopped: {e}")).await;
                 app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: format!("The crawl stopped: {e}") });
             }
             Ok(()) => {
-                if let Some(ex) = extractor {
+                // Not one page read (the site is down, or the address is wrong): nothing to write a profile from.
+                let read_any = Project::load(&app.store, &project.slug).ok().and_then(|p| p.last_crawl).is_some_and(|c| c.pages > 0);
+                if !read_any {
+                    app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: format!("I couldn't open a single page of {}. Check the address and that the site is up, then have me read it again.", project.url) });
+                } else if let Some(ex) = extractor {
                     if provider::available(&cfg.models.synthesize).await {
                         // synthesize() tells the user itself when it fails.
                         match ex.synthesize(&project, true).await {
@@ -411,8 +451,13 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
                                 Some(&project.slug),
                                 EventKind::SeemoSays { text: "The profile and the business brief are ready. Have a look and lock anything I got wrong.".into() },
                             ),
-                            Err(e) => tracing::error!(slug = %project.slug, error = %e, "synthesis failed"),
+                            Err(e) => {
+                                tracing::error!(slug = %project.slug, error = %e, "synthesis failed");
+                                crate::build::problem(&app, &project.slug, format!("Writing the profile failed: {e}")).await;
+                            }
                         }
+                    } else {
+                        crate::build::problem(&app, &project.slug, format!("The model `{}` that writes the profile isn't available.", cfg.models.synthesize)).await;
                     }
                 }
             }
@@ -656,6 +701,7 @@ async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(
     if !machine_on || !project_on {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("writing social media posts is switched off {} under Setup → Abilities", if machine_on { "for this project" } else { "on this machine" })));
     }
+    crate::build::require_ready(&app, &slug, "posts can be written").await?;
     if Brief::load(&app.store, &slug)?.is_none() {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, "there is no business profile yet; crawl the site first".into()));
     }

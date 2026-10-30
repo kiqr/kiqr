@@ -124,6 +124,11 @@ enum Command {
         #[arg(long, value_parser = ["on", "off"])]
         auto: Option<String>,
     },
+    /// The anonymous usage ping to kiqr.cloud: show what it sends, or switch it on or off
+    Telemetry {
+        #[arg(value_parser = ["on", "off"])]
+        state: Option<String>,
+    },
     /// Manage projects
     Project {
         #[command(subcommand)]
@@ -804,6 +809,20 @@ impl Client {
                     );
                 }
             }
+            Command::Telemetry { state } => {
+                let t: serde_json::Value = match state {
+                    Some(s) => self.put("/api/telemetry", &serde_json::json!({ "enabled": s == "on" })).await?,
+                    None => self.get("/api/telemetry").await?,
+                };
+                let every = t["every_minutes"].as_u64().unwrap_or(15);
+                match t["off_by"].as_str() {
+                    None => println!("On: every {every} minutes KIQR tells {} that it runs. This is all it sends:", t["endpoint"].as_str().unwrap_or("kiqr.cloud")),
+                    Some("config") => println!("Off (`kiqr telemetry on` switches it on). It would send:"),
+                    Some("no-cloud") => println!("Off: no kiqr.cloud address is set. It would send:"),
+                    Some(var) => println!("Off: {var} is set. It would send:"),
+                }
+                println!("{}", serde_json::to_string_pretty(&t["payload"])?);
+            }
             Command::Update { auto: Some(auto), .. } => {
                 let mut cfg: serde_json::Value = self.get("/api/config").await?;
                 let on = auto == "on";
@@ -1438,6 +1457,16 @@ fn print_event(ev: &Event) {
         EventKind::MarketplaceRefreshed { items, fetched } => format!("market   index read again: {items} abilities{}", if *fetched { "" } else { " (could not be reached; shipped only)" }),
         EventKind::MetricsSnapshot { source, provider, rows, .. } => format!("metrics  {source}: {rows} rows via {provider}"),
         EventKind::MetricsFailed { source, provider, error } => format!("metrics  {source} via {provider} failed: {error}"),
+        EventKind::BuildProgress { pct, stage, eta_secs } => format!(
+            "build    {pct}% {}{}",
+            match stage.as_str() { "crawling" => "reading the pages", "reading" => "understanding them", "writing" => "writing the business profile", "ready" => "ready", other => other },
+            eta_secs.map(|s| format!(", about {} min left", s.div_ceil(60))).unwrap_or_default()
+        ),
+        EventKind::BuildStage { stage, problem } => match problem {
+            Some(p) if stage == "failed" => format!("build    stopped: {p}"),
+            _ => format!("build    now {stage}"),
+        },
+        EventKind::IntakeSaved => "intake   saved what you told Seemo".into(),
         EventKind::UpdateAvailable { version } => format!("update   KIQR {version} is available — run `kiqr update`"),
         EventKind::Updated { from, to } => format!("update   KIQR {from} → {to}, restarting"),
         EventKind::UpdateFailed { version, error } => format!("update   KIQR {version} could not be installed: {error}"),

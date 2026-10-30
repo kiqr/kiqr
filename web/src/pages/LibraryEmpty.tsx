@@ -243,11 +243,14 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
 
   const planView = useAsync(() => api.plan(slug).catch(() => null), [slug]);
   useEvents(slug, (e) => e.type === "plan_saved" && planView.reload(), { demo: false });
+  // The build reaching a new stage changes the first two steps.
+  useEvents(slug, (e) => e.type === "build_stage" && (project.reload(), brief.reload()), { demo: false });
   const hasPlan = !!planView.data?.plan;
   const p = project.data;
   const hasBrief = !!brief.data;
-  // A profile means a crawl happened, even when the project record predates crawl summaries.
-  const crawled = !!p?.last_crawl || hasBrief;
+  // The build says where it is; without it (older daemons), a profile means a crawl happened.
+  const stage = p?.build?.stage;
+  const crawled = stage ? stage === "writing" || stage === "ready" || hasBrief : !!p?.last_crawl || hasBrief;
   const postCount = posts.data?.length ?? 0;
   const optional = (id: string, state: StepState): StepState => (state !== "done" && skipped.includes(id) ? "skipped" : state);
   const steps: Step[] = [

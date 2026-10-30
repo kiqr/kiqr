@@ -13,6 +13,39 @@ export type Project = {
   last_crawl: { finished_at: string; pages: number; blocked: number; failed: number } | null;
   /** Jobs running on the project now: "crawl", "synthesize", "brief". */
   jobs?: string[];
+  /** The first build: until it is `ready` the project stays in the welcome flow. */
+  build?: Build;
+};
+
+export type BuildStage = "new" | "crawling" | "reading" | "writing" | "ready" | "failed";
+/** A project's first build: crawl, read, write the profile. One overall percentage, the stage, the time left. */
+export type Build = {
+  stage: BuildStage;
+  pct: number;
+  eta_secs: number | null;
+  max_pages: number;
+  found: number;
+  fetched: number;
+  queued: number;
+  read: number;
+  facts: number;
+  sections_done: number;
+  sections_total: number;
+  running: boolean;
+  started_at: string | null;
+  last_at: string | null;
+  problem: string | null;
+};
+
+/** What the owner told Seemo while it first read the site. */
+export type Intake = {
+  goal: "" | "customers" | "repeat" | "known" | "launch";
+  goal_note: string;
+  customers: string;
+  time: "" | "lt1" | "1to3" | "3plus";
+  networks: string[];
+  skipped: string[];
+  updated_at?: string;
 };
 
 export type Evidence = { url: string; quote: string };
@@ -145,6 +178,15 @@ export type UpdateStatus = {
   reason: string | null;
   error: string | null;
   updating: boolean;
+};
+/** `GET /api/telemetry`: the anonymous usage ping, and exactly what it sends. */
+export type Telemetry = {
+  enabled: boolean;
+  /** What switched it off: `config`, `KIQR_TELEMETRY`, `DO_NOT_TRACK` or `no-cloud`. */
+  off_by: string | null;
+  endpoint: string;
+  every_minutes: number;
+  payload: Record<string, unknown>;
 };
 /** `config.yaml`. */
 export type Config = {
@@ -392,6 +434,8 @@ export const api = {
   health: () => req<Health>("/api/health"),
   updateStatus: (refresh = false) => req<UpdateStatus>(`/api/update${refresh ? "?refresh=1" : ""}`),
   applyUpdate: () => req<UpdateStatus>("/api/update", { method: "POST", body: "{}" }),
+  telemetry: () => req<Telemetry>("/api/telemetry"),
+  setTelemetry: (enabled: boolean) => req<Telemetry>("/api/telemetry", { method: "PUT", body: JSON.stringify({ enabled }) }),
   config: () => req<Config>("/api/config"),
   saveConfig: (c: Config) => req<Config>("/api/config", { method: "PUT", body: JSON.stringify(c) }),
   projects: () => req<Project[]>("/api/projects"),
@@ -399,6 +443,9 @@ export const api = {
   createProject: (url: string) => req<Project>("/api/projects", { method: "POST", body: JSON.stringify({ url }) }),
   deleteProject: (slug: string) => req<void>(`/api/projects/${slug}`, { method: "DELETE" }),
   crawl: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/crawl`, { method: "POST", body: "{}" }),
+  build: (slug: string) => req<Build>(`/api/projects/${slug}/build`),
+  intake: (slug: string) => req<Intake>(`/api/projects/${slug}/intake`),
+  saveIntake: (slug: string, i: Intake) => req<Intake>(`/api/projects/${slug}/intake`, { method: "PUT", body: JSON.stringify(i) }),
   /** Set the page limit; `live` when the running crawl picked it up. */
   setCrawlLimit: (slug: string, max_pages: number) =>
     req<{ max_pages: number; live: boolean }>(`/api/projects/${slug}/crawl/limit`, { method: "PUT", body: JSON.stringify({ max_pages }) }),
@@ -536,6 +583,7 @@ export const api = {
   sendEmail: (slug: string, m: { to: string; subject: string; text: string; asset?: { type: string; id: string } }) => req<{ sent: boolean; to: string; subject: string; connection: string }>(`/api/projects/${slug}/email`, { method: "POST", body: JSON.stringify(m) }),
 };
 
+let demoTelemetry = true;
 let demoConfig: Config = {
   daemon: { host: "127.0.0.1", port: 4040 },
   crawl: { max_pages: 200, concurrency: 5, ai_concurrency: 3 },
@@ -543,6 +591,8 @@ let demoConfig: Config = {
   agent: { max_budget_usd: 2, max_concurrent: 3, timezone: "Europe/Stockholm" },
   abilities: {},
 };
+
+let demoIntake: Intake = { goal: "", goal_note: "", customers: "", time: "", networks: [], skipped: [] };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith("/api/signins")) return Promise.resolve({ signins: [{ id: "kiqr-cloud", name: "kiqr.cloud", signed_in: false, account: null, waiting: null }, { id: "unblockingapi", name: "UnblockingAPI", signed_in: false, account: null, waiting: null }], cloud_url: "https://kiqr.cloud" } as T);
@@ -556,6 +606,11 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.endsWith("/brand/kit")) return Promise.resolve({ site_name: "UnblockingAPI", palette: { dark: "#0b1220", light: "#f8fafc", accent: "#e11d74" }, logo: null, html_available: true } as T);
   if (path === "/api/asset-types" || path.includes("/assets")) return demoAssetRequest<T>(path, init);
   if (path.endsWith("/brief")) return Promise.resolve((init?.method === "PUT" ? JSON.parse(String(init.body)) : demoState.created ? demoBrief : null) as T);
+  if (path.endsWith("/build")) return Promise.resolve({ stage: "crawling", pct: 0, eta_secs: null, max_pages: 200, found: 0, fetched: 0, queued: 0, read: 0, facts: 0, sections_done: 0, sections_total: 12, running: true, started_at: null, last_at: null, problem: null } as T);
+  if (path.endsWith("/intake")) {
+    if (init?.method === "PUT") demoIntake = JSON.parse(String(init.body));
+    return Promise.resolve(demoIntake as T);
+  }
   if (path.endsWith("/crawl/limit")) return Promise.resolve({ max_pages: JSON.parse(String(init?.body)).max_pages, live: true } as T);
   if (path.endsWith("/brand")) return demoState.created ? Promise.resolve(demoBrand as T) : Promise.reject(new Error("404"));
   if (path.endsWith("/profile")) return Promise.resolve([] as T);
@@ -579,6 +634,10 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
       ],
       update: { latest: "0.2.0", available: true, can_self_update: true },
     } as T);
+  if (path === "/api/telemetry") {
+    if (init?.method === "PUT") demoTelemetry = JSON.parse(String(init.body)).enabled;
+    return Promise.resolve({ enabled: demoTelemetry, off_by: demoTelemetry ? null : "config", endpoint: "https://kiqr.cloud/api/v1/ping", every_minutes: 15, payload: { id: "(made on the first ping)", version: "demo", os: "linux", arch: "x86_64", docker: false, cloud: false, abilities: ["github"], other_abilities: 0 } } as T);
+  }
   if (path.startsWith("/api/update"))
     return init?.method === "POST"
       ? Promise.reject(new Error("The demo cannot update itself."))
