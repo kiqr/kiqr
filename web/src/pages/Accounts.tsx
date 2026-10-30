@@ -87,7 +87,9 @@ export function ActivityLog({ slug, a }: { slug: string; a: Account }) {
 export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Account; onChange: () => void; only?: "missing" }) {
   // Signed in (a token is kept) but something is still to choose (the property): open on that.
   const signedIn = a.signed_in ?? a.auth.some((k) => k.written && k.set);
-  const [open, setOpen] = useState(!a.connect || only === "missing" || (signedIn && a.missing.length > 0));
+  // Worked out on every render, not once: the sign-in finishes after this mounts, and the property picker must appear then.
+  const [opened, setOpen] = useState(false);
+  const open = opened || !a.connect || only === "missing" || (signedIn && a.missing.length > 0);
   const [more, setMore] = useState(false);
   const typed = a.auth.filter((k) => !k.written);
   const shown = typed.filter((k) => (only === "missing" ? a.missing.includes(k.env) : more || !k.optional || k.set));
@@ -315,7 +317,9 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
         </p>
         {!created.ready && (
           <p className="muted sm">
-            {paste ? (
+            {(created.signed_in ?? created.auth.some((k) => k.written && k.set)) ? (
+              "Signed in. One more step: choose below."
+            ) : paste ? (
               "Approve in the tab that opened. It shows what KIQR needs once, because it only sends it back over https: paste it below."
             ) : (
               <>
