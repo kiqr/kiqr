@@ -23,6 +23,7 @@ pub mod markdown;
 pub mod metrics;
 pub mod oauth;
 pub mod paths;
+pub mod process;
 pub mod profile;
 pub mod project;
 pub mod provider;

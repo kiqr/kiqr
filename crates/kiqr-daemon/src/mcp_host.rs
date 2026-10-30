@@ -109,12 +109,12 @@ impl McpHost {
 
 impl Server {
     async fn spawn(home: &std::path::Path, m: &Manifest, vars: &[(String, String)], account_dir: Option<&std::path::Path>) -> Result<Arc<Server>> {
-        let mut cmd = tokio::process::Command::new(&m.command);
+        let mut cmd = kiqr_core::process::command(&m.command);
         // `${KIQR_ACCOUNT_DIR}` in an argument is the account's folder (`--user-data-dir ${KIQR_ACCOUNT_DIR}/profile`).
         let dir_text = account_dir.map(|d| d.display().to_string()).unwrap_or_default();
         cmd.args(m.args.iter().map(|a| a.replace("${KIQR_ACCOUNT_DIR}", &dir_text)));
         cmd.env_clear();
-        for k in ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] {
+        for k in kiqr_core::process::BASE_ENV.iter().chain(&["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]) {
             if let Ok(v) = std::env::var(k) {
                 cmd.env(k, v);
             }

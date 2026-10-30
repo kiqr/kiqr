@@ -57,18 +57,7 @@ impl Turn {
         if pid == 0 {
             return;
         }
-        unsafe {
-            libc::kill(pid as i32, libc::SIGINT);
-        }
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            // If it is gone, kill(0) fails and this is a no-op; a reused pid in 5 s is not a concern on a desktop.
-            unsafe {
-                if libc::kill(pid as i32, 0) == 0 {
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
-            }
-        });
+        kiqr_core::process::interrupt(pid, Duration::from_secs(5));
     }
 }
 
@@ -137,7 +126,7 @@ async fn drive(app: &App, spec: &Spec, specs: &[ToolSpec], prompt: &str, sink: &
         out.error = Some(format!("could not prepare the agent directory: {e}"));
         return out;
     }
-    let mut child = match tokio::process::Command::new("claude")
+    let mut child = match kiqr_core::process::command("claude")
         .args(core_agent::claude_args(spec))
         .current_dir(&dir)
         .env("MCP_TOOL_TIMEOUT", "3600000")

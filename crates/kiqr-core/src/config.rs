@@ -108,9 +108,14 @@ impl Default for AgentConfig {
         Self { max_budget_usd: 2.0, max_concurrent: 3, timezone: String::new() }
     }
 }
+/// Where the daemon listens unless config.yaml or `KIQR_PORT` says otherwise.
+pub const DEFAULT_PORT: u16 = 4040;
+/// The default before 0.2; homes that still have it move to `DEFAULT_PORT` once.
+pub const OLD_DEFAULT_PORT: u16 = 7777;
+
 impl Default for DaemonConfig {
     fn default() -> Self {
-        Self { host: "127.0.0.1".into(), port: 7777 }
+        Self { host: "127.0.0.1".into(), port: DEFAULT_PORT }
     }
 }
 impl Default for CrawlDefaults {

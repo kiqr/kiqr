@@ -147,6 +147,11 @@ pub enum EventKind {
     // Metrics: a source was read into a snapshot, or could not be.
     MetricsSnapshot { source: String, provider: String, rows: usize, taken_at: DateTime<Utc> },
     MetricsFailed { source: String, provider: String, error: String },
+
+    // KIQR itself: a newer release was found, installed (the daemon restarts next), or could not be installed.
+    UpdateAvailable { version: String },
+    Updated { from: String, to: String },
+    UpdateFailed { version: String, error: String },
 }
 
 impl EventKind {
@@ -193,6 +198,9 @@ impl EventKind {
                 | EventKind::MarketplaceRefreshed { .. }
                 | EventKind::MetricsSnapshot { .. }
                 | EventKind::MetricsFailed { .. }
+                | EventKind::UpdateAvailable { .. }
+                | EventKind::Updated { .. }
+                | EventKind::UpdateFailed { .. }
         )
     }
 }

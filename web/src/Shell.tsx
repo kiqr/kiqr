@@ -28,6 +28,7 @@ import { assetIcon } from "./assetIcons";
 import { SeemoWidget } from "./SeemoWidget";
 import { CloudStatus } from "./CloudStatus";
 import { TODO_EVENTS } from "./pages/Todo";
+import { Moving, addressUrl } from "./pages/GlobalSettings";
 
 type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number; hot?: boolean };
 
@@ -112,6 +113,8 @@ export function Shell() {
     if (!DEMO) api.refreshMarketplace().catch(() => {});
   }, []);
   const projects = useAsync(() => api.projects(), []);
+  const updateAvailable = useUpdateAvailable();
+  const moving = useAddressMove();
   const list = projects.data ?? [];
   const current = list.find((p) => p.slug === slug) ?? null;
   const { pathname } = useLocation();
@@ -155,6 +158,7 @@ export function Shell() {
           <CloudStatus />
           <NavLink to="/settings">
             <Settings size={16} /> Settings
+            {updateAvailable && <span className="update-dot" title="A new version of KIQR is available" />}
           </NavLink>
           <div className="who">
             <span>Runs on this machine</span>
@@ -168,8 +172,30 @@ export function Shell() {
         </div>
       </main>
       <SeemoWidget project={slug ?? null} />
+      {moving && <Moving to={moving.to} pid={moving.pid} />}
     </div>
   );
+}
+
+/** When KIQR's address changes (in Settings or by Seemo), the daemon restarts there; follow it. */
+function useAddressMove() {
+  const [moving, setMoving] = useState<{ to: string; pid?: number } | null>(null);
+  useEvents(
+    null,
+    (e) => {
+      if (e.type !== "config_changed" || !e.restart) return;
+      Promise.all([api.config(), api.health()]).then(([c, h]) => setMoving({ to: addressUrl(c.daemon), pid: h.pid })).catch(() => {});
+    },
+    { demo: false },
+  );
+  return moving;
+}
+
+/** Whether a newer KIQR is out, for the dot on Settings. */
+function useUpdateAvailable() {
+  const health = useAsync(() => api.health().catch(() => null), []);
+  useEvents(null, (e) => e.type === "update_available" && health.reload(), { demo: false });
+  return !!health.data?.update?.available;
 }
 
 function ProjectSwitcher({ projects, current }: { projects: Project[]; current: Project | null }) {

@@ -746,12 +746,13 @@ async fn approve_config(app: &App, approval: &Approval) -> Result<Value, ApiErro
         .map(|l| l.iter().filter_map(|c| Some((c["key"].as_str()?.to_string(), c["to"].clone()))).collect())
         .unwrap_or_default();
     let current = app.config.read().await.clone();
-    let (new_cfg, list, restart) = apply_changes(&current, &changes).map_err(bad)?;
+    let (new_cfg, list, _) = apply_changes(&current, &changes).map_err(bad)?;
+    let restart = crate::api::check_address(&current.daemon, &new_cfg.daemon).await?;
     crate::api::apply_config(app, new_cfg, "seemo", restart).await?;
     Ok(json!({
         "applied": list,
         "restart": restart,
-        "note": if restart { "Saved. The daemon's host or port changed, which applies after `kiqr daemon` is restarted; everything else is live now." } else { "Applied and live." },
+        "note": if restart { "Saved. KIQR restarts on the new address as soon as this turn ends; tell the user where to open it. Everything else is live now." } else { "Applied and live." },
     }))
 }
 

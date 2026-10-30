@@ -18,7 +18,7 @@ impl Home {
         if data.is_dir() && is_writable(data) {
             return Self { root: data.to_path_buf() };
         }
-        let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."));
+        let home = crate::process::home_dir().unwrap_or_else(|| PathBuf::from("."));
         Self { root: home.join(".kiqr") }
     }
 

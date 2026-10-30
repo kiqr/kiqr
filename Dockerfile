@@ -1,6 +1,6 @@
 # KIQR — single image: daemon + web UI + CLI.
 #
-#   docker run -d -p 7777:7777 -v kiqr-data:/data --env-file .env ghcr.io/kiqr/kiqr
+#   docker run -d -p 4040:4040 -v kiqr-data:/data --env-file .env ghcr.io/kiqr/kiqr
 #
 # Auth inside the container is by environment variables in .env:
 #   ANTHROPIC_API_KEY / OPENAI_API_KEY, or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`.
@@ -16,7 +16,9 @@ FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY skills ./skills
+COPY abilities ./abilities
+COPY asset-types ./asset-types
+COPY assets ./assets
 COPY seemo ./seemo
 COPY --from=web /src/web/dist ./web/dist
 RUN cargo build --release --locked -p kiqr
@@ -33,8 +35,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/kiqr /usr/local/bin/kiqr
 USER kiqr
-ENV KIQR_HOME=/data KIQR_HOST=0.0.0.0
+# KIQR_IN_DOCKER: the image is updated by pulling a new one, not by `kiqr upgrade`.
+ENV KIQR_HOME=/data KIQR_HOST=0.0.0.0 KIQR_IN_DOCKER=1
 VOLUME ["/data"]
-EXPOSE 7777
+EXPOSE 4040
 ENTRYPOINT ["kiqr"]
 CMD ["daemon"]

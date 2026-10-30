@@ -171,3 +171,4 @@ select.input { width: auto; }
 .pub-opt { display: inline-flex; gap: 4px; }
 .pub-opt .chip { cursor: pointer; }
 .model-pick { display: inline-flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.side-foot a .update-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 8px var(--warn); flex: none; }

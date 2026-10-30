@@ -24,4 +24,4 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
-libc = "0.2"
+rpassword = "7"

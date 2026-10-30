@@ -3,6 +3,7 @@
 //! runs the daemon itself.
 
 mod mcp;
+mod service;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -13,7 +14,7 @@ use kiqr_core::Home;
 #[derive(Parser)]
 #[command(name = "kiqr", version, about = "KIQR — your self-hosted CMO", long_about = None)]
 struct Cli {
-    /// Daemon address. Defaults to config.yaml, then http://127.0.0.1:7777
+    /// Daemon address. Defaults to config.yaml, then http://127.0.0.1:4040
     #[arg(long = "daemon-url", env = "KIQR_URL", global = true)]
     daemon_url: Option<String>,
     #[command(subcommand)]
@@ -105,8 +106,21 @@ enum Command {
         #[command(subcommand)]
         cmd: SecretsCmd,
     },
-    /// Show daemon status, providers and the active home directory
+    /// Start KIQR in the background (the service the installer registered)
+    Start,
+    /// Stop KIQR
+    Stop,
+    /// Restart KIQR
+    Restart,
+    /// Whether KIQR is running, its version, models and home directory
     Status,
+    /// Update KIQR to the latest release (the daemon downloads it and restarts)
+    #[command(alias = "upgrade")]
+    Update {
+        /// Only say whether a newer version exists
+        #[arg(long)]
+        check: bool,
+    },
     /// Manage projects
     Project {
         #[command(subcommand)]
@@ -408,29 +422,13 @@ async fn run() -> Result<()> {
 /// Read one line from the terminal without echoing it.
 fn read_secret() -> Result<String> {
     use std::io::{BufRead, IsTerminal};
-    let stdin = std::io::stdin();
-    let tty = stdin.is_terminal();
-    let mut saved: Option<libc::termios> = None;
-    if tty {
-        unsafe {
-            let mut t: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(0, &mut t) == 0 {
-                saved = Some(t);
-                let mut off = t;
-                off.c_lflag &= !libc::ECHO;
-                libc::tcsetattr(0, libc::TCSANOW, &off);
-            }
-        }
-    }
-    let mut line = String::new();
-    let r = stdin.lock().read_line(&mut line);
-    if let Some(t) = saved {
-        unsafe {
-            libc::tcsetattr(0, libc::TCSANOW, &t);
-        }
-        eprintln!();
-    }
-    r?;
+    let line = if std::io::stdin().is_terminal() {
+        rpassword::read_password()?
+    } else {
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        line
+    };
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
@@ -446,7 +444,7 @@ impl Client {
             let cfg = std::fs::read_to_string(home.config_file())
                 .ok()
                 .and_then(|t| serde_yaml_lite_port(&t));
-            cfg.unwrap_or_else(|| "http://127.0.0.1:7777".into())
+            cfg.unwrap_or_else(|| format!("http://127.0.0.1:{}", kiqr_core::config::DEFAULT_PORT))
         });
         // The daemon is local; never route to it through a system proxy. Long
         // timeout: approval polls wait up to two minutes.
@@ -751,9 +749,48 @@ impl Client {
                     println!("Removed {task}.");
                 }
             },
+            Command::Start => {
+                if let Some(h) = self.alive().await {
+                    println!("KIQR {} is already running. Open {}", h["version"].as_str().unwrap_or("?"), self.base);
+                    return Ok(());
+                }
+                service::Manager::detect().start()?;
+                self.came_up(None).await?;
+            }
+            Command::Stop => {
+                if self.alive().await.is_none() {
+                    println!("KIQR is not running.");
+                    return Ok(());
+                }
+                self.stop().await?;
+                println!("KIQR stopped.");
+            }
+            Command::Restart => {
+                let before = self.alive().await;
+                let manager = service::Manager::detect();
+                if !manager.restart()? {
+                    if before.is_some() {
+                        self.stop().await?;
+                    }
+                    manager.start()?;
+                }
+                self.came_up(before.as_ref().and_then(|h| h["pid"].as_u64())).await?;
+            }
             Command::Status => {
-                let v: serde_json::Value = self.get("/api/health").await?;
-                println!("KIQR {}  home {}", v["version"].as_str().unwrap_or("?"), v["home"].as_str().unwrap_or("?"));
+                let manager = service::Manager::detect();
+                let Some(v) = self.alive().await else {
+                    println!("KIQR is not running.");
+                    println!("Service    {}", manager.describe());
+                    println!("Start it with: kiqr start");
+                    // Not running is a status, not an error, but scripts can tell by the exit code.
+                    std::process::exit(3);
+                };
+                println!("KIQR {}  running at {}", v["version"].as_str().unwrap_or("?"), self.base);
+                println!("Service    {}", manager.describe());
+                println!("Home       {}", v["home"].as_str().unwrap_or("?"));
+                if v["update"]["available"].as_bool().unwrap_or(false) {
+                    println!("KIQR {} is available — run `kiqr update`", v["update"]["latest"].as_str().unwrap_or("?"));
+                }
                 println!("UnblockingAPI: {}", if v["unblockingapi"].as_bool().unwrap_or(false) { "connected" } else { "not connected" });
                 for p in v["providers"].as_array().cloned().unwrap_or_default() {
                     println!(
@@ -763,6 +800,38 @@ impl Client {
                         if p["available"].as_bool().unwrap_or(false) { "available" } else { "not available" }
                     );
                 }
+            }
+            Command::Update { check } => {
+                let st: serde_json::Value = self.get("/api/update?refresh=1").await?;
+                let current = st["current"].as_str().unwrap_or("?").to_string();
+                if let Some(e) = st["error"].as_str() {
+                    return Err(anyhow!("could not look for a new version: {e}"));
+                }
+                let latest = st["latest"].as_str().unwrap_or("?").to_string();
+                if !st["available"].as_bool().unwrap_or(false) {
+                    println!("KIQR {current} is the latest version.");
+                    return Ok(());
+                }
+                if check {
+                    println!("KIQR {latest} is available (you have {current}). Run `kiqr update` to install it.");
+                    return Ok(());
+                }
+                if let Some(r) = st["reason"].as_str() {
+                    return Err(anyhow!("KIQR {latest} is available, but this installation cannot update itself. {r}"));
+                }
+                println!("Downloading KIQR {latest}...");
+                let _: serde_json::Value = self.post("/api/update", &serde_json::json!({})).await?;
+                // The daemon restarts as the new version; wait for it to answer again.
+                for _ in 0..60 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if let Ok(v) = self.get::<serde_json::Value>("/api/health").await {
+                        if v["version"].as_str() == Some(latest.as_str()) {
+                            println!("Updated KIQR {current} → {latest}.");
+                            return Ok(());
+                        }
+                    }
+                }
+                return Err(anyhow!("KIQR {latest} was installed, but the daemon has not come back yet; check `kiqr status`."));
             }
             Command::Project { cmd } => match cmd {
                 ProjectCmd::Add { url, no_crawl, watch } => {
@@ -1116,6 +1185,52 @@ impl Client {
         Ok(())
     }
 
+    /// The daemon's health, when it answers within a couple of seconds.
+    async fn alive(&self) -> Option<serde_json::Value> {
+        let resp = self.http.get(format!("{}/api/health", self.base)).timeout(std::time::Duration::from_secs(3)).send().await.ok()?;
+        resp.json().await.ok()
+    }
+
+    /// Wait for a daemon to answer (a new one, when `old_pid` is given) and say where it is.
+    async fn came_up(&self, old_pid: Option<u64>) -> Result<()> {
+        for _ in 0..40 {
+            if let Some(h) = self.alive().await {
+                if old_pid.is_none() || h["pid"].as_u64() != old_pid {
+                    println!("KIQR {} is running. Open {}", h["version"].as_str().unwrap_or("?"), self.base);
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        Err(anyhow!("the daemon did not come up at {}; run `kiqr daemon` in a terminal to see why", self.base))
+    }
+
+    /// Stop the daemon through its service, or end its process when it has none (or runs outside it).
+    async fn stop(&self) -> Result<()> {
+        let pid = self.alive().await.and_then(|h| h["pid"].as_u64());
+        service::Manager::detect().stop()?;
+        if self.went_down(10).await {
+            return Ok(());
+        }
+        if let Some(pid) = pid {
+            kiqr_core::process::terminate(pid as u32);
+            if self.went_down(10).await {
+                return Ok(());
+            }
+        }
+        Err(anyhow!("KIQR is still running at {}", self.base))
+    }
+
+    async fn went_down(&self, half_seconds: u32) -> bool {
+        for _ in 0..half_seconds {
+            if self.alive().await.is_none() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        false
+    }
+
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         let resp = self.http.get(format!("{}{path}", self.base)).send().await.map_err(connect_hint)?;
         Self::json(resp).await
@@ -1162,7 +1277,7 @@ fn asset_path(s: &str) -> Result<String> {
 
 fn connect_hint(e: reqwest::Error) -> anyhow::Error {
     if e.is_connect() {
-        anyhow!("can't reach the daemon. Start it with: kiqr daemon")
+        anyhow!("KIQR is not running. Start it with: kiqr start")
     } else {
         e.into()
     }
@@ -1186,7 +1301,8 @@ fn serde_yaml_lite_port(text: &str) -> Option<String> {
             if let Some(v) = l.strip_prefix("host:") {
                 host = Some(v.trim().trim_matches('"').to_string());
             } else if let Some(v) = l.strip_prefix("port:") {
-                port = v.trim().parse::<u16>().ok();
+                // The daemon moves a home off the pre-0.2 default on start; so does the CLI.
+                port = v.trim().parse::<u16>().ok().map(|p| if p == kiqr_core::config::OLD_DEFAULT_PORT { kiqr_core::config::DEFAULT_PORT } else { p });
             }
         }
     }
@@ -1308,6 +1424,9 @@ fn print_event(ev: &Event) {
         EventKind::MarketplaceRefreshed { items, fetched } => format!("market   index read again: {items} abilities{}", if *fetched { "" } else { " (could not be reached; shipped only)" }),
         EventKind::MetricsSnapshot { source, provider, rows, .. } => format!("metrics  {source}: {rows} rows via {provider}"),
         EventKind::MetricsFailed { source, provider, error } => format!("metrics  {source} via {provider} failed: {error}"),
+        EventKind::UpdateAvailable { version } => format!("update   KIQR {version} is available — run `kiqr update`"),
+        EventKind::Updated { from, to } => format!("update   KIQR {from} → {to}, restarting"),
+        EventKind::UpdateFailed { version, error } => format!("update   KIQR {version} could not be installed: {error}"),
     };
     println!("{t}  {line}");
 }

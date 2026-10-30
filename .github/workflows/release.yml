@@ -1,0 +1,132 @@
+# Publishes a KIQR release when a version tag is pushed (scripts/release.sh
+# does that). Builds the binary for every platform, then a GitHub Release with
+# the archives, SHA256SUMS and latest.json, the manifest the installers and
+# `kiqr upgrade` read. Tags with a pre-release part (v0.3.0-rc.1) become
+# pre-releases, which /releases/latest skips.
+name: Release
+on:
+  push: { tags: ["v*"] }
+permissions: { contents: read }
+env: { CARGO_TERM_COLOR: always }
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: The tag matches Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' Cargo.toml)
+          if [ "$tag" != "$cargo" ]; then echo "::error::tag v$tag but Cargo.toml says $cargo"; exit 1; fi
+          echo "version=$cargo" >> "$GITHUB_OUTPUT"
+          case "$cargo" in *-*) echo "prerelease=true" ;; *) echo "prerelease=false" ;; esac >> "$GITHUB_OUTPUT"
+
+  web:
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: npm ci && npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with: { name: web-dist, path: web/dist, retention-days: 1 }
+
+  build:
+    needs: [verify, web]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: aarch64-pc-windows-msvc, os: windows-11-arm }
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: web-dist, path: web/dist }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "${{ matrix.target }}" }
+      - if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked -p kiqr --target "$TARGET"
+        shell: bash
+      - name: Package
+        shell: bash
+        run: |
+          name="kiqr-v$VERSION-$TARGET"
+          mkdir -p "dist/$name"
+          cp LICENSE README.md "dist/$name/"
+          if [[ "$TARGET" == *windows* ]]; then
+            cp "target/$TARGET/release/kiqr.exe" "dist/$name/"
+            (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null && cp "$name.zip" "kiqr-$TARGET.zip")
+          else
+            cp "target/$TARGET/release/kiqr" "dist/$name/"
+            (cd dist && tar czf "$name.tar.gz" "$name" && cp "$name.tar.gz" "kiqr-$TARGET.tar.gz")
+          fi
+          rm -rf "dist/$name"
+      - if: "!contains(matrix.target, 'windows')"
+        name: The binary runs and knows its version
+        run: |
+          if [ "$TARGET" = "x86_64-apple-darwin" ]; then exit 0; fi  # built on arm64; Rosetta may be missing
+          "target/$TARGET/release/kiqr" --version | grep -F "$VERSION"
+      - if: contains(matrix.target, 'windows')
+        name: The binary runs and knows its version
+        shell: bash
+        run: "target/$TARGET/release/kiqr.exe --version | grep -F \"$VERSION\""
+      - uses: actions/upload-artifact@v4
+        with: { name: "dist-${{ matrix.target }}", path: dist/*, retention-days: 1 }
+
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    permissions: { contents: write }
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: "dist-*", path: dist, merge-multiple: true }
+      - name: Checksums and latest.json
+        working-directory: dist
+        run: |
+          sha256sum kiqr-* > SHA256SUMS
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION"
+          jq -n --arg v "$VERSION" --arg notes "https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION" \
+            --arg base "$base" --rawfile sums SHA256SUMS '
+            { version: $v, published_at: (now | todate), notes_url: $notes,
+              assets: ($sums | split("\n") | map(select(length > 0) | split("  ")
+                | select(.[1] | test("^kiqr-v"))
+                | { key: (.[1] | capture("^kiqr-v[^-]+(-[a-z]+\\.[0-9]+)?-(?<t>.+)\\.(tar\\.gz|zip)$").t),
+                    value: { url: "\($base)/\(.[1])", sha256: .[0] } })
+                | from_entries) }' > latest.json
+          cat latest.json
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '
+            /^## / { if (on) exit; if (index($0, "## v" v " ") == 1) { on = 1; next } }
+            on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "KIQR v$VERSION" > notes.md
+          cat notes.md
+      - name: Create the GitHub Release
+        run: |
+          flags=""
+          [ "$PRERELEASE" = "true" ] && flags="--prerelease --latest=false"
+          gh release create "v$VERSION" dist/* --title "KIQR v$VERSION" --notes-file notes.md --verify-tag $flags

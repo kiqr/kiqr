@@ -119,6 +119,7 @@ export type KiqrEvent = { at: string; project: string | null; type: string } & R
 export type Health = {
   ok: boolean;
   version: string;
+  pid?: number;
   home: string;
   providers: { task: string; model: string; available: boolean }[];
   unblockingapi: boolean;
@@ -128,6 +129,22 @@ export type Health = {
   tools?: { name: string; installed: boolean }[];
   env_file?: string;
   address?: string;
+  /** `KIQR_HOST` / `KIQR_PORT` when set: they override config.yaml. */
+  address_env?: string[];
+  /** A newer KIQR, when the daemon's last check found one. */
+  update?: { latest: string | null; available: boolean; can_self_update: boolean };
+};
+/** `GET /api/update`: what the daemon knows about KIQR releases. */
+export type UpdateStatus = {
+  current: string;
+  latest: string | null;
+  available: boolean;
+  notes_url: string | null;
+  checked_at: string | null;
+  can_self_update: boolean;
+  reason: string | null;
+  error: string | null;
+  updating: boolean;
 };
 /** `config.yaml`. */
 export type Config = {
@@ -371,6 +388,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<Health>("/api/health"),
+  updateStatus: (refresh = false) => req<UpdateStatus>(`/api/update${refresh ? "?refresh=1" : ""}`),
+  applyUpdate: () => req<UpdateStatus>("/api/update", { method: "POST", body: "{}" }),
   config: () => req<Config>("/api/config"),
   saveConfig: (c: Config) => req<Config>("/api/config", { method: "PUT", body: JSON.stringify(c) }),
   projects: () => req<Project[]>("/api/projects"),
@@ -516,7 +535,7 @@ export const api = {
 };
 
 let demoConfig: Config = {
-  daemon: { host: "127.0.0.1", port: 7777 },
+  daemon: { host: "127.0.0.1", port: 4040 },
   crawl: { max_pages: 200, concurrency: 5, ai_concurrency: 3 },
   models: { extract: "claude-cli/haiku", synthesize: "claude-cli/sonnet", chat: "claude-cli/sonnet" },
   agent: { max_budget_usd: 2, max_concurrent: 3, timezone: "Europe/Stockholm" },
@@ -548,7 +567,7 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
       version: "demo",
       home: "~/.kiqr",
       env_file: "~/.kiqr/.env",
-      address: "127.0.0.1:7777",
+      address: "127.0.0.1:4040",
       providers: (["extract", "synthesize", "chat"] as const).map((task) => ({ task, model: demoConfig.models[task], available: !demoConfig.models[task].startsWith("openai/") })),
       unblockingapi: true,
       secrets: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "UNBLOCKINGAPI_KEY", "KIQR_CLOUD_TOKEN"].map((name) => ({ name, set: name === "UNBLOCKINGAPI_KEY" || name === "ANTHROPIC_API_KEY" })),
@@ -556,7 +575,12 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
         { name: "claude", installed: true },
         { name: "codex", installed: false },
       ],
+      update: { latest: "0.2.0", available: true, can_self_update: true },
     } as T);
+  if (path.startsWith("/api/update"))
+    return init?.method === "POST"
+      ? Promise.reject(new Error("The demo cannot update itself."))
+      : Promise.resolve({ current: "demo", latest: "0.2.0", available: true, notes_url: "https://github.com/kiqr/kiqr/releases/latest", checked_at: new Date().toISOString(), can_self_update: true, reason: null, error: null, updating: false } as T);
   return Promise.resolve({} as T);
 }
 

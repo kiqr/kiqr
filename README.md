@@ -38,11 +38,19 @@ No interview. No salary negotiation. No onboarding deck. Paste this into a termi
 curl -fsSL https://kiqr.dev/install.sh | sh
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+irm https://kiqr.dev/install.ps1 | iex
+```
+
 <p align="center">
-  <img src=".github/assets/install.svg" alt="A terminal: the installer builds KIQR and starts it, then KIQR reads a bakery's website and builds its business profile, and Seemo asks: I read the site. Shall we talk about the plan?" width="760">
+  <img src=".github/assets/install.svg" alt="A terminal: the installer downloads KIQR and starts it, then KIQR reads a bakery's website and builds its business profile, and Seemo asks: I read the site. Shall we talk about the plan?" width="760">
 </p>
 
-Then open **[http://127.0.0.1:7777](http://127.0.0.1:7777)**, paste your website's address, and go make that coffee. By the time you're back, Seemo has read the whole site.
+Then open **[http://127.0.0.1:4040](http://127.0.0.1:4040)**, paste your website's address, and go make that coffee. By the time you're back, Seemo has read the whole site.
+
+KIQR runs in the background and starts when you log in, so there is nothing to keep open. `kiqr status` says whether it is running, and `kiqr start`, `kiqr stop` and `kiqr restart` do what they say.
 
 <details>
 <summary><b>Rather use Docker?</b></summary>
@@ -50,7 +58,7 @@ Then open **[http://127.0.0.1:7777](http://127.0.0.1:7777)**, paste your website
 <br>
 
 ```sh
-docker run -d -p 7777:7777 -v kiqr-data:/data --env-file .env ghcr.io/kiqr/kiqr
+docker run -d -p 4040:4040 -v kiqr-data:/data --env-file .env ghcr.io/kiqr/kiqr
 ```
 
 Put `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env`, or a subscription token from `claude setup-token` as `CLAUDE_CODE_OAUTH_TOKEN`.
@@ -58,6 +66,8 @@ Put `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env`, or a subscription token f
 </details>
 
 **What you need:** a Claude or ChatGPT plan you already pay for (through Claude Code or Codex), or an API key. That's the brain. KIQR itself is free.
+
+**Staying current:** KIQR tells you when a new version is out, in Settings and in `kiqr status`. Click **Update** in Settings or run `kiqr update`. Running the installer again does the same.
 
 <br>
 
@@ -148,9 +158,20 @@ cargo build
 KIQR_HOME=/tmp/kiqr-dev ./target/debug/kiqr daemon   # a throwaway home
 ```
 
-`npm run dev` in `web/` serves the UI with hot reload and proxies `/api` to a daemon on port 7777. Preview UI changes without a daemon through the demo build: `npx vite build -c vite.demo.config.ts`, then open `web/dist-demo/index.html?demo`.
+`npm run dev` in `web/` serves the UI with hot reload and proxies `/api` to a daemon on port 4040. Preview UI changes without a daemon through the demo build: `npx vite build -c vite.demo.config.ts`, then open `web/dist-demo/index.html?demo`.
 
 For crawl tests, serve a folder of HTML files with `python3 -m http.server 8099` and run `./target/debug/kiqr project add http://127.0.0.1:8099/ --watch`.
+
+### Releases
+
+Versions follow [semver](https://semver.org). Before 1.0, a minor release (0.x.0) brings new features and may change the `~/.kiqr` layout or the API, and a patch release (0.x.y) only fixes things. To cut one from an up-to-date `main`:
+
+```sh
+scripts/release.sh minor --dry-run    # see the version and changelog entry
+scripts/release.sh minor              # or patch, major, rc, or an exact 0.4.0-rc.1
+```
+
+The script bumps `Cargo.toml`, rebuilds `web/dist`, moves "Unreleased" in [CHANGELOG.md](CHANGELOG.md) under the new version (or lists the commits since the last tag when it is empty), commits `Release vX.Y.Z`, tags and pushes. The tag starts [the release workflow](.github/workflows/release.yml), which builds Linux (x86_64, arm64, static musl), macOS (Intel, Apple silicon) and Windows (x64, arm64) and publishes a GitHub Release with the archives, `SHA256SUMS` and `latest.json`, the manifest the installers and `kiqr update` read. An `-rc.N` version becomes a pre-release that installs and updates skip unless asked for (`KIQR_VERSION=v0.4.0-rc.1`).
 
 ### Find your way around
 
@@ -181,8 +202,10 @@ Read **[docs/PLAN.md](docs/PLAN.md)** for the architecture and the decisions beh
 <br>
 
 ```
-kiqr daemon                      run the daemon (serves the web UI)
-kiqr status                      providers, connections, home directory
+kiqr start | stop | restart      the background service the installer registered
+kiqr status                      running or not, version, service, models, home directory
+kiqr update [--check]            update KIQR to the latest release
+kiqr daemon                      run the daemon in this terminal (serves the web UI)
 kiqr project add <url> [--watch]
 kiqr project list
 kiqr crawl <slug> [--watch] [--max-pages N]

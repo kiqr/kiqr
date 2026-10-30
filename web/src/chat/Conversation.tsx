@@ -213,7 +213,7 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
             </li>
           ))}
         </ul>
-        {card.status === "approved" && (card.result?.restart as boolean) && <p className="warn">Host or port changed: restart the daemon to apply it.</p>}
+        {card.status === "approved" && (card.result?.restart as boolean) && <p className="warn">The address changed: KIQR restarts there when this turn ends.</p>}
       </div>
     );
   }
@@ -426,7 +426,7 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
             ))}
           </ul>
           {!!p.reason && <p className="muted sm">{String(p.reason)}</p>}
-          {(p.restart as boolean) && <p className="warn">Host or port change: applies after the daemon restarts.</p>}
+          {(p.restart as boolean) && <p className="warn">Address change: KIQR restarts on it when this turn ends.</p>}
         </>
       )}
       {error && (

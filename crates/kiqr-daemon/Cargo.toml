@@ -25,7 +25,16 @@ tokio.workspace = true
 tokio-stream.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
-libc = "0.2"
 uuid.workspace = true
 chrono-tz = "0.10"
+semver = "1"
+sha2.workspace = true
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "pool"] }
+
+[target.'cfg(unix)'.dependencies]
+flate2 = "1"
+tar = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+self-replace = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }

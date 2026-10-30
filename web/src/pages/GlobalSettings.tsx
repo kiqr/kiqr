@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Bot, Check, Cloud, Cpu, Database, FolderGit2, HardDrive, KeyRound, Radar, Server, Settings as SettingsIcon, Sparkles, Terminal, X, type LucideIcon } from "lucide-react";
+import { ArrowUpCircle, Bot, Check, Cloud, Cpu, Database, ExternalLink, FolderGit2, HardDrive, KeyRound, Loader2, Network, Radar, Server, Settings as SettingsIcon, Sparkles, Terminal, X, type LucideIcon } from "lucide-react";
 import { api, useAsync, useEvents, type Config, type Health } from "../api";
 import { SecretField } from "./SecretField";
 import { SignInById } from "./SignIns";
@@ -14,6 +14,7 @@ const TABS: Tab[] = [
   { id: "", label: "General", icon: SettingsIcon },
   { id: "models", label: "Models", icon: Cpu },
   { id: "crawling", label: "Crawling", icon: Radar },
+  { id: "network", label: "Network", icon: Network },
   { id: "storage", label: "Storage", icon: Database },
 ];
 
@@ -47,6 +48,7 @@ export function Settings() {
     setError(null);
     try {
       await api.saveConfig(draft);
+      // A new address restarts the daemon; the shell follows it there (config_changed with restart).
       config.reload();
       health.reload();
       setSaved(true);
@@ -85,6 +87,7 @@ export function Settings() {
           {current.id === "" && <General h={h} config={config.data} />}
           {current.id === "models" && draft && <Models h={h} draft={draft} setDraft={setDraft} />}
           {current.id === "crawling" && draft && <Crawling h={h} draft={draft} setDraft={setDraft} />}
+          {current.id === "network" && draft && <NetworkTab h={h} draft={draft} setDraft={setDraft} />}
           {current.id === "storage" && <Storage h={h} />}
         </motion.div>
       </div>
@@ -150,14 +153,67 @@ function General({ h, config }: { h?: Health; config?: Config }) {
       <Card icon={Server} title="This installation" text="KIQR runs here, on your machine. Nothing leaves it except the pages it fetches and the model calls you configure.">
         <Rows
           rows={[
-            ["Version", <>KIQR {h?.version}</>],
-            ["Daemon", <code>http://{h?.address ?? "127.0.0.1:7777"}</code>],
+            ["Version", <Version h={h} />],
+            ["Daemon", <code>http://{h?.address ?? "127.0.0.1:4040"}</code>],
             ["Home", <code>{h?.home}</code>],
             ["Secrets", <code>{h?.env_file ?? ".env"}</code>],
           ]}
         />
       </Card>
     </>
+  );
+}
+
+/** The running version, and the newer one with an Update button when the daemon found it. */
+function Version({ h }: { h?: Health }) {
+  const status = useAsync(() => api.updateStatus(), []);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEvents(null, (e) => {
+    if (e.type === "update_available") status.reload();
+    if (e.type === "update_failed") setError(String(e.error ?? "The update failed."));
+  });
+  const u = status.data;
+  const update = async () => {
+    if (!u?.latest) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.applyUpdate();
+      // The daemon restarts as the new version; reload once it answers as that version.
+      for (let i = 0; i < 90; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const v = await api.health().then((x) => x.version).catch(() => null);
+        if (v === u.latest) return window.location.reload();
+      }
+      setError("The new version is installed but the daemon has not come back yet. Check that it is running.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    setBusy(false);
+  };
+  return (
+    <span className="set-version">
+      <span>KIQR {h?.version}</span>
+      {u?.available && u.latest && (
+        <>
+          <span className="warn">v{u.latest} available</span>
+          {u.notes_url && (
+            <a href={u.notes_url} target="_blank" rel="noreferrer" className="muted">
+              What's new <ExternalLink size={11} />
+            </a>
+          )}
+          {u.can_self_update ? (
+            <button className="btn p sm" disabled={busy} onClick={update}>
+              {busy ? <Loader2 size={13} className="spin" /> : <ArrowUpCircle size={13} />} {busy ? "Updating…" : `Update to ${u.latest}`}
+            </button>
+          ) : (
+            <small className="muted">{u.reason}</small>
+          )}
+        </>
+      )}
+      {error && <small className="bad">{error}</small>}
+    </span>
   );
 }
 
@@ -296,6 +352,93 @@ function Crawling({ draft, setDraft }: { h?: Health; draft: Config; setDraft: (c
         </div>
       </Card>
     </>
+  );
+}
+
+/* ---------- Network ---------- */
+
+const HOSTS: { value: string; label: string; hint: string }[] = [
+  { value: "127.0.0.1", label: "This computer only", hint: "Only a browser on this computer can open KIQR. The safe choice." },
+  { value: "0.0.0.0", label: "Every device on your network", hint: "Phones and other computers on your network can open KIQR too. It has no password, so use this only on a network you trust." },
+];
+
+/** Where the browser finds the daemon after a move: this page's host name when it listens everywhere. */
+export function addressUrl(d: Config["daemon"]) {
+  const host = d.host === "0.0.0.0" || d.host === "::" ? location.hostname : d.host;
+  return `${location.protocol}//${host}:${d.port}${location.pathname}`;
+}
+
+function NetworkTab({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (c: Config) => void }) {
+  const set = (patch: Partial<Config["daemon"]>) => setDraft({ ...draft, daemon: { ...draft.daemon, ...patch } });
+  const locked = h?.address_env ?? [];
+  const host = HOSTS.find((x) => x.value === draft.daemon.host);
+  return (
+    <Card icon={Network} title="Address" text="Where KIQR's web page and API listen. Saving a new address restarts KIQR there (after Seemo finishes what it is doing) and this page moves with it.">
+      {locked.length > 0 ? (
+        <p className="set-note">
+          Set by {locked.map((k) => <code key={k}>{k}</code>)} in the environment, which overrides config.yaml. KIQR listens on <code>{h?.address}</code>.
+        </p>
+      ) : (
+        <div className="set-fields">
+          <label className="set-field">
+            <span className="nm">Who can open KIQR</span>
+            <select className="input" value={host?.value ?? draft.daemon.host} onChange={(e) => set({ host: e.target.value })}>
+              {HOSTS.map((x) => (
+                <option key={x.value} value={x.value}>
+                  {x.label}
+                </option>
+              ))}
+              {!host && <option value={draft.daemon.host}>{draft.daemon.host}</option>}
+            </select>
+            <span className="ds">{host?.hint ?? "A custom address from config.yaml."}</span>
+          </label>
+          <Field label="Port" hint="1024–65535. KIQR checks it is free before saving." value={draft.daemon.port} min={1024} max={65535} onChange={(v) => set({ port: Math.round(Number(v) || 0) })} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** While the daemon restarts on its new address: wait until it answers there, then go. `pid` is the old daemon's. */
+export function Moving({ to, pid }: { to: string; pid?: number }) {
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    let done = false;
+    const origin = new URL(to).origin;
+    const tick = async () => {
+      while (!done) {
+        await new Promise((r) => setTimeout(r, 1000));
+        // Same origin (only the host changed): the old daemon still answers until it restarts, so wait for a new one.
+        // Another origin: an opaque answer is enough to know it is up.
+        const up =
+          origin === location.origin
+            ? await api.health().then((x) => x.pid !== pid, () => false)
+            : await fetch(`${origin}/api/health`, { mode: "no-cors", cache: "no-store" }).then(() => true, () => false);
+        if (up && !done) return void (window.location.href = to);
+      }
+    };
+    tick();
+    const t = setTimeout(() => setLate(true), 20000);
+    return () => {
+      done = true;
+      clearTimeout(t);
+    };
+  }, [to]);
+  return (
+    <motion.div className="set-moving" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="pcard">
+        <Loader2 size={18} className="spin" />
+        <div>
+          <h2>KIQR is moving to {new URL(to).host}</h2>
+          <p className="muted">It restarts there as soon as Seemo has finished what it is doing, and this page follows.</p>
+          {late && (
+            <p className="muted">
+              Taking a while. Check <code>kiqr status</code>, or open <a href={to}>{new URL(to).host}</a> yourself.
+            </p>
+          )}
+        </div>
+      </div>
+    </motion.div>
   );
 }
 

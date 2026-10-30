@@ -20,6 +20,7 @@ mod scheduler;
 mod seemo;
 mod signins;
 mod smtp;
+mod update;
 mod web;
 
 use anyhow::Result;
@@ -60,6 +61,8 @@ pub struct App {
     pub connects: connect::Shared,
     /// KIQR's own sign-ins (kiqr.cloud, UnblockingAPI): flows in progress, servers found.
     pub signins: signins::Shared,
+    /// New KIQR versions: the last check, and the one update allowed at a time.
+    pub updates: Arc<update::Updates>,
 }
 
 impl App {
@@ -71,7 +74,13 @@ impl App {
 pub async fn run(home: Home) -> Result<()> {
     let store = Store::open(home.clone())?;
     let _ = dotenvy::from_path(home.env_file());
-    let config = Config::load(&store)?;
+    let mut config = Config::load(&store)?;
+    // The default port was 7777 before 0.2 and nothing could change it, so a home on it moves with the default.
+    if config.daemon.port == kiqr_core::config::OLD_DEFAULT_PORT {
+        config.daemon.port = kiqr_core::config::DEFAULT_PORT;
+        config.save(&store)?;
+        store.commit(&format!("[auto] config: KIQR moves to port {}", config.daemon.port)).await?;
+    }
     // Homes from before the rename keep their folders, under the new name.
     let moved = home.move_ability_folders()?;
     if moved > 0 {
@@ -100,9 +109,9 @@ pub async fn run(home: Home) -> Result<()> {
     seed_persona(&store).await?;
 
     // KIQR_HOST / KIQR_PORT override config.yaml, so Docker can bind 0.0.0.0 without editing files.
-    let host = std::env::var("KIQR_HOST").unwrap_or_else(|_| config.daemon.host.clone());
-    let port = std::env::var("KIQR_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(config.daemon.port);
+    let (host, port) = listen_addr(&config.daemon);
     let loopback = if host == "0.0.0.0" || host == "::" || host.is_empty() { "127.0.0.1".to_string() } else { host.clone() };
+    let exe = own_exe();
     let app = App {
         store,
         bus: EventBus::new(),
@@ -115,12 +124,13 @@ pub async fn run(home: Home) -> Result<()> {
         agents: Arc::new(tokio::sync::Semaphore::new(config.agent.max_concurrent.clamp(1, 10))),
         queued: Default::default(),
         daemon_url: format!("http://{loopback}:{port}"),
-        exe: own_exe(),
+        exe: exe.clone(),
         registry: Arc::new(RwLock::new(kiqr_core::extensions::Registry::load(&home, &config.core_off))),
         renderer: Arc::new(kiqr_core::render::Renderer::new(home.render_dir())),
         mcp: Arc::new(mcp_host::McpHost::default()),
         connects: Default::default(),
         signins: Default::default(),
+        updates: Arc::new(update::Updates::new(&exe)),
     };
     match app.renderer.chrome() {
         Some(c) => tracing::info!("images: SVG via resvg, HTML via {}", c.display()),
@@ -128,6 +138,7 @@ pub async fn run(home: Home) -> Result<()> {
     }
     scheduler::recover(&app);
     tokio::spawn(scheduler::run(app.clone()));
+    tokio::spawn(update::run(app.clone()));
 
     // Projects crawled before brand collection existed, or whose brand was
     // built by older rules, get it saved now, in the background, so the
@@ -148,7 +159,7 @@ pub async fn run(home: Home) -> Result<()> {
 
     let router = api::router(app.clone()).fallback(web::serve);
     let addr = format!("{host}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = bind(&addr).await?;
     tracing::info!("KIQR daemon listening on http://{addr}  (home: {})", home.root().display());
     axum::serve(listener, router).await?;
     Ok(())
@@ -166,6 +177,81 @@ async fn seed_persona(store: &Store) -> Result<()> {
 }
 
 /// The path of this binary as it should be spawned later.
+/// Start this binary again with the same arguments: after an update (the new version)
+/// or an address change (the new host and port). It replaces the process in place on Unix. On Unix the process is
+/// replaced in place, so systemd and launchd see the same service. On Windows
+/// the installer's scheduled task starts the new version (it allows parallel
+/// instances, and the new one waits for the port), so `kiqr stop` and
+/// Task Scheduler still own it; without the task a detached process starts.
+/// Either way this one leaves.
+pub(crate) fn restart_self(exe: &std::path::Path) {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(exe).args(&args).exec();
+        tracing::error!(error = %err, "could not restart; exiting so the service manager starts KIQR again");
+        std::process::exit(1);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const TASK: &str = "KIQR daemon";
+        let quiet = |args: &[&str]| std::process::Command::new("schtasks").args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+        if quiet(&["/Query", "/TN", TASK]) && quiet(&["/Run", "/TN", TASK]) {
+            std::process::exit(0);
+        }
+        match std::process::Command::new(exe).args(&args).creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).spawn() {
+            Ok(_) => std::process::exit(0),
+            Err(e) => {
+                tracing::error!(error = %e, "could not start KIQR again");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// The address the daemon listens on: config.yaml, unless `KIQR_HOST` / `KIQR_PORT` override it.
+pub(crate) fn listen_addr(cfg: &kiqr_core::config::DaemonConfig) -> (String, u16) {
+    let host = std::env::var("KIQR_HOST").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| cfg.host.clone());
+    let port = std::env::var("KIQR_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(cfg.port);
+    (host, port)
+}
+
+/// Restart on the new address once nothing is running: a chat turn, a task run
+/// or a crawl would be cut off. Seemo changing the address from a chat is
+/// itself a turn, so this waits for it to finish.
+pub(crate) fn restart_when_idle(app: &App) {
+    let app = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            if app.turns.read().await.is_empty() && app.jobs.read().await.is_empty() {
+                break;
+            }
+        }
+        tracing::info!("restarting on the new address");
+        restart_self(&app.exe);
+    });
+}
+
+/// Bind the API port, waiting a few seconds when it is still taken: after a
+/// self-update on Windows the old process may not have let go of it yet.
+async fn bind(addr: &str) -> std::io::Result<tokio::net::TcpListener> {
+    let mut tries = 0;
+    loop {
+        match tokio::net::TcpListener::bind(addr).await {
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && tries < 20 => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            r => return r,
+        }
+    }
+}
+
 fn own_exe() -> std::path::PathBuf {
     let raw = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("kiqr"));
     let cleaned = raw.to_string_lossy().trim_end_matches(" (deleted)").to_string();

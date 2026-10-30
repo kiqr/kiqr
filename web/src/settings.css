@@ -47,6 +47,7 @@
 .set-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 18px; }
 .set-field { display: flex; flex-direction: column; gap: 6px; }
 .set-field .input { max-width: 160px; }
+.set-field select.input { max-width: 280px; }
 .set-toggle-row { display: flex; align-items: center; gap: 16px; justify-content: space-between; }
 .switch { position: relative; width: 40px; height: 22px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel-2); cursor: pointer; flex: none; display: flex; align-items: center; padding: 2px; justify-content: flex-start; transition: background 200ms, border-color 200ms; }
 .switch i { width: 16px; height: 16px; border-radius: 50%; background: var(--muted); display: block; }
@@ -350,3 +351,16 @@ a.mk-author:hover { color: var(--accent); }
 .signin .code-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .signin .code { font-size: 18px; letter-spacing: .12em; padding: 4px 10px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line-2); }
 .signin .err { color: var(--bad); }
+
+/* Version row: the running version, and a newer one with its Update button. */
+.set-version { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.set-version .warn { color: var(--warn); }
+.set-version .bad { color: var(--bad); flex-basis: 100%; }
+.set-version a { display: inline-flex; align-items: center; gap: 4px; text-decoration: none; }
+.set-version a:hover { color: var(--fg); }
+
+/* While KIQR restarts on a new address. */
+.set-moving { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(5, 8, 16, 0.72); backdrop-filter: blur(6px); }
+.set-moving .pcard { display: flex; gap: 14px; align-items: flex-start; max-width: 460px; padding: 22px 24px; }
+.set-moving h2 { font-size: 16px; margin: 0 0 6px; }
+.set-moving p { margin: 0 0 6px; font-size: 13px; line-height: 1.5; }

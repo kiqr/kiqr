@@ -25,7 +25,7 @@
     <text class="l l3" y="52" fill="#9aa6bf">Building kiqr (this takes a few minutes the first time)...</text>
     <text class="l l4" y="76" fill="#66728c"># good moment for a coffee. Rust is thinking very hard.</text>
     <text class="l l5" y="100" fill="#9aa6bf">Daemon registered and started.</text>
-    <text class="l l6" y="124" fill="#9aa6bf">KIQR is installed. Open http://127.0.0.1:7777</text>
+    <text class="l l6" y="124" fill="#9aa6bf">KIQR is installed. Open http://127.0.0.1:4040</text>
 
     <text class="l l7" y="164"><tspan fill="#5eead4">$</tspan><tspan fill="#eef2fb"> kiqr project add https://your-bakery.com --watch</tspan></text>
     <text class="l l8" y="192"><tspan fill="#5eead4">  ✓</tspan><tspan fill="#9aa6bf"> read the whole website, every page</tspan></text>

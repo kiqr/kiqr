@@ -101,10 +101,7 @@ pub fn on_path(cmd: &str) -> bool {
     if cmd.is_empty() {
         return false;
     }
-    if cmd.contains('/') {
-        return std::path::Path::new(cmd).exists();
-    }
-    std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file())).unwrap_or(false)
+    kiqr_core::process::find(cmd).is_some()
 }
 
 /// The groups a chat in this project may use: every built-in one plus the
@@ -1373,12 +1370,12 @@ async fn command_exec(spec: &CommandSpec, args: &Value, map: &ResultMap, env: &(
     if !on_path(&program) {
         bail!("the program {program} is not installed on this computer");
     }
-    let mut cmd = tokio::process::Command::new(&program);
+    let mut cmd = kiqr_core::process::command(&program);
     for a in &spec.args {
         cmd.arg(extensions::fill(a, args, env.clone()));
     }
     cmd.env_clear();
-    for k in ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER"] {
+    for k in kiqr_core::process::BASE_ENV {
         if let Ok(v) = std::env::var(k) {
             cmd.env(k, v);
         }

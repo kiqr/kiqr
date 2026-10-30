@@ -72,7 +72,7 @@ pub fn has_env(k: &str) -> bool {
 }
 
 pub async fn which(bin: &str) -> bool {
-    tokio::process::Command::new(bin)
+    crate::process::command(bin)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -183,7 +183,7 @@ impl Provider for ClaudeCli {
         "claude-cli"
     }
     async fn complete(&self, req: &Request) -> Result<String> {
-        let mut cmd = tokio::process::Command::new("claude");
+        let mut cmd = crate::process::command("claude");
         cmd.arg("-p")
             .arg("--output-format")
             .arg("json")
@@ -222,7 +222,7 @@ impl Provider for CodexCli {
     }
     async fn complete(&self, req: &Request) -> Result<String> {
         let prompt = format!("{}\n\n{}", req.system, req.prompt);
-        let mut child = tokio::process::Command::new("codex")
+        let mut child = crate::process::command("codex")
             .arg("exec")
             .arg("--model")
             .arg(&req.model)

@@ -57,6 +57,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::publish::routes())
         .merge(crate::marketing::routes())
         .merge(crate::performance::routes())
+        .merge(crate::update::routes())
         .with_state(app)
 }
 
@@ -96,6 +97,8 @@ impl IntoResponse for ApiError {
 struct Health {
     ok: bool,
     version: &'static str,
+    /// This daemon's process, so `kiqr stop` can end one no service manager runs.
+    pid: u32,
     home: String,
     providers: Vec<ProviderStatus>,
     unblockingapi: bool,
@@ -105,6 +108,17 @@ struct Health {
     tools: Vec<ToolStatus>,
     env_file: String,
     address: String,
+    /// `KIQR_HOST` / `KIQR_PORT` when set: they override config.yaml, so Settings can't change those.
+    address_env: Vec<&'static str>,
+    /// A newer KIQR, when the last check found one.
+    update: HealthUpdate,
+}
+
+#[derive(Serialize)]
+struct HealthUpdate {
+    latest: Option<String>,
+    available: bool,
+    can_self_update: bool,
 }
 
 #[derive(Serialize)]
@@ -131,6 +145,7 @@ struct ProviderStatus {
 
 async fn health(State(app): State<App>) -> Json<Health> {
     let cfg = app.config.read().await.clone();
+    let up = app.updates.status().await;
     let mut providers = Vec::new();
     for (task, model) in [("extract", &cfg.models.extract), ("synthesize", &cfg.models.synthesize), ("chat", &cfg.models.chat)] {
         providers.push(ProviderStatus { task, model: model.clone(), available: provider::available(model).await });
@@ -138,17 +153,19 @@ async fn health(State(app): State<App>) -> Json<Health> {
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
+        pid: std::process::id(),
         home: app.store.home().root().display().to_string(),
         providers,
         unblockingapi: std::env::var("UNBLOCKINGAPI_KEY").map(|k| !k.is_empty()).unwrap_or(false),
         secrets: SECRETS.iter().map(|&name| SecretStatus { name, set: provider::has_env(name) }).collect(),
         tools: vec![ToolStatus { name: "claude", installed: provider::which("claude").await }, ToolStatus { name: "codex", installed: provider::which("codex").await }],
         env_file: app.store.home().env_file().display().to_string(),
-        address: format!(
-            "{}:{}",
-            std::env::var("KIQR_HOST").unwrap_or_else(|_| cfg.daemon.host.clone()),
-            std::env::var("KIQR_PORT").ok().unwrap_or_else(|| cfg.daemon.port.to_string())
-        ),
+        address: {
+            let (host, port) = crate::listen_addr(&cfg.daemon);
+            format!("{host}:{port}")
+        },
+        address_env: ["KIQR_HOST", "KIQR_PORT"].into_iter().filter(|k| provider::has_env(k)).collect(),
+        update: HealthUpdate { latest: up.latest, available: up.available, can_self_update: up.can_self_update },
     })
 }
 
@@ -158,19 +175,46 @@ async fn get_config(State(app): State<App>) -> Json<kiqr_core::Config> {
 
 async fn put_config(State(app): State<App>, Json(cfg): Json<kiqr_core::Config>) -> ApiResult<kiqr_core::Config> {
     let current = app.config.read().await.clone();
-    let restart = cfg.daemon.host != current.daemon.host || cfg.daemon.port != current.daemon.port;
+    let restart = check_address(&current.daemon, &cfg.daemon).await?;
     apply_config(&app, cfg.clone(), "you", restart).await?;
     Ok(Json(cfg))
 }
 
 /// Save `config.yaml`, commit, and make the daemon use it from now on. Host
-/// and port are read once at start-up, so those need a restart (`restart`).
+/// and port are read once at start-up, so a change to them (`restart`)
+/// restarts the daemon on the new address as soon as nothing is running.
 pub(crate) async fn apply_config(app: &App, cfg: kiqr_core::Config, by: &str, restart: bool) -> Result<(), ApiError> {
     cfg.save(&app.store)?;
     app.store.commit(&format!("config: update{}", if by == "you" { "" } else { " (by Seemo)" })).await?;
     *app.config.write().await = cfg;
     app.bus.emit(None, EventKind::ConfigChanged { by: by.into(), restart });
+    if restart {
+        crate::restart_when_idle(app);
+    }
     Ok(())
+}
+
+/// Whether a new host or port changes where the daemon listens (a variable
+/// that overrides it means it does not), and that the new address is usable.
+pub(crate) async fn check_address(old: &kiqr_core::config::DaemonConfig, new: &kiqr_core::config::DaemonConfig) -> Result<bool, ApiError> {
+    let (before, after) = (crate::listen_addr(old), crate::listen_addr(new));
+    if before == after {
+        return Ok(false);
+    }
+    let bad = |m: String| ApiError(StatusCode::BAD_REQUEST, m);
+    if new.port == 0 {
+        return Err(bad("The port must be between 1 and 65535.".into()));
+    }
+    if new.host.parse::<std::net::IpAddr>().is_err() {
+        return Err(bad(format!("{} is not an IP address; use 127.0.0.1 for this computer only, or 0.0.0.0 for your network.", new.host)));
+    }
+    // A new port has to be free. (A new host on the same port is bound by this daemon now, so it can't be tried.)
+    if after.1 != before.1 {
+        if let Err(e) = tokio::net::TcpListener::bind((after.0.as_str(), after.1)).await {
+            return Err(bad(format!("KIQR cannot listen on {}:{}: {e}", after.0, after.1)));
+        }
+    }
+    Ok(true)
 }
 
 async fn list_projects(State(app): State<App>) -> ApiResult<Vec<Project>> {
