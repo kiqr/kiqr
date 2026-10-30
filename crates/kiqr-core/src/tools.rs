@@ -691,8 +691,8 @@ pub fn catalogue() -> Vec<Tool> {
                     "period": { "type": "string", "description": "e.g. Q4 2026" },
                     "summary": { "type": "string" },
                     "objectives": { "type": "array", "items": { "type": "object", "properties": {
-                        "title": { "type": "string" },
-                        "why": { "type": "string" },
+                        "title": { "type": "string", "description": "The result the KPI counts, in the owner's words, with the target: \"Double organic visits to 150 a month\". Never the tactic (that goes in why)." },
+                        "why": { "type": "string", "description": "Two short sentences: why this result matters, from the brief, and how you will get there." },
                         "kpi": { "type": "string", "enum": ["organic_traffic", "qualified_leads", "signups", "conversion_rate", "retention", "brand_mentions", "rank_positions", "revenue", "cac", "published"] },
                         "target": { "type": "number" },
                         "unit": { "type": "string" },
