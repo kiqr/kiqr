@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpCircle, Bot, Check, Cloud, Cpu, Database, ExternalLink, FolderGit2, HardDrive, KeyRound, Loader2, Network, Radar, Server, Settings as SettingsIcon, Sparkles, Terminal, X, type LucideIcon } from "lucide-react";
 import { api, useAsync, useEvents, type Config, type Health } from "../api";
 import { SecretField } from "./SecretField";
+import { Switch } from "./Switch";
 import { SignInById } from "./SignIns";
 import "../settings.css";
 
@@ -154,6 +155,7 @@ function General({ h, config }: { h?: Health; config?: Config }) {
         <Rows
           rows={[
             ["Version", <Version h={h} />],
+            ["Updates", <AutoUpdate />],
             ["Daemon", <code>http://{h?.address ?? "127.0.0.1:4040"}</code>],
             ["Home", <code>{h?.home}</code>],
             ["Secrets", <code>{h?.env_file ?? ".env"}</code>],
@@ -161,6 +163,29 @@ function General({ h, config }: { h?: Health; config?: Config }) {
         />
       </Card>
     </>
+  );
+}
+
+/** Whether new versions install on their own. Saved straight away, like a switch elsewhere. */
+function AutoUpdate() {
+  const config = useAsync(() => api.config(), []);
+  const [busy, setBusy] = useState(false);
+  const on = !!config.data?.updates?.auto;
+  const toggle = async (next: boolean) => {
+    if (!config.data) return;
+    setBusy(true);
+    try {
+      await api.saveConfig({ ...config.data, updates: { auto: next } });
+      config.reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <label className="set-auto">
+      <Switch on={on} disabled={busy || !config.data} onChange={toggle} />
+      <span>{on ? "Installed on their own, when Seemo is not working" : "KIQR says when one is out; you install it"}</span>
+    </label>
   );
 }
 

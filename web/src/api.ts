@@ -155,6 +155,8 @@ export type Config = {
   agent?: { max_budget_usd: number; max_concurrent: number; timezone: string };
   /** Which connection serves an ability when several are ready: `{ image: "fal-image" }`. */
   abilities?: Record<string, string>;
+  /** Whether KIQR installs new versions on its own. */
+  updates?: { auto: boolean };
 };
 
 // ---- Seemo: chats, approvals, tasks

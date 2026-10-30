@@ -120,6 +120,9 @@ enum Command {
         /// Only say whether a newer version exists
         #[arg(long)]
         check: bool,
+        /// Install new versions on their own from now on (on), or only say so (off)
+        #[arg(long, value_parser = ["on", "off"])]
+        auto: Option<String>,
     },
     /// Manage projects
     Project {
@@ -801,7 +804,18 @@ impl Client {
                     );
                 }
             }
-            Command::Update { check } => {
+            Command::Update { auto: Some(auto), .. } => {
+                let mut cfg: serde_json::Value = self.get("/api/config").await?;
+                let on = auto == "on";
+                cfg["updates"] = serde_json::json!({ "auto": on });
+                let _: serde_json::Value = self.put("/api/config", &cfg).await?;
+                if on {
+                    println!("KIQR now installs new versions on its own: it looks every 6 hours and updates when Seemo is not working.");
+                } else {
+                    println!("KIQR now only says when a new version is out; install it with `kiqr update`.");
+                }
+            }
+            Command::Update { check, auto: None } => {
                 let st: serde_json::Value = self.get("/api/update?refresh=1").await?;
                 let current = st["current"].as_str().unwrap_or("?").to_string();
                 if let Some(e) = st["error"].as_str() {

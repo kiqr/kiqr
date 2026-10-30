@@ -364,3 +364,4 @@ a.mk-author:hover { color: var(--accent); }
 .set-moving .pcard { display: flex; gap: 14px; align-items: flex-start; max-width: 460px; padding: 22px 24px; }
 .set-moving h2 { font-size: 16px; margin: 0 0 6px; }
 .set-moving p { margin: 0 0 6px; font-size: 13px; line-height: 1.5; }
+.set-auto { display: inline-flex; align-items: center; gap: 10px; }

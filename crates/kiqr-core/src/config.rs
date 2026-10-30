@@ -22,6 +22,16 @@ pub struct Config {
     pub cloud: CloudConfig,
     /// Built-in abilities the user switched off (`write`, `read-web`, `tasks`…).
     pub core_off: Vec<String>,
+    /// New KIQR versions.
+    #[serde(default)]
+    pub updates: UpdatesConfig,
+}
+
+/// Whether KIQR installs new versions on its own (off: it only says so).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    pub auto: bool,
 }
 
 impl Config {
@@ -100,7 +110,7 @@ pub struct AgentConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default(), marketplace: MarketplaceConfig::default(), cloud: CloudConfig::default(), core_off: vec![] }
+        Self { daemon: DaemonConfig::default(), crawl: CrawlDefaults::default(), models: Models::default(), agent: AgentConfig::default(), abilities: Default::default(), marketplace: MarketplaceConfig::default(), cloud: CloudConfig::default(), core_off: vec![], updates: UpdatesConfig::default() }
     }
 }
 impl Default for AgentConfig {

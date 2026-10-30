@@ -163,8 +163,20 @@ pub async fn run(app: App) {
     }
     tokio::time::sleep(Duration::from_secs(20)).await;
     loop {
-        if let Err(e) = check(&app).await {
-            tracing::debug!(error = %e, "update check failed");
+        match check(&app).await {
+            Ok(st) if st.available && st.reason.is_none() && app.config.read().await.updates.auto => {
+                // Installing on its own (Settings, or `kiqr update --auto on`): only when nothing is running, else soon again.
+                if app.turns.read().await.is_empty() && app.jobs.read().await.is_empty() {
+                    tracing::info!(version = ?st.latest, "installing the new version on its own");
+                    if let Err(e) = update_now(&app).await {
+                        tracing::warn!(error = %e.1, "automatic update failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(300)).await;
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!(error = %e, "update check failed"),
         }
         // A little jitter so many installs don't ask at the same moment.
         let jitter = Duration::from_secs(u64::from(std::process::id() % 600));
@@ -188,7 +200,12 @@ async fn status(State(app): State<App>, Query(q): Query<StatusQuery>) -> ApiResu
 
 /// Download, verify and install the latest version, then restart. Answers before the restart.
 async fn apply(State(app): State<App>) -> Result<(StatusCode, Json<Status>), ApiError> {
-    let st = check(&app).await?;
+    Ok((StatusCode::ACCEPTED, Json(update_now(&app).await?)))
+}
+
+/// The update itself, for the route and for automatic updates.
+async fn update_now(app: &App) -> Result<Status, ApiError> {
+    let st = check(app).await?;
     if let Some(r) = &st.reason {
         return Err(ApiError(StatusCode::CONFLICT, r.clone()));
     }
@@ -216,7 +233,7 @@ async fn apply(State(app): State<App>) -> Result<(StatusCode, Json<Status>), Api
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 crate::restart_self(&exe);
             });
-            Ok((StatusCode::ACCEPTED, Json(st.clone())))
+            Ok(st.clone())
         }
         Err(e) => {
             st.updating = false;

@@ -67,7 +67,7 @@ Put `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env`, or a subscription token f
 
 **What you need:** a Claude or ChatGPT plan you already pay for (through Claude Code or Codex), or an API key. That's the brain. KIQR itself is free.
 
-**Staying current:** KIQR tells you when a new version is out, in Settings and in `kiqr status`. Click **Update** in Settings or run `kiqr update`. Running the installer again does the same.
+**Staying current:** KIQR tells you when a new version is out, in Settings and in `kiqr status`. Click **Update** in Settings or run `kiqr update`. Running the installer again does the same. To have it install new versions on its own, as on a server, run `kiqr update --auto on` or switch on Updates in Settings.
 
 <br>
 
@@ -205,6 +205,7 @@ Read **[docs/PLAN.md](docs/PLAN.md)** for the architecture and the decisions beh
 kiqr start | stop | restart      the background service the installer registered
 kiqr status                      running or not, version, service, models, home directory
 kiqr update [--check]            update KIQR to the latest release
+kiqr update --auto on|off        install new releases on their own, or only say so
 kiqr daemon                      run the daemon in this terminal (serves the web UI)
 kiqr project add <url> [--watch]
 kiqr project list

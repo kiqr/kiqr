@@ -13,6 +13,7 @@
 #   KIQR_FROM_SOURCE=1       build from source with Cargo instead; KIQR_REF picks the branch or tag
 #   KIQR_NO_SERVICE=1        don't register the daemon; start it with `kiqr start`
 #   KIQR_HOME=<dir>          where the daemon keeps its data (default ~/.kiqr)
+#   KIQR_AUTO_UPDATE=1       install new releases on their own (same as `kiqr update --auto on`)
 #   KIQR_RELEASES=<url>      a mirror of github.com/kiqr/kiqr/releases
 set -eu
 
@@ -155,6 +156,11 @@ EOF
       systemctl --user enable kiqr.service >/dev/null 2>&1 || true
       # restart starts it when it is stopped, and picks up the new binary when it runs.
       systemctl --user restart kiqr.service >/dev/null 2>&1 || true
+      keep_running_after_logout
+    else
+      # No user session manager to talk to (su, some containers): run it in the background instead.
+      autostart=no
+      "$BIN_DIR/kiqr" restart >/dev/null 2>&1 || true
     fi
   elif [ "$(uname)" = Darwin ]; then
     plist="$HOME/Library/LaunchAgents/dev.kiqr.daemon.plist"
@@ -176,6 +182,20 @@ EOF
     # No service manager to register with: run it in the background (restarting an older one).
     autostart=no
     "$BIN_DIR/kiqr" restart >/dev/null 2>&1 || true
+  fi
+}
+
+# A user service stops when its user logs out. On a server (no desktop
+# session) that would be the end of the SSH session, so keep it running.
+keep_running_after_logout() {
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && return 0
+  have loginctl || return 0
+  user=$(id -un)
+  [ "$(loginctl show-user "$user" -p Linger --value 2>/dev/null)" = yes ] && return 0
+  if loginctl enable-linger "$user" 2>/dev/null; then
+    say "KIQR keeps running after you log out (loginctl enable-linger $user)."
+  else
+    say "note: KIQR stops when you log out. To keep it running on a server, run:  sudo loginctl enable-linger $user"
   fi
 }
 
@@ -211,6 +231,7 @@ after=$(installed_version)
 [ "$after" = "$before" ] && [ "${KIQR_FROM_SOURCE:-}" != 1 ] && exit 0
 register_daemon
 wait_running
+if [ "${KIQR_AUTO_UPDATE:-}" = 1 ]; then "$BIN_DIR/kiqr" update --auto on || true; fi
 
 have git || say "note: KIQR keeps your data in a git repository; install git before you start."
 case ":$PATH:" in
@@ -225,5 +246,11 @@ else
   if [ "$autostart" = yes ]; then say "KIQR $after is installed and starts at login."; else say "KIQR $after is installed and running. Nothing here starts it at login: run kiqr start after a restart."; fi
   say "Open http://127.0.0.1:4040 or run:"
   say "  kiqr project add https://your-site.com --watch"
+  if [ -n "${SSH_CONNECTION:-}" ]; then
+    say ""
+    say "On a server, KIQR listens on this machine only. From your computer, open it through SSH:"
+    say "  ssh -L 4040:127.0.0.1:4040 $(id -un)@$(echo "$SSH_CONNECTION" | awk '{ print $3 }')   then http://127.0.0.1:4040"
+    say "To have it install new releases on its own:  kiqr update --auto on"
+  fi
 fi
 say "Manage it with: kiqr status | start | stop | restart | update"
