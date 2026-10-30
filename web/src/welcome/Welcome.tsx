@@ -16,6 +16,7 @@ import { BuildRing, STAGE_WORDS, StageSteps, etaWords } from "./BuildRing";
 import { Intake } from "./Intake";
 import { Reveal } from "./Reveal";
 import { FirstWeek } from "./FirstWeek";
+import { closeSeemo, openSeemo, setSeemoIntro } from "../SeemoWidget";
 import "../crawl.css";
 import "../welcome.css";
 
@@ -128,6 +129,28 @@ export function Welcome() {
 
   const host = (p?.url ?? "").replace(/^https?:\/\//, "").replace(/\/$/, "") || slug;
 
+  // Seemo's first conversation runs in its own chat window, in the corner, while it reads.
+  const talking = !!p && !!shown && act !== "reveal" && act !== "week" && stage !== "new";
+  useEffect(() => {
+    if (!talking) return;
+    setSeemoIntro({ node: <Intake slug={slug} host={host} brand={brand} suggestion={audienceHint} />, subtitle: stage === "ready" ? `read ${host}` : `reading ${host}` });
+  }, [talking, slug, host, brand, audienceHint, stage]);
+  useEffect(() => () => setSeemoIntro(null), []);
+  // It opens by itself on a wide screen; on a phone it would cover the progress, so the button waits.
+  const opened = useRef(false);
+  useEffect(() => {
+    if (!talking || opened.current) return;
+    opened.current = true;
+    if (window.innerWidth >= 900) openSeemo();
+  }, [talking]);
+  // The reveal takes the whole screen: the window folds away and goes back to being the chat.
+  useEffect(() => {
+    if (act === "reveal" || act === "week") {
+      setSeemoIntro(null);
+      if (act === "reveal") closeSeemo();
+    }
+  }, [act]);
+
   const start = async (what: "crawl" | "profile") => {
     setBusy(true);
     setError(null);
@@ -177,7 +200,7 @@ export function Welcome() {
   }
 
   return (
-    <div className="wl">
+    <div className="wl wl-build">
       <header className="wl-head">
         <span className="av" />
         <div>
@@ -290,7 +313,6 @@ export function Welcome() {
           </div>
         </section>
 
-        <aside className="wl-side">{stage !== "new" && <Intake slug={slug} host={host} brand={brand} suggestion={audienceHint} done={stage === "ready"} />}</aside>
       </div>
     </div>
   );

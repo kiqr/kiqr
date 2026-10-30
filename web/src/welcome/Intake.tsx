@@ -1,5 +1,5 @@
 // While Seemo reads the site it introduces itself and asks four quick things,
-// one at a time, in the chat's own look. Every question can be skipped; every
+// one at a time, in its own chat window (the widget in the corner). Every question can be skipped; every
 // answer is saved at once and the brief and the first plan use them. The
 // conversation is rebuilt from the saved answers, so a reload reads the same.
 import { useEffect, useRef, useState } from "react";
@@ -67,7 +67,7 @@ function transcript(i: IntakeT, host: string, names: Map<string, string>): Line[
   return out;
 }
 
-export function Intake({ slug, host, brand, suggestion, done }: { slug: string; host: string; brand: Brand | null; /** Who the site seems to be for, from what Seemo read so far. */ suggestion?: string; /** Seemo has finished reading. */ done?: boolean }) {
+export function Intake({ slug, host, brand, suggestion }: { slug: string; host: string; brand: Brand | null; /** Who the site seems to be for, from what Seemo read so far. */ suggestion?: string }) {
   const reduced = useReducedMotion();
   const [intake, setIntake] = useState<IntakeT | null>(null);
   const [networks, setNetworks] = useState<Network[]>([]);
@@ -111,7 +111,7 @@ export function Intake({ slug, host, brand, suggestion, done }: { slug: string; 
     box.current?.scrollTo({ top: box.current.scrollHeight, behavior: reduced ? "auto" : "smooth" });
   }, [shown, typing, reduced]);
 
-  if (!intake) return <div className="wl-intake" />;
+  if (!intake) return <div className="wl-embedded" />;
 
   const save = (next: IntakeT) => {
     setIntake(next);
@@ -135,16 +135,7 @@ export function Intake({ slug, host, brand, suggestion, done }: { slug: string; 
   };
 
   return (
-    <div className="wl-intake wl-chat">
-      <header className="wl-chat-h">
-        <span className="av" />
-        <div>
-          <b>Seemo</b>
-          <span className="dim sm">
-            {done ? <>read {host}</> : <><i className="wl-live" /> reading {host}</>}
-          </span>
-        </div>
-      </header>
+    <div className="wl-embedded">
 
       <div className="conv compact wl-conv" ref={box}>
         {lines.slice(0, shown).map((l, i) =>
