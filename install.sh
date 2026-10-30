@@ -248,8 +248,10 @@ else
   say "  kiqr project add https://your-site.com --watch"
   if [ -n "${SSH_CONNECTION:-}" ]; then
     say ""
-    say "On a server, KIQR listens on this machine only. From your computer, open it through SSH:"
-    say "  ssh -L 4040:127.0.0.1:4040 $(id -un)@$(echo "$SSH_CONNECTION" | awk '{ print $3 }')   then http://127.0.0.1:4040"
+    say "KIQR listens on this server only. To open it from your computer, run this there (it forwards"
+    say "the port and opens no shell; leave it running while you use KIQR):"
+    say "  ssh -N -L 4040:127.0.0.1:4040 $(id -un)@$(echo "$SSH_CONNECTION" | awk '{ print $3 }')"
+    say "then open http://127.0.0.1:4040 in your browser."
     say "To have it install new releases on its own:  kiqr update --auto on"
   fi
 fi
