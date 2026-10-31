@@ -212,23 +212,6 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       action: "See the plan",
       ask: { title: "Your first marketing plan", label: "Propose it", message: `${ASK_FOR_PLAN} This is our first plan together: keep it to what fits the time I have.` },
     },
-    {
-      id: "posts",
-      icon: MessageSquareText,
-      title: approved ? "Your first posts" : "Approve your first posts",
-      text: approved
-        ? "Approved. They go out on the channel and at the time you picked."
-        : drafts
-          ? `${drafts} draft${drafts === 1 ? "" : "s"} wait below. Approve one for a channel, or ask Seemo to change it.`
-          : writing
-            ? "Seemo is writing three posts in your brand. They land below as drafts."
-            : "Three posts from your profile, in your voice and your colours. Nothing goes out until you approve it.",
-      state: st("posts", approved),
-      optional: true,
-      to: approved ? `/p/${slug}/library/post` : undefined,
-      action: "See posts",
-      run: approved ? undefined : drafts ? { label: "See the drafts", go: () => document.getElementById("todo-drafts")?.scrollIntoView({ behavior: "smooth", block: "start" }) } : { label: writing ? "Writing…" : "Write them", go: writePosts },
-    },
     ...(sugs.length
       ? [
           {
@@ -256,6 +239,25 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       optional: true,
       to: `/p/${slug}/channels`,
       action: connected ? "See channels" : "Connect",
+    },
+    {
+      id: "posts",
+      icon: MessageSquareText,
+      title: approved ? "Your first posts" : "Approve your first posts",
+      text: approved
+        ? "Approved. They go out on the channel and at the time you picked."
+        : !ch.length
+          ? `${drafts ? `${drafts} draft${drafts === 1 ? " waits" : "s wait"} for you. ` : ""}A post is approved for the channel it goes out on, so connect one first.`
+          : drafts
+          ? `${drafts} draft${drafts === 1 ? "" : "s"} wait below. Approve one for a channel, or ask Seemo to change it.`
+          : writing
+            ? "Seemo is writing three posts in your brand. They land below as drafts."
+            : "Three posts from your profile, in your voice and your colours. Nothing goes out until you approve it.",
+      state: st("posts", approved),
+      optional: true,
+      to: approved ? `/p/${slug}/library/post` : !ch.length ? `/p/${slug}/channels` : undefined,
+      action: approved ? "See posts" : "Connect a channel",
+      run: approved || !ch.length ? undefined : drafts ? { label: "See the drafts", go: () => document.getElementById("todo-drafts")?.scrollIntoView({ behavior: "smooth", block: "start" }) } : { label: writing ? "Writing…" : "Write them", go: writePosts },
     },
     {
       id: "goal",

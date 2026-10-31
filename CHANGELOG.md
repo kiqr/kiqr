@@ -4,6 +4,10 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+- The first build: the site map fills the screen behind the progress on a wide screen. Seemo's suggestions open straight to sign in, typed networks are read as names, and after the last question you can write to Seemo in the same window.
+- Getting started asks for your first posts after a channel is connected, since a post is approved for the channel it goes out on.
+- Fixed: the crawl's updates in Seemo's window stayed below every message; they now sit among the messages by when they happened.
+
 ## v0.3.2 — 2026-10-31
 
 - Fixed: a factory reset is refused for a person on a server opened over http or through a proxy

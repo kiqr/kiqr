@@ -9,7 +9,10 @@ import { Markdown } from "../markdown";
 import { ago } from "../pages/Project";
 import { AssetEmbed } from "../pages/AssetEmbed";
 
-export function Conversation({ slug, messages, streaming, compact, trailing }: { slug: string; messages: Message[]; streaming: Streaming | null; compact?: boolean; trailing?: React.ReactNode }) {
+/** A line from outside the chat (the crawl's narration), placed among the messages by its time. */
+export type Note = { text: string; at: Date };
+
+export function Conversation({ slug, messages, streaming, compact, notes = [] }: { slug: string; messages: Message[]; streaming: Streaming | null; compact?: boolean; notes?: Note[] }) {
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   // Follow the bottom while the reader is there; leave them alone when they scrolled up.
@@ -25,13 +28,38 @@ export function Conversation({ slug, messages, streaming, compact, trailing }: {
   useEffect(() => {
     const el = box.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [messages, streaming?.text, streaming?.steps.length, trailing]);
+  }, [messages, streaming?.text, streaming?.steps.length, notes.length]);
+
+  // Messages and notes in time order; notes in a row share one box.
+  const rows: ({ m: Message } | { notes: Note[] })[] = [];
+  let ni = 0;
+  const flush = (until: number) => {
+    const run: Note[] = [];
+    while (ni < notes.length && notes[ni].at.getTime() <= until) run.push(notes[ni++]);
+    if (run.length) rows.push({ notes: run });
+  };
+  for (const m of messages) {
+    flush(new Date(m.at).getTime());
+    rows.push({ m });
+  }
+  flush(Infinity);
 
   return (
     <div className={`conv ${compact ? "compact" : ""}`} ref={box}>
-      {messages.map((m) => (
-        <MessageView key={m.id} slug={slug} m={m} compact={compact} />
-      ))}
+      {rows.map((r) =>
+        "m" in r ? (
+          <MessageView key={r.m.id} slug={slug} m={r.m} compact={compact} />
+        ) : (
+          <div key={`n-${r.notes[0].at.getTime()}`} className="narr" aria-label="From the crawl">
+            {r.notes.map((n, i) => (
+              <p key={i}>
+                <span className="t">{n.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                {n.text}
+              </p>
+            ))}
+          </div>
+        ),
+      )}
       {streaming && (
         <div className="cm ai live">
           <span className="av" />
@@ -49,7 +77,6 @@ export function Conversation({ slug, messages, streaming, compact, trailing }: {
           </div>
         </div>
       )}
-      {trailing}
     </div>
   );
 }

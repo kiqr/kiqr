@@ -1,6 +1,6 @@
 // Seemo in the corner: the project's active chat, live, on every screen but
 // the Chats page (which is the same chat, full size). Crawl narration shows
-// here too, between the messages. Anything that starts a chat elsewhere (the
+// here too, among the messages by when it happened. Anything that starts a chat elsewhere (the
 // getting-started guide) opens the widget with `openSeemo(chatId)`. A page
 // can hand the widget something of its own to say for a while (the welcome
 // flow's first conversation) with `setSeemoIntro`.
@@ -25,9 +25,11 @@ export function closeSeemo() {
 }
 
 // What a page has Seemo say in the widget instead of the chat, until it hands it back (null).
-let intro: { node: ReactNode; subtitle: string } | null = null;
+// With `talk`, the box to write to Seemo is under it: the first message starts a real chat.
+type Intro = { node: ReactNode; subtitle: string; talk?: boolean };
+let intro: Intro | null = null;
 const listeners = new Set<() => void>();
-export function setSeemoIntro(next: { node: ReactNode; subtitle: string } | null) {
+export function setSeemoIntro(next: Intro | null) {
   intro = next;
   listeners.forEach((f) => f());
 }
@@ -49,7 +51,13 @@ export function SeemoWidget({ project }: { project: string | null }) {
   const navigate = useNavigate();
   const onChatsPage = /^\/p\/[^/]+\/chats/.test(pathname);
   const chat = useChat(project, active);
-  const own = useSyncExternalStore(subscribeIntro, () => intro);
+  const shared = useSyncExternalStore(subscribeIntro, () => intro);
+  // Once the person writes during the intro, the widget is that chat from then on.
+  const [left, setLeft] = useState(false);
+  useEffect(() => {
+    if (!shared) setLeft(false);
+  }, [shared]);
+  const own = left ? null : shared;
 
   // Which chat to follow: the one last opened, else the newest.
   useEffect(() => {
@@ -130,6 +138,7 @@ export function SeemoWidget({ project }: { project: string | null }) {
   };
   const startNew = () => setActive(null);
 
+  // Before the chat has messages, the latest few on their own; once it has, they sit among them by time.
   const trailing = narration.length > 0 && (
     <div className="narr" aria-label="From the crawl">
       {narration.slice(-3).map((n, i) => (
@@ -157,6 +166,20 @@ export function SeemoWidget({ project }: { project: string | null }) {
           </div>
         </div>
         {own.node}
+        {own.talk && (
+          <Composer
+            compact
+            onSend={async (text) => {
+              const c = await api.createChat(project);
+              setActive(c.id);
+              setLeft(true);
+              await api.sendMessage(project, c.id, text);
+            }}
+            onStop={() => void chat.stop()}
+            busy={false}
+            placeholder={own.subtitle.startsWith("reading") ? "Ask me anything while I read" : "Ask me anything"}
+          />
+        )}
       </div>
     );
   }
@@ -190,7 +213,7 @@ export function SeemoWidget({ project }: { project: string | null }) {
         </div>
       </div>
       {active && chat.messages.length + (chat.streaming ? 1 : 0) > 0 ? (
-        <Conversation slug={project} messages={chat.messages} streaming={chat.streaming} compact trailing={trailing} />
+        <Conversation slug={project} messages={chat.messages} streaming={chat.streaming} compact notes={narration} />
       ) : (
         <div className="conv compact">
           <div className="cm ai">

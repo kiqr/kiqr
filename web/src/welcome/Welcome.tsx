@@ -131,10 +131,11 @@ export function Welcome() {
 
   // Seemo's first conversation runs in its own chat window, in the corner, while it reads.
   const talking = !!p && !!shown && act !== "reveal" && act !== "week" && stage !== "new";
+  const [asked, setAsked] = useState(false);
   useEffect(() => {
     if (!talking) return;
-    setSeemoIntro({ node: <Intake slug={slug} host={host} brand={brand} suggestion={audienceHint} stage={stage} />, subtitle: stage === "ready" ? `read ${host}` : `reading ${host}` });
-  }, [talking, slug, host, brand, audienceHint, stage]);
+    setSeemoIntro({ node: <Intake slug={slug} host={host} brand={brand} suggestion={audienceHint} stage={stage} onDone={() => setAsked(true)} />, subtitle: stage === "ready" ? `read ${host}` : `reading ${host}`, talk: asked });
+  }, [talking, slug, host, brand, audienceHint, stage, asked]);
   useEffect(() => () => setSeemoIntro(null), []);
   // It opens by itself on a wide screen; on a phone it would cover the progress, so the button waits.
   const opened = useRef(false);

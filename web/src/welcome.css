@@ -10,8 +10,8 @@
 
 .wl-grid { display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 1100px) { .wl-grid { grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); align-items: start; } }
-/* Seemo's window sits on the right while it reads; the build keeps clear of it. */
-@media (min-width: 900px) { .wl.wl-build { padding-right: 412px; } }
+/* Seemo's window sits on the right while it reads; on narrower screens the build keeps clear of it. */
+@media (min-width: 900px) and (max-width: 1099px) { .wl.wl-build { padding-right: 412px; } }
 
 /* The site map, compact. */
 .wl-graph { position: relative; height: 360px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); overflow: hidden; }
@@ -111,6 +111,36 @@
 
 @media (prefers-reduced-motion: reduce) {
   .wl-steps .now .dot, .wl-ring.done .wl-ring-c { animation: none; }
+}
+
+/*
+ * Wide screens: the site map is the page. It fills the window behind
+ * everything, still dragged and zoomed, with the progress floating in the
+ * middle on top of it: the radar around what Seemo is understanding.
+ */
+@media (min-width: 1100px) {
+  .wl.wl-build { max-width: none; padding: 0 0 64px; min-height: calc(100vh - 32px); }
+  .wl-build .wl-graph { position: fixed; inset: 0; height: auto; top: 0; z-index: 0; border: 0; border-radius: 0; background: transparent; }
+  /* Fades out at the edges, and quieter behind the middle so the words stay easy to read. */
+  .wl-build .wl-graph .cr-graph-canvas { -webkit-mask-image: radial-gradient(ellipse 75% 75% at 50% 50%, #000 45%, transparent 100%); mask-image: radial-gradient(ellipse 75% 75% at 50% 50%, #000 45%, transparent 100%); }
+  .wl-build .wl-graph::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 340px 75% at 50% 60%, color-mix(in oklab, var(--bg) 82%, transparent), color-mix(in oklab, var(--bg) 40%, transparent) 70%, transparent 100%); }
+  .wl-build .wl-graph-foot { position: fixed; left: 24px; bottom: 18px; z-index: 2; }
+  .wl-build .cr-graph-ctl { left: 24px; right: auto; bottom: 44px; }
+  .wl-build .wl-head { position: relative; z-index: 2; pointer-events: none; padding: 8px 0 0; }
+  /* Only the middle takes the pointer; around it, the map underneath does. */
+  .wl-build .wl-grid { display: block; position: relative; z-index: 1; pointer-events: none; }
+  .wl-build .wl-center-col { pointer-events: auto; width: min(480px, 100%); margin: 0 auto; padding-top: max(0px, calc(50vh - 200px)); }
+  .wl-build .wl-graph canvas { opacity: .85; }
+  /* A dark lens under the ring and a glass under the words: the map moves around them, never through them. */
+  .wl-build .wl-ring::before { content: ""; position: absolute; inset: -34px; border-radius: 50%; background: radial-gradient(circle, color-mix(in oklab, var(--bg) 92%, transparent) 62%, transparent 72%); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); -webkit-mask-image: radial-gradient(circle, #000 66%, transparent 72%); mask-image: radial-gradient(circle, #000 66%, transparent 72%); }
+  .wl-build .wl-ring svg { position: relative; } .wl-build .wl-ring-c { z-index: 1; }
+  .wl-build .wl-stage { padding: 10px 18px; border-radius: 16px; background: color-mix(in oklab, var(--bg) 72%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+  .wl-build .wl-fact { background: color-mix(in oklab, var(--accent-2) 10%, color-mix(in oklab, var(--panel) 78%, transparent)); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+  .wl-build .wl-steps, .wl-build .wl-leave, .wl-build .wl-brandline { padding: 6px 12px; border-radius: 999px; background: color-mix(in oklab, var(--bg) 55%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+}
+/* Where the window is too narrow for both, the middle moves left of Seemo's window, so it never sits under it. */
+@media (min-width: 1100px) and (max-width: 1319px) {
+  .wl-build .wl-center-col { margin-left: max(24px, calc((100vw - 412px - 480px) / 2)); }
 }
 
 /* Narrow screens: what matters first — the progress, then the questions, then the map. */

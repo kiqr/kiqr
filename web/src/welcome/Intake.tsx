@@ -3,10 +3,13 @@
 // answer is saved at once and the brief and the first plan use them. The
 // conversation is rebuilt from the saved answers, so a reload reads the same.
 import { useEffect, useRef, useState } from "react";
-import { motion, useReducedMotion } from "motion/react";
-import { ArrowUp, Check, Loader2, Plus } from "lucide-react";
-import { api, type Brand, type BuildStage, type Intake as IntakeT, type Network, type Setup, type SetupWhy } from "../api";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { ArrowUp, Check, Loader2, Plus, Settings2 } from "lucide-react";
+import { api, type AbilitiesView, type Brand, type BuildStage, type Intake as IntakeT, type Network, type Setup, type SetupWhy } from "../api";
+import { AbilityModal } from "../pages/AbilityModal";
 import "../chat.css";
+import "../profile.css";
+import "../settings.css";
 
 const EMPTY: IntakeT = { goal: "", goal_note: "", customers: "", time: "", networks: [], skipped: [] };
 
@@ -67,15 +70,26 @@ function transcript(i: IntakeT, host: string, names: Map<string, string>): Line[
   return out;
 }
 
-/** "LinkedIn, X and Instagram" from what the owner typed: commas, "and", slashes. */
-const splitNames = (s: string) =>
-  s
-    .split(/,|\/|\band\b|&|\n/i)
-    .map((x) => x.trim())
-    .filter(Boolean)
+/**
+ * "LinkedIn, X and Instagram" from what the owner typed: commas, "and", slashes.
+ * People write sentences ("We have our website, X and Reddit."), so the words
+ * around the names go, and so does the business's own site: that isn't a network.
+ */
+const FILLER = /^(?:(?:we|i)(?:'re| are|'m| am)?\s+(?:on|have|use|got|post on)|we|i|on|our|my|also|plus|then|and|a|an|the)\s+/i;
+const splitNames = (s: string, host = "") => {
+  const site = host.replace(/^www\./, "").toLowerCase();
+  return s
+    .split(/,|;|\/|\band\b|&|\+|\n/i)
+    .map((x) => {
+      let t = x.trim().replace(/[.!?:]+$/, "");
+      for (let i = 0; i < 4 && FILLER.test(t); i++) t = t.replace(FILLER, "");
+      return t.trim();
+    })
+    .filter((t) => t && !/\b(?:website|web site|site|homepage)\b/i.test(t) && !(site && t.toLowerCase().includes(site)))
     .slice(0, 12);
+};
 
-export function Intake({ slug, host, brand, suggestion, stage }: { slug: string; host: string; brand: Brand | null; /** Who the site seems to be for, from what Seemo read so far. */ suggestion?: string; stage?: BuildStage }) {
+export function Intake({ slug, host, brand, suggestion, stage, onDone }: { slug: string; host: string; brand: Brand | null; /** Who the site seems to be for, from what Seemo read so far. */ suggestion?: string; stage?: BuildStage; /** Every question answered or skipped: the person can write to Seemo now. */ onDone?: () => void }) {
   const reduced = useReducedMotion();
   const [intake, setIntake] = useState<IntakeT | null>(null);
   const [networks, setNetworks] = useState<Network[]>([]);
@@ -115,6 +129,11 @@ export function Intake({ slug, host, brand, suggestion, stage }: { slug: string;
   }, [shown, total, nextFrom, nextLen, reduced]);
   const typing = shown < lines.length && lines[shown].from === "seemo";
   const ready = shown >= lines.length;
+  const done = !!intake && ready && !q;
+  useEffect(() => {
+    if (done) onDone?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done]);
 
   useEffect(() => {
     box.current?.scrollTo({ top: box.current.scrollHeight, behavior: reduced ? "auto" : "smooth" });
@@ -212,9 +231,9 @@ export function Intake({ slug, host, brand, suggestion, stage }: { slug: string;
                   );
                 })}
               </div>
-              <input className="input" placeholder={nets.length ? "Others? Like Instagram, TikTok, a newsletter" : "Like Instagram, LinkedIn, a newsletter"} value={own} onChange={(e) => setOwn(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (chosen.length || splitNames(own).length) && save({ ...intake, networks: [...chosen, ...splitNames(own)] })} aria-label="Where else you are" />
-              <button className="btn p sm wl-next" onClick={() => (chosen.length || splitNames(own).length ? save({ ...intake, networks: [...chosen, ...splitNames(own)] }) : skip("networks"))}>
-                {chosen.length || splitNames(own).length ? "That's it" : "None yet"}
+              <input className="input" placeholder={nets.length ? "Others? Like Instagram, TikTok, a newsletter" : "Like Instagram, LinkedIn, a newsletter"} value={own} onChange={(e) => setOwn(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (chosen.length || splitNames(own, host).length) && save({ ...intake, networks: [...chosen, ...splitNames(own, host)] })} aria-label="Where else you are" />
+              <button className="btn p sm wl-next" onClick={() => (chosen.length || splitNames(own, host).length ? save({ ...intake, networks: [...chosen, ...splitNames(own, host)] }) : skip("networks"))}>
+                {chosen.length || splitNames(own, host).length ? "That's it" : "None yet"}
               </button>
             </>
           )}
@@ -268,15 +287,23 @@ const listed = (xs: string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0,
 
 /**
  * Seemo's last word in the first conversation: what it would set up, from the
- * answers and what it saw on the site. Adding one installs it; signing in to
- * it waits for the getting-started steps, once the profile is ready. Asked
- * again as the crawl goes on, since the site tells it more the further it reads.
+ * answers and what it saw on the site. Adding one installs it and opens it, on
+ * its accounts, to sign in right there; one added but not signed in yet opens
+ * the same way. Asked again as the crawl goes on, since the site tells it more
+ * the further it reads.
  */
 function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stage?: BuildStage; /** The chat scrolls to show it. */ onGrow: () => void }) {
   const [setup, setSetup] = useState<Setup | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The ability open in its modal, with what the modal needs: the project's ability list.
+  const [opened, setOpened] = useState<{ id: string; tab: "overview" | "connect" } | null>(null);
+  const [view, setView] = useState<AbilitiesView | null>(null);
   const load = () => api.setup(slug).then(setSetup, () => {});
+  const reload = () => {
+    void load();
+    return api.abilities(slug).then(setView, () => {});
+  };
   useEffect(() => {
     void load();
     if (stage === "ready" || stage === "failed") return;
@@ -291,12 +318,14 @@ function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stag
   }, [size]);
   if (!setup || size === 0) return null;
 
-  const add = async (id: string) => {
+  /** Install it when it isn't yet, then open it on its accounts (the modal falls back to its overview when it has none). */
+  const setUp = async (id: string, installed: boolean) => {
     setBusy(id);
     setError(null);
     try {
-      await api.installAbility(id);
-      await load();
+      if (!installed) await api.installAbility(id);
+      await reload();
+      setOpened({ id, tab: "connect" });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -323,24 +352,32 @@ function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stag
                     <span className="chip ok sm">
                       <Check size={11} strokeWidth={3} /> Ready
                     </span>
-                  ) : s.installed ? (
-                    <span className="chip sm" title="You sign in to it in your first steps, once I've read everything.">
-                      <Check size={11} strokeWidth={3} /> Added
-                    </span>
                   ) : (
-                    <button className="btn g sm" disabled={!!busy} onClick={() => void add(s.id)}>
-                      {busy === s.id ? <Loader2 size={12} className="spin" /> : <Plus size={12} />} Add
+                    <button className={`btn sm ${s.installed ? "g" : "p"}`} disabled={!!busy} onClick={() => void setUp(s.id, s.installed)}>
+                      {busy === s.id ? <Loader2 size={12} className="spin" /> : s.installed ? <Settings2 size={12} /> : <Plus size={12} />} {s.installed ? "Set up" : "Add"}
                     </button>
                   )}
                 </li>
               ))}
             </ul>
-            {setup.suggestions.some((s) => s.installed && !s.ready) && <p className="dim sm">You'll sign in to what you added in your first steps, once I've read everything.</p>}
+            {setup.suggestions.some((s) => !s.ready) && <p className="dim sm">Each one opens to sign in. You can also do it later, from your first steps.</p>}
           </>
         )}
         {setup.waiting.length > 0 && <p>{listed(setup.waiting)}: I can't post there yet. When I can, I'll tell you.</p>}
         {error && <p className="dim sm">{error}</p>}
       </div>
+      <AnimatePresence>
+        {opened && view && (() => {
+          const a = [...view.abilities, ...view.market].find((x) => x.id === opened.id);
+          return a ? <AbilityModal key={a.id} slug={slug} a={a} contracts={view.contracts} initialTab={opened.tab} onClose={() => (setOpened(null), void load())} onChange={() => void reload()} onPrefer={(contract, id) => void prefer(contract, id).then(reload)} /> : null;
+        })()}
+      </AnimatePresence>
     </motion.div>
   );
+}
+
+/** The modal's "use this one for …" choice, saved the way the Abilities page saves it. */
+async function prefer(contract: string, id: string) {
+  const c = await api.config();
+  await api.saveConfig({ ...c, abilities: { ...(c.abilities ?? {}), [contract]: id } });
 }
