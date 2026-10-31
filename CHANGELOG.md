@@ -4,6 +4,8 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+- Everything in v0.3.0 below, which was never published: its macOS builds stopped on GitHub's retiring macOS 14 runners. macOS builds now run on macOS 15.
+
 ## v0.3.0 — 2026-10-31
 
 - A new first run: Seemo checks it has a model before it starts, then reads the site with one overall progress, the time left and what it is learning as it goes, while it asks you four quick questions. Then it shows you your business as it sees it, to confirm or fix, and makes your first plan and three posts in your brand. The rest of KIQR opens when the profile is ready.
