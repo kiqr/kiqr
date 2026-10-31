@@ -319,6 +319,23 @@ pub struct ImageSize {
     pub height: u32,
 }
 
+/// When KIQR suggests an ability to a new project, from the welcome questions
+/// and the crawl: the goals it serves (`customers`, `repeat`, `known`,
+/// `launch`) and text in a site's HTML that shows the business already uses
+/// the service (a script URL, a generator tag). Matched case-insensitively.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Fits {
+    pub goals: Vec<String>,
+    pub html: Vec<String>,
+}
+
+impl Fits {
+    pub fn is_empty(&self) -> bool {
+        self.goals.is_empty() && self.html.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Manifest {
@@ -354,6 +371,9 @@ pub struct Manifest {
     /// each with the requests and the mapping that read it (`crate::sources`).
     #[serde(deserialize_with = "crate::sources::deserialize")]
     pub sources: BTreeMap<String, crate::sources::SourceSpec>,
+    /// When to suggest it to a new project.
+    #[serde(skip_serializing_if = "Fits::is_empty")]
+    pub fits: Fits,
     // MCP transport.
     pub command: String,
     pub args: Vec<String>,
@@ -397,6 +417,7 @@ impl Default for Manifest {
             tools: vec![],
             channels: vec![],
             sources: BTreeMap::new(),
+            fits: Fits::default(),
             command: String::new(),
             args: vec![],
             env: vec![],

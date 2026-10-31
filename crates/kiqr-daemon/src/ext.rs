@@ -1141,6 +1141,8 @@ async fn send(m: &Manifest, req: &HttpRequest, args: &Value, env: &(impl Fn(&str
         has_ctype |= k.eq_ignore_ascii_case("content-type");
         r = r.header(k, v);
     }
+    // Added after the manifest's own headers, so no manifest can leave it out: the daemon refuses its few human-only routes (the factory reset) to anything carrying it.
+    r = r.header(crate::reset::AGENT_HEADER, m.id.as_str());
     if let Some(pair) = &req.basic_auth {
         let user = extensions::fill(pair.first().map(String::as_str).unwrap_or(""), args, env.clone());
         let pass = pair.get(1).map(|p| extensions::fill(p, args, env.clone()));

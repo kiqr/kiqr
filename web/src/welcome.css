@@ -139,3 +139,11 @@
 /* Seemo's first conversation inside its chat window. */
 .wl-embedded { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .wl-embedded .wl-conv { flex: 1; max-height: none; min-height: 0; }
+
+/* What Seemo would set up, at the end of the first conversation */
+.wl-sugs { list-style: none; margin: 8px 0 4px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.wl-sugs li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2); }
+.wl-sugs img, .wl-sug-ic { width: 28px; height: 28px; border-radius: 7px; flex: none; background: var(--panel); }
+.wl-sugs .min0 { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.wl-sugs b { font-size: 13px; font-weight: 600; }
+.wl-sugs small { font-size: 11px; color: var(--accent-2); }

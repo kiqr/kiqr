@@ -8,6 +8,7 @@ import { api, useAsync, useEvents, type Config, type Health } from "../api";
 import { SecretField } from "./SecretField";
 import { Switch } from "./Switch";
 import { SignInById } from "./SignIns";
+import { FactoryReset } from "./FactoryReset";
 import "../settings.css";
 
 type Tab = { id: string; label: string; icon: LucideIcon };
@@ -556,6 +557,7 @@ function Storage({ h }: { h?: Health }) {
       <Card icon={Cloud} title="Backups" text="Generated assets aren't in git, so they need a backup of their own." soon>
         <p className="muted sm">S3-compatible backups (AWS, Cloudflare R2, Backblaze, MinIO) for assets and the whole home folder.</p>
       </Card>
+      <FactoryReset home={h?.home} boot={h?.boot} />
     </>
   );
 }

@@ -283,6 +283,7 @@ pub fn system_prompt(persona: &str, guide: &str, ctx: &Context, brief: Option<&B
         for line in &ctx.intake {
             head.push_str(&format!("- {line}\n"));
         }
+        head.push_str("Their first steps on To do come from these answers: approve the plan, approve the first posts, connect the networks they named, one piece of work for their goal, connect where the plan's numbers live, and a weekly task sized to their time. When they ask what to do next, it is the next of these they haven't done.\n");
     }
     if let Some(building) = &ctx.building {
         head.push_str(&format!(

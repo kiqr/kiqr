@@ -134,6 +134,18 @@ With it installed, the posts job writes for that network (within its limit, foll
 
 List the same fields (`kind`, `name`, `icon`, `profile_hosts`) under `channels` in the marketplace index: the brand crawl then finds the business's profile there before anything is installed, and Seemo suggests the ability ("I found your LinkedIn page; the marketplace has …") after the crawl and under To do, until the user installs it or says not now.
 
+### When to suggest it
+
+`fits` tells KIQR when to suggest the ability to a new project, at the end of Seemo's first conversation and in the getting-started steps:
+
+```yaml
+fits:
+  goals: [customers]                 # the welcome question's goals it serves: customers, repeat, known, launch
+  html: ["/wp-content/"]             # text in the site's HTML that shows the business already uses the service
+```
+
+A network the owner names in that conversation matches the ability's `channels` (kind or name) without any `fits`. Put the same `fits` in the marketplace index entry, so it works before the ability is installed. HTML is matched case-insensitively against the pages the crawl kept; pick text only that service puts there (a script URL, a generator tag), never a common word.
+
 ### Signing in
 
 A connection can offer one button instead of typed keys. `connect` names a generic flow, and everything specific to the service stays in the manifest; the values land in the variables `auth` declares, in the `.env` of the one account being signed in (a new one is added as the flow starts), so readiness, `${…}` and hosts work as for typed keys, and typing them stays possible.

@@ -456,7 +456,10 @@ impl Client {
         });
         // The daemon is local; never route to it through a system proxy. Long
         // timeout: approval polls wait up to two minutes.
-        let http = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(180)).build()?;
+        // Marked as KIQR's own client (the CLI and `kiqr mcp`, which Seemo's tools go through): the daemon keeps a few routes for a person in the browser.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-kiqr-agent", reqwest::header::HeaderValue::from_static("cli"));
+        let http = reqwest::Client::builder().no_proxy().default_headers(headers).timeout(std::time::Duration::from_secs(180)).build()?;
         Ok(Self { base: base.trim_end_matches('/').to_string(), http })
     }
 

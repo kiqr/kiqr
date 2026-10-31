@@ -37,6 +37,13 @@ export type Build = {
   problem: string | null;
 };
 
+/** Why Seemo suggests an ability: it saw the service on the site, the owner named a network it publishes to, or it serves their goal. */
+export type SetupWhy = { kind: "site" } | { kind: "network"; name: string } | { kind: "goal"; goal: string };
+/** An ability worth setting up for this project, from the welcome answers and the crawl. */
+export type SetupSuggestion = { id: string; name: string; summary: string; icon: string; avatar: string | null; why: SetupWhy[]; installed: boolean; on: boolean; ready: boolean };
+/** The suggestions, and the networks the owner named that no ability publishes to yet. */
+export type Setup = { suggestions: SetupSuggestion[]; waiting: string[] };
+
 /** What the owner told Seemo while it first read the site. */
 export type Intake = {
   goal: "" | "customers" | "repeat" | "known" | "launch";
@@ -153,6 +160,8 @@ export type Health = {
   ok: boolean;
   version: string;
   pid?: number;
+  /** New on every start, also a restart in place. */
+  boot?: string;
   home: string;
   providers: { task: string; model: string; available: boolean }[];
   unblockingapi: boolean;
@@ -437,6 +446,10 @@ export const api = {
   telemetry: () => req<Telemetry>("/api/telemetry"),
   setTelemetry: (enabled: boolean) => req<Telemetry>("/api/telemetry", { method: "PUT", body: JSON.stringify({ enabled }) }),
   config: () => req<Config>("/api/config"),
+  /** Factory reset, step one: a one-time token and the phrase to type. Refused to anything but the web UI. */
+  resetStart: () => req<{ token: string; phrase: string; captcha: string; home: string; expires_in: number }>("/api/reset/start", { method: "POST", body: "{}" }),
+  /** Step two: erase the home and restart as a new installation, on `port`. */
+  reset: (token: string, phrase: string, captcha: string) => req<{ resetting: boolean; port: number }>("/api/reset", { method: "POST", body: JSON.stringify({ token, phrase, captcha }) }),
   saveConfig: (c: Config) => req<Config>("/api/config", { method: "PUT", body: JSON.stringify(c) }),
   projects: () => req<Project[]>("/api/projects"),
   project: (slug: string) => req<Project>(`/api/projects/${slug}`),
@@ -445,6 +458,7 @@ export const api = {
   crawl: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/crawl`, { method: "POST", body: "{}" }),
   build: (slug: string) => req<Build>(`/api/projects/${slug}/build`),
   intake: (slug: string) => req<Intake>(`/api/projects/${slug}/intake`),
+  setup: (slug: string) => req<Setup>(`/api/projects/${slug}/setup`),
   saveIntake: (slug: string, i: Intake) => req<Intake>(`/api/projects/${slug}/intake`, { method: "PUT", body: JSON.stringify(i) }),
   /** Set the page limit; `live` when the running crawl picked it up. */
   setCrawlLimit: (slug: string, max_pages: number) =>
@@ -610,6 +624,18 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.endsWith("/intake")) {
     if (init?.method === "PUT") demoIntake = JSON.parse(String(init.body));
     return Promise.resolve(demoIntake as T);
+  }
+  if (path.endsWith("/setup")) {
+    const avatar = (id: string) => `https://raw.githubusercontent.com/kiqr/marketplace/main/${id}/avatar.svg`;
+    const s: Setup = {
+      suggestions: [
+        { id: "google-analytics", name: "Read Google Analytics", summary: "Sessions, users, page views and key events, once a day into Performance.", icon: "chart", avatar: avatar("google-analytics"), why: [{ kind: "site" }], installed: true, on: true, ready: true },
+        { id: "search-console", name: "Read Google Search Console", summary: "Clicks, impressions and the queries people find you with, once a day into Performance.", icon: "search", avatar: avatar("search-console"), why: [{ kind: "site" }, ...(demoIntake.goal === "customers" ? [{ kind: "goal" as const, goal: "customers" }] : [])], installed: false, on: false, ready: false },
+        ...(demoIntake.goal === "repeat" || demoIntake.goal === "launch" ? [{ id: "kiqr-smtp", name: "Send email from your mail account", summary: "Email over SMTP from your own address. Every send asks you first.", icon: "mail", avatar: avatar("email-smtp"), why: [{ kind: "goal" as const, goal: demoIntake.goal }], installed: false, on: false, ready: false }] : []),
+      ],
+      waiting: demoIntake.networks.filter((n) => !["linkedin", "x", "reddit"].includes(n)),
+    };
+    return Promise.resolve(s as T);
   }
   if (path.endsWith("/crawl/limit")) return Promise.resolve({ max_pages: JSON.parse(String(init?.body)).max_pages, live: true } as T);
   if (path.endsWith("/brand")) return demoState.created ? Promise.resolve(demoBrand as T) : Promise.reject(new Error("404"));

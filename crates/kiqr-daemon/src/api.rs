@@ -57,6 +57,8 @@ pub fn router(app: App) -> Router {
         .merge(crate::market::routes())
         .merge(crate::images::routes())
         .merge(crate::publish::routes())
+        .merge(crate::reset::routes())
+        .merge(crate::setup::routes())
         .merge(crate::marketing::routes())
         .merge(crate::performance::routes())
         .merge(crate::update::routes())
@@ -102,6 +104,8 @@ struct Health {
     version: &'static str,
     /// This daemon's process, so `kiqr stop` can end one no service manager runs.
     pid: u32,
+    /// New every time the daemon starts. A restart in place (exec) keeps the pid; this tells the page it happened.
+    boot: &'static str,
     home: String,
     providers: Vec<ProviderStatus>,
     unblockingapi: bool,
@@ -146,6 +150,11 @@ struct ProviderStatus {
     available: bool,
 }
 
+fn boot_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| uuid::Uuid::new_v4().simple().to_string())
+}
+
 async fn health(State(app): State<App>) -> Json<Health> {
     let cfg = app.config.read().await.clone();
     let up = app.updates.status().await;
@@ -157,6 +166,7 @@ async fn health(State(app): State<App>) -> Json<Health> {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
         pid: std::process::id(),
+        boot: boot_id(),
         home: app.store.home().root().display().to_string(),
         providers,
         unblockingapi: std::env::var("UNBLOCKINGAPI_KEY").map(|k| !k.is_empty()).unwrap_or(false),
@@ -250,7 +260,9 @@ async fn put_intake(State(app): State<App>, Path(slug): Path<String>, Json(mut i
     let _ = Project::load(&app.store, &slug)?;
     i.goal_note = kiqr_core::profile::truncate_chars(i.goal_note.trim(), 300);
     i.customers = kiqr_core::profile::truncate_chars(i.customers.trim(), 500);
-    i.networks.truncate(20);
+    // Kinds picked from the list, or names the owner typed: trimmed, short, once each.
+    let mut seen = std::collections::HashSet::new();
+    i.networks = i.networks.iter().map(|n| kiqr_core::profile::truncate_chars(n.trim(), 40)).filter(|n| !n.is_empty() && seen.insert(n.to_lowercase())).take(20).collect();
     i.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     i.save(&app.store, &slug)?;
     app.store.commit(&format!("project({slug}): what the owner told Seemo")).await?;

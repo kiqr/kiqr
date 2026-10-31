@@ -17,6 +17,8 @@ mod metrics_src;
 mod networks;
 mod performance;
 mod publish;
+mod reset;
+mod setup;
 mod scheduler;
 mod seemo;
 mod signins;

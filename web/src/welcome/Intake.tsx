@@ -4,8 +4,8 @@
 // conversation is rebuilt from the saved answers, so a reload reads the same.
 import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { ArrowUp, Check } from "lucide-react";
-import { api, type Brand, type Intake as IntakeT, type Network } from "../api";
+import { ArrowUp, Check, Loader2, Plus } from "lucide-react";
+import { api, type Brand, type BuildStage, type Intake as IntakeT, type Network, type Setup, type SetupWhy } from "../api";
 import "../chat.css";
 
 const EMPTY: IntakeT = { goal: "", goal_note: "", customers: "", time: "", networks: [], skipped: [] };
@@ -29,7 +29,7 @@ const ASK: Record<Q, string> = {
   goal: "What matters most to you right now?",
   customers: "Who are your best customers? The ones you'd like ten more of. A sentence is plenty.",
   time: "How much time can you give marketing each week? I'll plan for what you have, not for a team you don't.",
-  networks: "Where are you already? I'll start where your customers already know you.",
+  networks: "Where are you already? Social networks, a blog, a newsletter. I'll start where your customers already know you.",
 };
 
 type Line = { from: "seemo" | "you" | "skip"; text: string };
@@ -63,16 +63,25 @@ function transcript(i: IntakeT, host: string, names: Map<string, string>): Line[
       out.push({ from: "you", text: list.join(", ") }, { from: "seemo", text: `${list.length > 1 ? "Those" : list[0]} it is. I'll start there.` });
     }
   }
-  out.push({ from: "seemo", text: "Thanks. That's what I'll plan around. I'll show you what I found as soon as I've read everything." });
+  out.push({ from: "seemo", text: "Thanks. That's what I'll plan around, and your first steps in KIQR will start from it. I'll show you what I found as soon as I've read everything." });
   return out;
 }
 
-export function Intake({ slug, host, brand, suggestion }: { slug: string; host: string; brand: Brand | null; /** Who the site seems to be for, from what Seemo read so far. */ suggestion?: string }) {
+/** "LinkedIn, X and Instagram" from what the owner typed: commas, "and", slashes. */
+const splitNames = (s: string) =>
+  s
+    .split(/,|\/|\band\b|&|\n/i)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+
+export function Intake({ slug, host, brand, suggestion, stage }: { slug: string; host: string; brand: Brand | null; /** Who the site seems to be for, from what Seemo read so far. */ suggestion?: string; stage?: BuildStage }) {
   const reduced = useReducedMotion();
   const [intake, setIntake] = useState<IntakeT | null>(null);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<string[] | null>(null);
+  const [own, setOwn] = useState("");
   // How many lines are out: Seemo's arrive one by one, after a moment of "typing".
   const [shown, setShown] = useState(0);
   const box = useRef<HTMLDivElement>(null);
@@ -156,6 +165,7 @@ export function Intake({ slug, host, brand, suggestion }: { slug: string; host: 
             </div>
           ),
         )}
+        {ready && !q && <SetUp slug={slug} host={host} stage={stage} onGrow={() => box.current?.scrollTo({ top: box.current.scrollHeight, behavior: reduced ? "auto" : "smooth" })} />}
         {typing && (
           <div className="cm ai live">
             <span className="av" />
@@ -202,8 +212,9 @@ export function Intake({ slug, host, brand, suggestion }: { slug: string; host: 
                   );
                 })}
               </div>
-              <button className="btn p sm wl-next" onClick={() => (chosen.length ? save({ ...intake, networks: chosen }) : skip("networks"))}>
-                {chosen.length ? "That's it" : "None yet"}
+              <input className="input" placeholder={nets.length ? "Others? Like Instagram, TikTok, a newsletter" : "Like Instagram, LinkedIn, a newsletter"} value={own} onChange={(e) => setOwn(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (chosen.length || splitNames(own).length) && save({ ...intake, networks: [...chosen, ...splitNames(own)] })} aria-label="Where else you are" />
+              <button className="btn p sm wl-next" onClick={() => (chosen.length || splitNames(own).length ? save({ ...intake, networks: [...chosen, ...splitNames(own)] }) : skip("networks"))}>
+                {chosen.length || splitNames(own).length ? "That's it" : "None yet"}
               </button>
             </>
           )}
@@ -239,5 +250,97 @@ export function Intake({ slug, host, brand, suggestion }: { slug: string; host: 
         </motion.div>
       )}
     </div>
+  );
+}
+
+const GOAL_FOR: Record<string, string> = {
+  customers: "For more new customers",
+  repeat: "For selling to the customers you have",
+  known: "For getting known",
+  launch: "For your launch",
+};
+
+function why(w: SetupWhy, host: string) {
+  return w.kind === "site" ? `I saw it on ${host}` : w.kind === "network" ? `You're on ${w.name}` : (GOAL_FOR[w.goal] ?? "For your goal");
+}
+
+const listed = (xs: string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+/**
+ * Seemo's last word in the first conversation: what it would set up, from the
+ * answers and what it saw on the site. Adding one installs it; signing in to
+ * it waits for the getting-started steps, once the profile is ready. Asked
+ * again as the crawl goes on, since the site tells it more the further it reads.
+ */
+function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stage?: BuildStage; /** The chat scrolls to show it. */ onGrow: () => void }) {
+  const [setup, setSetup] = useState<Setup | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = () => api.setup(slug).then(setSetup, () => {});
+  useEffect(() => {
+    void load();
+    if (stage === "ready" || stage === "failed") return;
+    const t = window.setInterval(() => void load(), 12000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug, stage]);
+  const size = (setup?.suggestions.length ?? 0) + (setup?.waiting.length ?? 0);
+  useEffect(() => {
+    if (size) onGrow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size]);
+  if (!setup || size === 0) return null;
+
+  const add = async (id: string) => {
+    setBusy(id);
+    setError(null);
+    try {
+      await api.installAbility(id);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <motion.div className="cm ai" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+      <span className="av" />
+      <div className="body">
+        {setup.suggestions.length > 0 && (
+          <>
+            <p>From what you told me and what I see on {host}, I'd set these up:</p>
+            <ul className="wl-sugs">
+              {setup.suggestions.map((s) => (
+                <li key={s.id}>
+                  {s.avatar ? <img src={s.avatar} alt="" width={28} height={28} /> : <span className="wl-sug-ic" />}
+                  <div className="min0">
+                    <b>{s.name}</b>
+                    <small>{s.why.map((w) => why(w, host)).join(" · ")}</small>
+                  </div>
+                  {s.ready ? (
+                    <span className="chip ok sm">
+                      <Check size={11} strokeWidth={3} /> Ready
+                    </span>
+                  ) : s.installed ? (
+                    <span className="chip sm" title="You sign in to it in your first steps, once I've read everything.">
+                      <Check size={11} strokeWidth={3} /> Added
+                    </span>
+                  ) : (
+                    <button className="btn g sm" disabled={!!busy} onClick={() => void add(s.id)}>
+                      {busy === s.id ? <Loader2 size={12} className="spin" /> : <Plus size={12} />} Add
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {setup.suggestions.some((s) => s.installed && !s.ready) && <p className="dim sm">You'll sign in to what you added in your first steps, once I've read everything.</p>}
+          </>
+        )}
+        {setup.waiting.length > 0 && <p>{listed(setup.waiting)}: I can't post there yet. When I can, I'll tell you.</p>}
+        {error && <p className="dim sm">{error}</p>}
+      </div>
+    </motion.div>
   );
 }

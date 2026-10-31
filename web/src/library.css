@@ -104,6 +104,11 @@
 .lib-steps .opt { margin-left: 8px; font: 500 10px/1.6 var(--sans); letter-spacing: .02em; color: var(--dim); padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-2); vertical-align: 1px; }
 .lib-steps .st-skipped .mk { color: var(--dim); background: transparent; border-style: dashed; }
 .lib-steps .st-skipped .nm { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--line-2); }
+.lib-guide-told { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; max-width: 620px; font-size: 13px; color: var(--muted); }
+.lib-guide-told .av { width: 20px; height: 20px; border-radius: 6px; margin-top: -1px; } .lib-guide-told .av::after { inset: 6px; border-radius: 2px; }
+.lib-steps .why { display: inline-block; margin-top: 6px; font-size: 11px; color: var(--accent-2); padding: 1px 8px; border-radius: 999px; background: rgba(129,140,248,.1); border: 1px solid rgba(129,140,248,.22); }
+.lib-steps .st-now:not(.first) .mk { color: var(--muted); border-color: var(--line-2); box-shadow: none; }
+@media (max-width: 640px) { .lib-steps li { flex-wrap: wrap; align-items: flex-start; } .lib-steps li > .min0 { flex: 1 1 calc(100% - 44px); } .lib-steps .acts { margin-left: 44px; } }
 .lib-guide + .lib-types { margin-top: 20px; }
 .spin { animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -122,7 +127,7 @@
 .lib-can-it .nm { position: relative; font-size: 13px; font-weight: 500; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .lib-can-it .soon { margin-left: auto; }
 .lib-can-it .ds { position: relative; font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
-@media (max-width: 640px) { .lib-steps li { flex-wrap: wrap; } .lib-steps .acts { margin-left: 44px; } }
+@media (max-width: 640px) { .lib-steps li { flex-wrap: wrap; align-items: flex-start; } .lib-steps li > .min0 { flex: 1 1 calc(100% - 44px); } .lib-steps .acts { margin-left: 44px; } }
 
 /* publish box on the asset page */
 .lib-pubs { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }

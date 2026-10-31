@@ -6,7 +6,7 @@ import { Link, useParams } from "react-router-dom";
 import { CalendarClock, CheckCircle2, Download, ExternalLink, MessagesSquare, Send, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card, type Suggestion } from "../api";
-import { Guide } from "./LibraryEmpty";
+import { Guide } from "./Guide";
 import { ApprovalCard } from "../chat/Conversation";
 import { AssetEmbed } from "./AssetEmbed";
 import { AssetActions, StatusChip, whenAt } from "./AssetActions";
@@ -92,7 +92,7 @@ export function TodoPage() {
       )}
 
       {d && d.drafts.length > 0 && (
-        <section className="todo-sec">
+        <section className="todo-sec" id="todo-drafts">
           <h2>
             Drafts to approve <span className="n">{d.drafts.length}</span>
           </h2>

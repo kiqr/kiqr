@@ -97,6 +97,8 @@ pub struct IndexItem {
     /// Metrics sources it reads.
     #[serde(default)]
     pub sources: Vec<String>,
+    /// When to suggest it to a new project (the manifest's `fits`).
+    pub fits: kiqr_core::extensions::Fits,
     pub auth: Vec<AuthKey>,
     /// How the keys can be got with one button (the manifest's `connect`).
     pub connect: Option<kiqr_core::connect::Connect>,
@@ -252,6 +254,7 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         provides: m.provides.keys().cloned().collect(),
         channels: m.channels.iter().map(|c| IndexChannel { kind: c.kind.clone(), name: c.display_name().to_string(), icon: c.icon.clone(), profile_hosts: c.profile_hosts.clone() }).collect(),
         sources: m.sources.keys().cloned().collect(),
+        fits: m.fits.clone(),
         auth: m.auth.clone(),
         connect: m.connect.iter().find(|c| c.has_button()).or(m.connect.first()).cloned(),
         trust: "official".into(),
@@ -301,6 +304,7 @@ fn core_item(c: &extensions::CoreAbility) -> IndexItem {
         provides: vec![],
         channels: vec![],
         sources: vec![],
+        fits: Default::default(),
         auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false, options: vec![], placeholder: String::new(), choices: None, typed: false }).collect(),
         connect: None,
         trust: "official".into(),
@@ -469,6 +473,7 @@ fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
         provides: vec![],
         channels: vec![],
         sources: vec![],
+        fits: Default::default(),
         auth: vec![],
         connect: None,
         trust: if e.builtin { "official".into() } else { "local".into() },
