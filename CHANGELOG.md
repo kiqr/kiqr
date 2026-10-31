@@ -4,6 +4,10 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+## v0.3.2 — 2026-10-31
+
+- Fixed: a factory reset is refused for a person on a server opened over http or through a proxy
+
 ## v0.3.1 — 2026-10-31
 
 - Everything in v0.3.0 below, which was never published: its macOS builds stopped on GitHub's retiring macOS 14 runners. macOS builds now run on macOS 15.
