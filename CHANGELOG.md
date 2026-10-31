@@ -4,6 +4,8 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+## v0.3.0 — 2026-10-31
+
 - A new first run: Seemo checks it has a model before it starts, then reads the site with one overall progress, the time left and what it is learning as it goes, while it asks you four quick questions. Then it shows you your business as it sees it, to confirm or fix, and makes your first plan and three posts in your brand. The rest of KIQR opens when the profile is ready.
 - The getting-started steps on To do follow from what you told Seemo while it read your site: approve the plan and your first posts, connect the networks you named, one piece of work for your goal (an article for new customers, a letter to the customers you have, conversations to join, a launch announcement), connect where the plan's numbers live, and a weekly rhythm sized to the time you have. Each one that needs Seemo opens a chat in the corner.
 - Factory reset, under Settings → Storage: erases everything KIQR keeps on this machine (projects, history, settings, keys, abilities) and starts again as a new installation. It asks four times (what goes, a sum drawn as a picture by KIQR itself, the phrase typed out, a button held for two seconds) and only takes the request from the web page: Seemo, the CLI and abilities can't do it.
@@ -21,4 +23,3 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 - On a server, the installer keeps KIQR running after you log out of SSH and shows how to open it through an SSH tunnel.
 - KIQR runs on Windows.
 - KIQR now opens at http://127.0.0.1:4040 (it was 7777; an existing home moves over by itself). Change the address under Settings → Network: KIQR restarts there and the page follows.
-
