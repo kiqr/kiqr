@@ -4,9 +4,10 @@
 // conversation is rebuilt from the saved answers, so a reload reads the same.
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowUp, Check, Loader2, Plus, Settings2 } from "lucide-react";
+import { ArrowUp, Check, Cloud, Loader2, LogIn, Plus, Settings2 } from "lucide-react";
 import { api, type AbilitiesView, type Brand, type BuildStage, type Intake as IntakeT, type Network, type Setup, type SetupWhy } from "../api";
 import { AbilityModal } from "../pages/AbilityModal";
+import { useSignIns } from "../pages/SignIns";
 import "../chat.css";
 import "../profile.css";
 import "../settings.css";
@@ -311,12 +312,29 @@ function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stag
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, stage]);
-  const size = (setup?.suggestions.length ?? 0) + (setup?.waiting.length ?? 0);
+  // kiqr.cloud first, and optional: it makes the sign-ins below one click.
+  const signIns = useSignIns();
+  const cloud = signIns.data?.signins.find((x) => x.id === "kiqr-cloud");
+  const signInCloud = async () => {
+    setBusy("kiqr-cloud");
+    setError(null);
+    try {
+      const r = await api.startSignIn("kiqr-cloud", window.location.origin);
+      if (r.mode === "redirect") window.open(r.url, "_blank", "noopener");
+      signIns.reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const size = (setup?.suggestions.length ?? 0) + (setup?.waiting.length ?? 0) + (cloud ? 1 : 0);
   useEffect(() => {
     if (size) onGrow();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size]);
   if (!setup || size === 0) return null;
+  const sugs = setup.suggestions;
 
   /** Install it when it isn't yet, then open it on its accounts (the modal falls back to its overview when it has none). */
   const setUp = async (id: string, installed: boolean) => {
@@ -337,11 +355,37 @@ function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stag
     <motion.div className="cm ai" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
       <span className="av" />
       <div className="body">
-        {setup.suggestions.length > 0 && (
+        {(sugs.length > 0 || cloud) && (
           <>
-            <p>From what you told me and what I see on {host}, I'd set these up:</p>
+            <p>{sugs.length ? `From what you told me and what I see on ${host}, I'd set these up:` : "One thing you can set up now:"}</p>
             <ul className="wl-sugs">
-              {setup.suggestions.map((s) => (
+              {cloud && (
+                <li>
+                  <span className="wl-sug-ic">
+                    <Cloud size={15} />
+                  </span>
+                  <div className="min0">
+                    <b>
+                      Sign in to kiqr.cloud <span className="chip sm wl-opt">Optional</span>
+                    </b>
+                    <small>{cloud.signed_in ? `Signed in as ${cloud.account ?? "you"}` : cloud.waiting ? `Enter ${cloud.waiting.user_code.replace(/^(.{4})(.{4})$/, "$1-$2")} at ${cloud.waiting.verification_uri.replace(/^https?:\/\//, "")}` : "Makes signing in to the ones below one click"}</small>
+                  </div>
+                  {cloud.signed_in ? (
+                    <span className="chip ok sm">
+                      <Check size={11} strokeWidth={3} /> Ready
+                    </span>
+                  ) : cloud.waiting ? (
+                    <a className="btn g sm" href={cloud.waiting.verification_uri_complete ?? cloud.waiting.verification_uri} target="_blank" rel="noreferrer">
+                      Open
+                    </a>
+                  ) : (
+                    <button className="btn g sm" disabled={!!busy} onClick={() => void signInCloud()}>
+                      {busy === "kiqr-cloud" ? <Loader2 size={12} className="spin" /> : <LogIn size={12} />} Sign in
+                    </button>
+                  )}
+                </li>
+              )}
+              {sugs.map((s) => (
                 <li key={s.id}>
                   {s.avatar ? <img src={s.avatar} alt="" width={28} height={28} /> : <span className="wl-sug-ic" />}
                   <div className="min0">
@@ -360,7 +404,7 @@ function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stag
                 </li>
               ))}
             </ul>
-            {setup.suggestions.some((s) => !s.ready) && <p className="dim sm">Each one opens to sign in. You can also do it later, from your first steps.</p>}
+            {sugs.some((s) => !s.ready) && <p className="dim sm">Each one opens to sign in. You can also do it later, from your first steps.</p>}
           </>
         )}
         {setup.waiting.length > 0 && <p>{listed(setup.waiting)}: I can't post there yet. When I can, I'll tell you.</p>}

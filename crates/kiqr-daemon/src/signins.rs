@@ -239,14 +239,30 @@ async fn redirect_uris(app: &App, s: &SignIn) -> Vec<String> {
     v
 }
 
-/// This machine's client id at the service, registered on first use.
-async fn client_id(app: &App, s: &'static SignIn, srv: &Server) -> Result<String> {
+/// This machine's client id at the service, registered on first use, and so the service may also send the browser back to
+/// `back` (kiqr.cloud only: KIQR's callback on the address this KIQR is opened
+/// at, like http://studio:4040). A new address means a new registration that
+/// lists it beside the last few, since a client's addresses are fixed.
+async fn client_id_for(app: &App, s: &'static SignIn, srv: &Server, back: Option<&str>) -> Result<String> {
+    let mut extra: Vec<String> = get_env(s, "REDIRECTS").map(|v| v.split_whitespace().map(str::to_string).collect()).unwrap_or_default();
     if let Some(id) = get_env(s, "CLIENT_ID") {
-        return Ok(id);
+        if back.is_none_or(|b| extra.iter().any(|x| x == b)) {
+            return Ok(id);
+        }
     }
+    if let Some(b) = back {
+        extra.retain(|x| x != b);
+        extra.push(b.to_string());
+        // The service takes five addresses; two are loopback.
+        let keep = extra.len().saturating_sub(3);
+        extra.drain(..keep);
+    }
+    let mut uris = redirect_uris(app, s).await;
+    uris.extend(extra.iter().cloned());
     let grants: &[&str] = if srv.has_device_flow() { &["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"] } else { &["authorization_code", "refresh_token"] };
-    let id = oauth::register(srv, &format!("KIQR on {}", hostname()), &redirect_uris(app, s).await, grants).await?;
+    let id = oauth::register(srv, &format!("KIQR on {}", hostname()), &uris, grants).await?;
     put_env(app, s, "CLIENT_ID", Some(&id))?;
+    put_env(app, s, "REDIRECTS", Some(&extra.join(" ")))?;
     Ok(id)
 }
 
@@ -432,12 +448,16 @@ async fn start(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Sta
         return Err(bad("origin must be http or https"));
     }
     let srv = server(&app, s).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
-    let cid = client_id(&app, s, &srv).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
     let base = origin.origin().ascii_serialization();
     let on_this_computer = origin.host_str().is_some_and(loopback);
+    // kiqr.cloud sends the browser straight back to this KIQR wherever it is
+    // opened (it allows KIQR's callback over http): its approval page, no code.
+    let straight_back = !on_this_computer && s.id == CLOUD;
+    let back = format!("{base}{CALLBACK_PATH}");
+    let cid = client_id_for(&app, s, &srv, straight_back.then_some(back.as_str())).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
 
     // Elsewhere, a service with a device flow shows a code instead.
-    if !on_this_computer && srv.has_device_flow() {
+    if !on_this_computer && !straight_back && srv.has_device_flow() {
         let d = oauth::device_start(&srv, &cid, s.scope).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
         let view = DeviceView { user_code: d.user_code.clone(), verification_uri: d.verification_uri.clone(), verification_uri_complete: d.verification_uri_complete.clone() };
         app.signins.devices.lock().await.insert(s.id, view.clone());
@@ -446,8 +466,8 @@ async fn start(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Sta
     }
 
     let verifier = kiqr_core::connect::random_token();
-    let (state, redirect_uri) = if on_this_computer {
-        (kiqr_core::connect::random_token(), format!("{base}{CALLBACK_PATH}"))
+    let (state, redirect_uri) = if on_this_computer || straight_back {
+        (kiqr_core::connect::random_token(), back)
     } else {
         // Not on this computer and no device flow: through the kiqr.cloud relay,
         // which the service calls back over https. The relay id is the state.

@@ -96,6 +96,7 @@
 .lib-steps .st-now .mk { color: var(--accent); border-color: rgba(94,234,212,.5); box-shadow: 0 0 0 4px rgba(94,234,212,.08); }
 .lib-steps .st-soon .mk { color: var(--dim); border-style: dashed; }
 .lib-steps .nm { font-size: 14px; font-weight: 500; }
+.lib-steps .nm .opt { margin-left: 8px; vertical-align: 1px; font-weight: 500; color: var(--muted); }
 .lib-steps .st-done .nm { color: var(--muted); }
 .lib-steps .st-soon .nm, .lib-steps .st-next .nm { color: var(--muted); }
 .lib-steps .st-skipped .ds { color: var(--dim); }

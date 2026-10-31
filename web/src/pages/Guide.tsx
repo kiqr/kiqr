@@ -6,11 +6,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "motion/react";
-import { ArrowRight, BarChart3, CalendarClock, Cable, Check, Loader2, Mail, MessageSquare, MessageSquareText, Newspaper, Plug, Reply, SkipForward, Sparkles, Target, Undo2, type LucideIcon } from "lucide-react";
+import { ArrowRight, BarChart3, CalendarClock, Cable, Check, Cloud, Loader2, Mail, MessageSquare, MessageSquareText, Newspaper, Plug, Reply, SkipForward, Sparkles, Target, Undo2, type LucideIcon } from "lucide-react";
 import { api, useAsync, useEvents, type Asset, type Intake } from "../api";
 import { useNetworks } from "../networks";
 import { openSeemo } from "../SeemoWidget";
 import { ASK_FOR_PLAN } from "./Plan";
+import { useSignIns } from "./SignIns";
 
 type StepState = "done" | "now" | "skipped";
 type Step = {
@@ -22,6 +23,8 @@ type Step = {
   why?: string;
   state: StepState;
   optional?: boolean;
+  /** Says "Optional" next to the title: a step KIQR works fine without. */
+  extra?: boolean;
   to?: string;
   action?: string;
   /** Asks Seemo in a new chat: the chat's title and the message. */
@@ -92,6 +95,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
   const assets = useAsync(() => api.assets(slug).catch(() => [] as Asset[]), [slug]);
   const planView = useAsync(() => api.plan(slug).catch(() => null), [slug]);
   const channels = useAsync(() => api.channels(slug).catch(() => null), [slug]);
+  const signIns = useSignIns();
   const tasks = useAsync(() => api.tasks(slug).catch(() => []), [slug]);
   const perf = useAsync(() => api.performance(slug).catch(() => null), [slug]);
   const setup = useAsync(() => api.setup(slug).catch(() => null), [slug]);
@@ -198,6 +202,18 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
               ask: { title: "Your first article", label: "Write it", message: `Write a blog article for ${who} as a draft article asset in the library${gap ? ` on “${gap}”, from the content gaps in the profile` : ", on the biggest content gap in the profile"}. Tell me when it's in.` },
             };
 
+  const cloud = signIns.data?.signins.find((x) => x.id === "kiqr-cloud");
+  const cloudSignIn = async () => {
+    setErrors((x) => ({ ...x, cloud: "" }));
+    try {
+      const r = await api.startSignIn("kiqr-cloud", window.location.origin);
+      if (r.mode === "redirect") window.open(r.url, "_blank", "noopener");
+      signIns.reload();
+    } catch (e) {
+      setErrors((x) => ({ ...x, cloud: (e as Error).message }));
+    }
+  };
+
   const st = (id: string, done: boolean): StepState => (done ? "done" : skipped.includes(id) ? "skipped" : "now");
   const steps: Step[] = [
     {
@@ -212,6 +228,26 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       action: "See the plan",
       ask: { title: "Your first marketing plan", label: "Propose it", message: `${ASK_FOR_PLAN} This is our first plan together: keep it to what fits the time I have.` },
     },
+    ...(cloud
+      ? [
+          {
+            id: "cloud",
+            icon: Cloud,
+            title: cloud.signed_in ? "Signed in to kiqr.cloud" : "Sign in to kiqr.cloud",
+            text: cloud.signed_in
+              ? `As ${cloud.account ?? "you"}. Signing in to your apps takes one click from here.`
+              : cloud.waiting
+                ? `Enter ${cloud.waiting.user_code.replace(/^(.{4})(.{4})$/, "$1-$2")} at ${cloud.waiting.verification_uri.replace(/^https?:\/\//, "")}.`
+                : "It connects this KIQR with your apps, so signing in to them (Google and the like) takes one click. Everything works without it; then you paste keys instead.",
+            state: st("cloud", cloud.signed_in),
+            optional: true,
+            extra: true,
+            to: "/settings",
+            action: "See settings",
+            run: cloud.signed_in ? undefined : cloud.waiting ? { label: "Open kiqr.cloud", go: () => window.open(cloud.waiting!.verification_uri_complete ?? cloud.waiting!.verification_uri, "_blank", "noopener") } : { label: "Sign in", go: () => void cloudSignIn() },
+          } satisfies Step,
+        ]
+      : []),
     ...(sugs.length
       ? [
           {
@@ -338,6 +374,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
               <div className="min0">
                 <p className="nm">
                   {s.title}
+                  {s.extra && s.state === "now" && <span className="chip sm opt">Optional</span>}
                 </p>
                 <p className="ds">{s.state === "skipped" ? "Skipped. Come back to it any time." : err ? `That didn't work: ${err}` : asked ? "Seemo is on it in a chat. It asks you before it makes anything." : s.text}</p>
                 {s.why && s.state === "now" && <p className="why">{s.why}</p>}

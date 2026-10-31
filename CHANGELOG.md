@@ -4,6 +4,8 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+- Signing in to kiqr.cloud from a browser shows kiqr.cloud's approval page and comes straight back, also when KIQR is opened at a server's plain http address (no activation code). Seemo's set-up suggestions and the getting-started steps offer it first, marked Optional.
+
 ## v0.3.3 — 2026-10-31
 
 - The first build: the site map fills the screen behind the progress on a wide screen. Seemo's suggestions open straight to sign in, typed networks are read as names, and after the last question you can write to Seemo in the same window.
