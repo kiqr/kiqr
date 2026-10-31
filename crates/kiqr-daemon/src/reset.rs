@@ -42,16 +42,23 @@ fn from_browser(h: &HeaderMap) -> Result<(), ApiError> {
     if h.contains_key(AGENT_HEADER) {
         return Err(refuse());
     }
-    let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).unwrap_or("");
-    if get("sec-fetch-site") != "same-origin" {
+    let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).unwrap_or("").trim();
+    // Browsers send Sec-Fetch-Site only to https and localhost, not to a server
+    // opened over plain http, so it can only refuse, never be required.
+    let site = get("sec-fetch-site");
+    if !site.is_empty() && site != "same-origin" {
         return Err(refuse());
     }
-    let host = get("host");
+    // Every browser sends Origin on a POST. It has to be this page: the Host it
+    // asked for, or the one a reverse proxy in front of KIQR says it asked for.
     let origin = get("origin");
-    if host.is_empty() || !(origin == format!("http://{host}") || origin == format!("https://{host}")) {
-        return Err(refuse());
+    let host_of = |o: &str| o.strip_prefix("http://").or_else(|| o.strip_prefix("https://")).map(str::to_string);
+    let Some(origin_host) = host_of(origin) else { return Err(refuse()) };
+    let forwarded = get("x-forwarded-host").split(',').next().unwrap_or("").trim();
+    if !origin_host.is_empty() && [get("host"), forwarded].iter().any(|h| !h.is_empty() && h.eq_ignore_ascii_case(&origin_host)) {
+        return Ok(());
     }
-    Ok(())
+    Err(refuse())
 }
 
 /// Never erase something that is not a KIQR home: a mistyped `KIQR_HOME` could point at a user's whole home folder.
@@ -235,6 +242,22 @@ mod tests {
         let mut other = browser();
         other.insert("origin", HeaderValue::from_static("http://evil.test"));
         assert!(from_browser(&other).is_err());
+
+        // A server opened over plain http: no Sec-Fetch-* headers at all.
+        let mut http = HeaderMap::new();
+        http.insert("host", HeaderValue::from_static("kiqr.example.lan:4040"));
+        http.insert("origin", HeaderValue::from_static("http://kiqr.example.lan:4040"));
+        assert!(from_browser(&http).is_ok(), "a person on http://server:4040");
+        // Behind a reverse proxy that rewrites Host.
+        let mut proxied = HeaderMap::new();
+        proxied.insert("host", HeaderValue::from_static("127.0.0.1:4040"));
+        proxied.insert("x-forwarded-host", HeaderValue::from_static("kiqr.example.com"));
+        proxied.insert("origin", HeaderValue::from_static("https://kiqr.example.com"));
+        proxied.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        assert!(from_browser(&proxied).is_ok(), "a person behind a proxy");
+        let mut no_origin = http.clone();
+        no_origin.remove("origin");
+        assert!(from_browser(&no_origin).is_err());
         let mut plain = HeaderMap::new();
         plain.insert("host", HeaderValue::from_static("127.0.0.1:4040"));
         assert!(from_browser(&plain).is_err(), "curl and other programs");
