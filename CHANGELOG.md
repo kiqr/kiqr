@@ -4,6 +4,8 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+## v0.4.1 — 2026-11-01
+
 - An account is the service, not an ability: "Google", not "Read Google Analytics". Google Analytics and Search Console share one Google account (one sign-in); the property and the Search Console property are places on it, picked from the lists the account can see, and Seemo reads each through its place. Accounts from before move along on their own (tokens renamed, the property into a place). The connect grid has one tile per service and installs whatever the service needs. The Abilities page keeps only what is not an account: built-in abilities, what you taught Seemo and instructions from the marketplace; services live under Setup → Accounts. Manifests: `places` (an ability's own place on the account, with `choices`), `moved` (what older accounts called things), `{{x|urlencode}}`.
 
 ## v0.4.0 — 2026-11-01
