@@ -10,6 +10,7 @@ mod builtin;
 mod connect;
 mod ext;
 mod images;
+mod learn;
 mod market;
 mod marketing;
 mod mcp_host;

@@ -19,7 +19,7 @@ export function ConnectButton({ slug, ability, connect, auth, account, fresh, la
   /** The account to sign in again. */
   account?: string;
   /** For a new account: what to call it, and for a channel its kind and destination. */
-  fresh?: { label?: string; kind?: string; destination?: Record<string, string> };
+  fresh?: { label?: string; kind?: string; destination?: Record<string, string>; learns?: boolean };
   /** The button's words, when not the manifest's ("Connect again"). */
   label?: string;
   /** What it asks first, when the form around it already asked (then no fields here). */

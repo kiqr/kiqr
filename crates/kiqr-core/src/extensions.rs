@@ -73,6 +73,16 @@ pub struct Choices {
     pub label: String,
     /// Taken off the front of the value (`properties/` of `properties/123`).
     pub strip: String,
+    /// Read up to this many pages (at most 20), the request naming `{{page}}`
+    /// (1, 2, …); it stops at the first page with no items.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pages: Option<u32>,
+}
+
+impl Choices {
+    pub fn pages(&self) -> u32 {
+        self.pages.unwrap_or(1).clamp(1, 20)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -338,6 +348,54 @@ impl Fits {
     }
 }
 
+/// `learn:`: the documents an account is read for, each the answer of one of
+/// the ability's own tools (`args` filled like a call's), or, with `each`, of
+/// one tool per entry of that answer (every Markdown file in `docs/`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LearnSpec {
+    /// What the switch says: "Learn the product from the repository".
+    pub label: String,
+    pub documents: Vec<LearnDoc>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LearnDoc {
+    pub tool: String,
+    pub args: Value,
+    /// Templates over the account's keys (never a secret) and, under `each`, `{{value}}`:
+    /// the document's title, and the link its facts cite as evidence.
+    pub title: String,
+    pub url: String,
+    pub each: Option<LearnEach>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LearnEach {
+    /// Pointer to the list in the first tool's answer; empty: the answer is the list.
+    pub list: String,
+    /// Pointer into an entry: the value handed on (`/path`).
+    pub value: String,
+    /// Entries whose fields equal these (`type: file`).
+    #[serde(rename = "where")]
+    pub where_: BTreeMap<String, String>,
+    /// Values ending in one of these (`.md`), case-insensitive; empty: all.
+    pub only: Vec<String>,
+    /// The tool called per entry, with the value as `arg`.
+    pub tool: String,
+    pub arg: String,
+    /// At most this many entries (default 20, at most 50).
+    pub max: Option<usize>,
+}
+
+impl LearnEach {
+    pub fn limit(&self) -> usize {
+        self.max.unwrap_or(20).clamp(1, 50)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Manifest {
@@ -373,6 +431,11 @@ pub struct Manifest {
     /// each with the requests and the mapping that read it (`crate::sources`).
     #[serde(deserialize_with = "crate::sources::deserialize")]
     pub sources: BTreeMap<String, crate::sources::SourceSpec>,
+    /// What an account of this ability can teach the project (a repository's
+    /// README and docs): documents read through its own tools and extracted
+    /// into the business profile like the site's pages. An account with
+    /// learning on is a source; it may be a channel too.
+    pub learn: Option<LearnSpec>,
     /// When to suggest it to a new project.
     #[serde(skip_serializing_if = "Fits::is_empty")]
     pub fits: Fits,
@@ -419,6 +482,7 @@ impl Default for Manifest {
             tools: vec![],
             channels: vec![],
             sources: BTreeMap::new(),
+            learn: None,
             fits: Fits::default(),
             command: String::new(),
             args: vec![],
@@ -807,6 +871,29 @@ pub fn validate(m: &Manifest) -> Result<()> {
             bail!("env '{n}' is not a variable name");
         }
     }
+    if let Some(l) = &m.learn {
+        if l.documents.is_empty() {
+            bail!("learn lists no documents");
+        }
+        for d in &l.documents {
+            for t in std::iter::once(&d.tool).chain(d.each.as_ref().map(|e| &e.tool)) {
+                if !m.tools.iter().any(|x| &x.name == t) {
+                    bail!("learn reads with '{t}', which this connection does not define");
+                }
+            }
+            if let Some(e) = &d.each {
+                if e.arg.trim().is_empty() || e.value.trim().is_empty() {
+                    bail!("learn's each needs a value and the arg it goes in");
+                }
+            }
+            // Reading only: learning never acts on the account.
+            for t in std::iter::once(&d.tool).chain(d.each.as_ref().map(|e| &e.tool)) {
+                if m.tools.iter().any(|x| &x.name == t && !x.role.is_empty() && x.role != "read") {
+                    bail!("learn may only read, and '{t}' acts");
+                }
+            }
+        }
+    }
     for c in &m.channels {
         if c.kind.trim().is_empty() {
             bail!("a channel needs a kind");
@@ -1005,6 +1092,12 @@ fn fill_with(template: &str, args: &Value, env: &dyn Fn(&str) -> Option<String>)
             let (key, default) = inner.split_once('|').map(|(k, d)| (k.trim(), Some(d.trim()))).unwrap_or((inner.trim(), None));
             let v = lookup(args, key).filter(|v| !v.is_null());
             match v.as_ref() {
+                // `{{title|json}}`: the value as JSON (also valid YAML, for frontmatter); null when missing or empty.
+                _ if default == Some("json") => match v {
+                    Some(Value::String(s)) if s.is_empty() => out.push_str("null"),
+                    Some(x) => out.push_str(&x.to_string()),
+                    None => out.push_str("null"),
+                },
                 Some(Value::String(s)) if !s.is_empty() => out.push_str(s),
                 // The default may hold placeholders of its own: `{{repo|${GITHUB_REPO}}}`, `{{title|{{tag}}}}`.
                 Some(Value::String(_)) | None => out.push_str(&fill_with(default.unwrap_or(""), args, env)),
@@ -1036,7 +1129,7 @@ pub fn fill_value(v: &Value, args: &Value, env: &impl Fn(&str) -> Option<String>
     match v {
         Value::String(s) => {
             let t = s.trim();
-            if t.starts_with("{{") && t.ends_with("}}") && t.matches("{{").count() == 1 {
+            if t.starts_with("{{") && t.ends_with("}}") && t.matches("{{").count() == 1 && !t.ends_with("|json}}") {
                 let inner = &t[2..t.len() - 2];
                 let (key, default) = inner.split_once('|').map(|(k, d)| (k.trim(), Some(d.trim()))).unwrap_or((inner.trim(), None));
                 return match lookup(args, key) {
@@ -1335,6 +1428,22 @@ channels:
 "#;
 
     #[test]
+    fn learn_reads_with_its_own_reading_tools() {
+        let read = WP.replace("channels:", "  - { name: get_page, label: Reading a page, description: A page., request: { method: GET, url: \"https://myblog.com/{{path}}\" } }\nchannels:");
+        let ok = format!("{read}learn:\n  label: Learn from the blog\n  documents:\n    - {{ tool: get_page, args: {{ path: about }}, title: About, url: \"https://myblog.com/about\" }}\n    - {{ tool: get_page, title: \"{{{{value}}}}\", url: \"https://myblog.com/{{{{value}}}}\", each: {{ list: /pages, value: /slug, only: [.md], tool: get_page, arg: path }} }}\n");
+        let m = parse_manifest(&ok).unwrap_or_else(|e| panic!("{e:#}"));
+        let l = m.learn.as_ref().unwrap();
+        assert_eq!(l.documents.len(), 2);
+        assert_eq!(l.documents[1].each.as_ref().unwrap().limit(), 20);
+        assert!(parse_manifest(WP).unwrap().learn.is_none());
+        // A tool it does not define, an each without its arg, and a tool that acts are refused.
+        assert!(parse_manifest(&ok.replace("tool: get_page, args", "tool: nope, args")).unwrap_err().to_string().contains("does not define"));
+        assert!(parse_manifest(&ok.replace(", arg: path", "")).unwrap_err().to_string().contains("arg"));
+        let acting = format!("{WP}learn:\n  documents:\n    - {{ tool: publish_article, title: x, url: \"https://myblog.com\" }}\n").replace("    description: Create a post.", "    description: Create a post.\n    role: publish");
+        assert!(parse_manifest(&acting).unwrap_err().to_string().contains("may only read"));
+    }
+
+    #[test]
     fn manifests_parse_and_validate() {
         let m = parse_manifest(WP).unwrap();
         assert_eq!(m.tools.len(), 1);
@@ -1360,6 +1469,10 @@ channels:
         let v = fill_value(&json!({ "a": "{{n}}", "b": "{{title}}!", "c": "{{missing}}", "d": { "k": "${KEY}" } }), &args, &env);
         assert_eq!(v, json!({ "a": 3, "b": "Hi!", "d": { "k": "s3cret" } }));
         assert_eq!(fill_value(&json!({ "w": "{{width|1600}}" }), &json!({}), &env), json!({ "w": 1600 }));
+        // `|json` for frontmatter: quotes and newlines escaped, lists as lists, null when missing.
+        let fm = json!({ "title": "Say \"hi\"\nnow", "tags": ["a", "b"], "empty": "" });
+        assert_eq!(fill("title: {{title|json}}\ntags: {{tags|json}}\nimage: {{image|json}} {{empty|json}}", &fm, env), "title: \"Say \\\"hi\\\"\\nnow\"\ntags: [\"a\",\"b\"]\nimage: null null");
+        assert_eq!(fill_value(&json!({ "c": "{{title|json}}" }), &json!({ "title": "x" }), &env), json!({ "c": "\"x\"" }));
         let p = Provide { map: [("orientation".to_string(), [("landscape".to_string(), json!("1536x1024")), ("*".to_string(), json!("1024x1024"))].into_iter().collect())].into_iter().collect(), ..Default::default() };
         assert_eq!(p.mapped_args(&json!({ "orientation": "landscape" }))["orientation"], "1536x1024");
         assert_eq!(p.mapped_args(&json!({}))["orientation"], "1024x1024");

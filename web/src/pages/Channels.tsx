@@ -209,7 +209,7 @@ function ChannelForm({ slug, kinds, onDone }: { slug: string; kinds: ChannelKind
       <AccountForm
         key={`${kind.connection}-${kind.kind}`}
         slug={slug}
-        ability={{ id: kind.connection, name: kind.connection_name, auth: (kind.auth ?? []).map((a) => ({ env: a.env, label: a.label, help: a.help, optional: a.optional, options: a.options, placeholder: a.placeholder })), connect: kind.connect }}
+        ability={{ id: kind.connection, name: kind.connection_name, auth: (kind.auth ?? []).map((a) => ({ env: a.env, label: a.label, help: a.help, optional: a.optional, options: a.options, placeholder: a.placeholder })), connect: kind.connect, learn: kind.learn }}
         kinds={[{ kind: kind.kind, label: kind.label, name: kind.name ?? kind.label, destination: kind.destination }]}
         shareable={kind.accounts}
         onDone={onDone}

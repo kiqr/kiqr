@@ -377,7 +377,7 @@ const MAX_PAGES_LIMIT: usize = 5000;
 /// Claim a project's job slot in one step, so two requests can't both start.
 /// A crawl ends by rebuilding the profile, so it can't overlap a profile job
 /// (`synthesize`, `brief`) on the same project, nor they it.
-async fn claim(app: &App, kind: &str, slug: &str) -> Result<String, ApiError> {
+pub(crate) async fn claim(app: &App, kind: &str, slug: &str) -> Result<String, ApiError> {
     let mut jobs = app.jobs.write().await;
     let busy = |k: &str| jobs.contains(&format!("{k}:{slug}"));
     let crawling = busy("crawl");
@@ -437,6 +437,14 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
             .with_control(control)
             .with_profiles(crate::networks::profile_hosts(&app, &project.slug).await);
             crawler.run(&project, max_pages).await?;
+            // The project's sources (a repository) beside its site, before the profile is written from both.
+            if let Some(ex) = &extractor {
+                for (label, r) in crate::learn::read_all(&app, &project.slug, None, ex).await {
+                    if let Err(e) = r {
+                        app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: format!("I couldn't learn from {label}: {e}") });
+                    }
+                }
+            }
             // The profiles the brand found that an ability in the marketplace could publish to.
             if let Some(line) = crate::networks::suggestion_line(&app, &project.slug).await {
                 app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: line });

@@ -67,6 +67,9 @@ struct StartBody {
     kind: String,
     #[serde(default)]
     destination: serde_json::Map<String, Value>,
+    /// A source too: learn from it once it is signed in.
+    #[serde(default)]
+    learns: bool,
     /// The UI's origin (`window.location.origin`); the callback is under it.
     origin: String,
     /// The `needs` values typed first (the site), saved before the flow starts.
@@ -91,11 +94,11 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
             c
         }
         None if !b.kind.trim().is_empty() => {
-            let preview = crate::publish::channel_preview(&app, &slug, &crate::publish::NewChannel { label: b.label.clone(), kind: b.kind.clone(), connection: Some(m.id.clone()), destination: b.destination.clone(), ..Default::default() }).await?;
+            let preview = crate::publish::channel_preview(&app, &slug, &crate::publish::NewChannel { label: b.label.clone(), kind: b.kind.clone(), connection: Some(m.id.clone()), destination: b.destination.clone(), learns: b.learns, ..Default::default() }).await?;
             let v = crate::publish::save_channel(&app, &slug, &preview, "user", BTreeMap::new()).await?;
             Connection::load(&app.store, &slug, v["id"].as_str().unwrap_or(""))?
         }
-        None => crate::accounts::create(&app, &slug, crate::accounts::NewConnection { ability: m.id.clone(), label: b.label.clone(), ..Default::default() }, "user").await?,
+        None => crate::accounts::create(&app, &slug, crate::accounts::NewConnection { ability: m.id.clone(), label: b.label.clone(), learns: b.learns && m.learn.is_some(), ..Default::default() }, "user").await?,
     };
     for n in &c.needs {
         if let Some(v) = b.values.get(n).filter(|v| !v.trim().is_empty()) {

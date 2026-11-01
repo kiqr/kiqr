@@ -382,6 +382,8 @@ export type Ability = {
   accounts?: AccountSummary[];
   /** The kinds of channel it publishes to. */
   kinds?: KindInfo[];
+  /** An account of it can be a source too: what the Source switch says. */
+  learn?: LearnInfo | null;
   active_for: string[];
   instructions: InstructionFile[];
   in_prompt: boolean;
@@ -427,12 +429,22 @@ export type Account = {
   publisher?: string | null;
   publisher_name?: string | null;
   publishers?: { id: string; name: string }[];
+  /** A source: the project learns from it into the profile. */
+  source?: boolean;
+  /** Its ability can teach the project; what the switch says. */
+  learn?: LearnInfo | null;
+  /** Its ability publishes somewhere: it can be a channel. */
+  can_publish?: boolean;
+  last_learned?: string | null;
+  /** Documents read the last time. */
+  learned?: number;
 };
+export type LearnInfo = { label: string };
 export type Channel = Account;
 /** Where KIQR listens, when a factory reset could keep it (it isn't the default). `remote`: reachable from other machines. */
 export type ResetNetwork = { host: string; port: number; remote: boolean };
 export type AccountActivity = { connection: string; service: string; today: number; daily_cap: number | null; activity: { at: string; ability: string; role: string; tool: string; target?: string; url?: string | null }[] };
-export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }> };
+export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }>; learn?: LearnInfo | null };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -562,7 +574,7 @@ export const api = {
   setProjectSecret: (slug: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
 
   /** Start signing in, into one account: `connection` to sign one in again, else a new one is added first (a channel with `kind` and `destination`). Saves what was asked first and returns the page to open; `callback: false` means the user pastes what it shows into the account. */
-  startConnect: (slug: string, id: string, b: { connection?: string; label?: string; kind?: string; destination?: Record<string, string>; origin: string; values: Record<string, string> }) =>
+  startConnect: (slug: string, id: string, b: { connection?: string; label?: string; kind?: string; destination?: Record<string, string>; learns?: boolean; origin: string; values: Record<string, string> }) =>
     req<{ url: string; callback: boolean; connection: string; fields: string[] }>(`/api/projects/${slug}/connect/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(b) }),
 
   // KIQR's own sign-ins: kiqr.cloud, and UnblockingAPI by account
@@ -573,8 +585,8 @@ export const api = {
 
   // Accounts: one setup of an ability in a project, with its own keys
   accounts: (slug: string, ability?: string) => req<{ connections: Account[] }>(`/api/projects/${slug}/connections${ability ? `?ability=${encodeURIComponent(ability)}` : ""}`),
-  createAccount: (slug: string, b: { ability: string; label?: string; secrets?: Record<string, string>; same_as?: string }) => req<Account>(`/api/projects/${slug}/connections`, { method: "POST", body: JSON.stringify(b) }),
-  updateAccount: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
+  createAccount: (slug: string, b: { ability: string; label?: string; secrets?: Record<string, string>; same_as?: string; learns?: boolean }) => req<Account>(`/api/projects/${slug}/connections`, { method: "POST", body: JSON.stringify(b) }),
+  updateAccount: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean; learns?: boolean; kind?: string }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
   deleteAccount: (slug: string, id: string) => req<void>(`/api/projects/${slug}/connections/${id}`, { method: "DELETE" }),
   /** One key of an account; an empty value clears it. Never read back. */
   accountChoices: (slug: string, id: string, name: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/connections/${id}/choices/${name}`),
@@ -584,9 +596,10 @@ export const api = {
 
   // Channels and publishing
   channels: (slug: string) => req<{ channels: Channel[]; kinds: ChannelKindInfo[] }>(`/api/projects/${slug}/channels`),
-  createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string>; secrets?: Record<string, string>; same_as?: string }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
+  createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string>; secrets?: Record<string, string>; same_as?: string; learns?: boolean }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
   deleteChannel: (slug: string, id: string) => req<void>(`/api/projects/${slug}/channels/${id}`, { method: "DELETE" }),
   /** `asks_first: false` lets Seemo publish through the channel on its own. */
+  learnAccount: (slug: string, id: string) => req<{ started: boolean }>(`/api/projects/${slug}/connections/${id}/learn`, { method: "POST" }),
   accountActivity: (slug: string, id: string, limit = 20) => req<AccountActivity>(`/api/projects/${slug}/connections/${id}/activity?limit=${limit}`),
   updateChannel: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean; publisher?: string }) => req<Channel>(`/api/projects/${slug}/channels/${id}`, { method: "PUT", body: JSON.stringify(p) }),
   /** Publish an asset now, through the channel it was approved for or the one given. From the UI the click is the yes. */

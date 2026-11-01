@@ -627,6 +627,8 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "accounts": accounts,
         "kinds": m.map(|m| m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "name": c.display_name(), "destination": c.destination, "does": c.roles() })).collect::<Vec<_>>()).unwrap_or_default(),
         "service": m.map(|m| m.service().to_string()),
+        // An account of it can be a source: what the Source switch says.
+        "learn": m.map(crate::accounts::learn_view),
         "active_for": ctx.active.iter().filter(|(_, id)| *id == item.id).map(|(a, _)| a.clone()).collect::<Vec<_>>(),
         "instructions": files,
         "in_prompt": in_prompt,

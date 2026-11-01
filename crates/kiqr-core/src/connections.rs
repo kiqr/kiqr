@@ -55,6 +55,19 @@ pub struct Connection {
     pub publications: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_published: Option<DateTime<Utc>>,
+    /// A source: the project learns from it (its ability's `learn:`, into
+    /// the business profile). An account can be a channel, a source, or both.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub learns: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_learned: Option<DateTime<Utc>>,
+    /// Documents read the last time.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub learned: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Default for Connection {
@@ -73,6 +86,9 @@ impl Default for Connection {
             asks_first: true,
             publications: 0,
             last_published: None,
+            learns: false,
+            last_learned: None,
+            learned: 0,
         }
     }
 }

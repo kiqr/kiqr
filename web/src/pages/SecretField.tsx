@@ -69,7 +69,7 @@ export function SecretField({ name, label, help, placeholder, set, optional, opt
       </span>
       {editing ? (
         <span className="in">
-          <FieldInput mono secret={!listed} options={listed ? listed.map((c) => c.value) : options} labels={listed ? Object.fromEntries(listed.map((c) => [c.value, c.label])) : undefined} placeholder={done ? "new value" : placeholder || "paste it here"} value={value} onChange={setValue} onEnter={() => value.trim() && void save()} ariaLabel={label} />
+          <FieldInput mono secret={!listed} search={!!listed && listed.length > 12} options={listed ? listed.map((c) => c.value) : options} labels={listed ? Object.fromEntries(listed.map((c) => [c.value, c.label])) : undefined} placeholder={done ? "new value" : placeholder || "paste it here"} value={value} onChange={setValue} onEnter={() => value.trim() && void save()} ariaLabel={label} />
           <button className="btn g sm" disabled={busy || !value.trim()} onClick={() => void save()}>
             {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Save
           </button>

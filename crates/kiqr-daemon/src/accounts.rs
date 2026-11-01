@@ -28,6 +28,7 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/connections/{id}/default", post(make_default))
         .route("/api/projects/{slug}/connections/{id}/activity", get(activity))
         .route("/api/projects/{slug}/connections/{id}/choices/{name}", get(choices))
+        .route("/api/projects/{slug}/connections/{id}/learn", post(learn_now))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -38,6 +39,11 @@ fn bad(msg: impl Into<String>) -> ApiError {
 pub async fn manifest(app: &App, slug: &str, ability: &str) -> Option<Manifest> {
     let reg = app.registry.read().await;
     reg.entry(Some(slug), ability).and_then(|e| e.manifest.clone()).filter(|_| reg.entry(Some(slug), ability).is_some_and(|e| e.error.is_none()))
+}
+
+/// What the Source switch says, when an account of the ability can be a source.
+pub fn learn_view(m: &Manifest) -> Value {
+    json!(m.learn.as_ref().map(|l| json!({ "label": if l.label.is_empty() { "Learn from it into the profile".to_string() } else { l.label.clone() } })))
 }
 
 /// Has every key it needs, and the program it runs is there.
@@ -78,6 +84,12 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
     }
     v["service"] = json!(c.service());
     v["used_by"] = json!(used_by);
+    // A source: what learning from it reads, when its ability can teach the project.
+    v["source"] = json!(c.learns);
+    v["can_learn"] = json!(m.as_ref().and_then(|m| m.learn.as_ref()).is_some());
+    v["learn"] = m.as_ref().map(learn_view).unwrap_or(Value::Null);
+    // The kinds it could be a channel of, for the Channel switch.
+    v["can_publish"] = json!(m.as_ref().is_some_and(|m| !m.channels.is_empty()));
     if c.is_channel() {
         let p = connections::pick_publisher(c, &on);
         v["publisher"] = json!(p.map(|(pm, _)| pm.id.clone()));
@@ -129,6 +141,8 @@ pub struct NewConnection {
     pub secrets: BTreeMap<String, String>,
     /// Another connection of the same ability whose keys this one starts with (the same mail account).
     pub same_as: Option<String>,
+    /// A source too: the project learns from it (the ability's `learn:`).
+    pub learns: bool,
 }
 
 /// Add a connection: its record, then its keys. The first of an ability is its default.
@@ -138,6 +152,9 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
     let kind = b.kind.trim().to_ascii_lowercase();
     if !kind.is_empty() && !m.channels.iter().any(|k| k.kind == kind) {
         return Err(bad(format!("{} does not publish '{kind}'", m.name)));
+    }
+    if b.learns && m.learn.is_none() {
+        return Err(bad(format!("{} has nothing to learn from", m.name)));
     }
     let same = match b.same_as.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => Some(Connection::find(&app.store, slug, m.service(), s).ok_or_else(|| bad(format!("{} has no account '{s}' here to share", m.name)))?),
@@ -162,6 +179,7 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
         created_by: by.to_string(),
         kind,
         destination: b.destination,
+        learns: b.learns,
         ..Default::default()
     };
     c.save(&app.store, slug)?;
@@ -180,6 +198,10 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
     let what = if c.is_channel() { "channel" } else { "account" };
     app.store.commit(&format!("{what}({slug}): add {} ({})", c.label, m.name)).await?;
     app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+    // Learn from it now when it is ready; otherwise the scheduler does once it is signed in.
+    if c.learns && ready(app, slug, &c, &m) {
+        let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
+    }
     Ok(c)
 }
 
@@ -192,6 +214,10 @@ pub struct Patch {
     pub asks_first: Option<bool>,
     /// The ability that publishes to this channel, of those that can; empty goes back to the default.
     pub publisher: Option<String>,
+    /// The Source switch: learn from this account.
+    pub learns: Option<bool>,
+    /// The Channel switch: a kind its abilities publish (with `destination`), or empty for none.
+    pub kind: Option<String>,
 }
 
 pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connection, ApiError> {
@@ -202,7 +228,30 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connect
         }
         c.label = l;
     }
-    if let Some(d) = p.destination {
+    let mut learn_now = false;
+    if let Some(on) = p.learns {
+        let m = manifest_for(app, slug, &c).await;
+        if on && m.as_ref().and_then(|m| m.learn.as_ref()).is_none() {
+            return Err(bad(format!("nothing to learn from in '{}'", c.label)));
+        }
+        learn_now = on && !c.learns && m.as_ref().is_some_and(|m| ready(app, slug, &c, m));
+        c.learns = on;
+    }
+    let mut destination = p.destination;
+    if let Some(k) = p.kind.map(|k| k.trim().to_ascii_lowercase()) {
+        if k.is_empty() {
+            c.kind.clear();
+            c.destination.clear();
+            c.publisher.clear();
+        } else if k != c.kind {
+            // Becoming a channel: the destination is checked against the kind, as for a new one.
+            let d = destination.take().unwrap_or_default();
+            let checked = crate::publish::channel_preview(app, slug, &crate::publish::NewChannel { label: c.label.clone(), kind: k.clone(), connection: Some(c.ability.clone()), destination: d, ..Default::default() }).await?;
+            c.kind = k;
+            c.destination = checked["destination"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+        }
+    }
+    if let Some(d) = destination {
         if !c.is_channel() {
             return Err(bad("only a channel has a destination"));
         }
@@ -227,6 +276,9 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connect
     c.save(&app.store, slug)?;
     app.store.commit(&format!("{}({slug}): {}", if c.is_channel() { "channel" } else { "account" }, c.label)).await?;
     app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+    if learn_now {
+        let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
+    }
     Ok(c)
 }
 
@@ -290,6 +342,16 @@ struct SecretBody {
 async fn put_secret(State(app): State<App>, Path((slug, id, name)): Path<(String, String, String)>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
     let set = crate::ext::set_connection_secret(&app, &slug, &id, &name, &b.value).await?;
     Ok(Json(json!({ "name": name, "set": set, "connection": id })))
+}
+
+/// "Learn now": read this source again and write the profile from it.
+async fn learn_now(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
+    let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    if !c.learns {
+        return Err(bad(format!("'{}' is not a source; switch learning on first", c.label)));
+    }
+    crate::learn::start(&app, &slug, Some(c.id.clone())).await?;
+    Ok(Json(json!({ "started": true })))
 }
 
 /// What a key can be set to, read through the account (a key's `choices`).

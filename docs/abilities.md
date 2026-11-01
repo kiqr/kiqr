@@ -53,7 +53,7 @@ projects/<slug>/connections/<id>/.env              the keys, never committed, mo
 
   A tool that acts asks first. When Seemo calls one, the chat (or the task's chat) gets an `action` card: the tool's label, the ability, the account, what it acts on and the arguments; the call runs on the user's yes, through the same turn, cap and log as any call, and a refusal (a repeat, the cap) comes back as the card's outcome. A channel the user lets Seemo act through on its own (`asks_first: false`) runs at once and the card is the record, as for publishing. Reading runs at once. The user's own click (`POST …/ext/{ability}/tools/{tool}`) is the yes. A target may name the account's keys (`${GITHUB_REPO}`) but never a secret: tokens, passwords, keys, key files and what a sign-in keeps are left out.
 - A sign-in's token may also be typed (`typed: true` on its key): a personal access token instead of signing in, shown as a field.
-- A channel is an account with a `kind`. A new one can start with the keys of another account of the same ability (`same_as`: the same mail account to another address); the keys are copied, so changing one later does not change the other.
+- A channel is an account with a `kind`. An account of an ability that declares `learn:` can also be a **source** (`learns: true`): the project learns the business from it (see Learning). One account can be a channel, a source, or both; the add form and the account show a switch for each (`PUT …/connections/{id}` with `kind` (empty: no longer a channel; with `destination` to become one) and `learns`). A new one can start with the keys of another account of the same ability (`same_as`: the same mail account to another address); the keys are copied, so changing one later does not change the other.
 - `kiqr accounts ls|add|set|default|rm|activity` (`ls` shows each account's service, the abilities that use it and a channel's publisher); routes under `/api/projects/{slug}/connections`, channels under `/channels` as before. Accounts and channels in the UI say which abilities use them ("Used by", with what each does on a channel), a channel with several publishers has a select for the one that publishes, each has its activity, and an ability's Accounts tab names the other abilities it shares them with. Seemo reads the log with `channel_activity` before it replies or posts. Every logged action emits `AccountActed`; a refused one emits `ActionRefused` (`why`: `duplicate` or `cap`).
 - Homes from before accounts are moved once at start: each channel keeps its id with a copy of its ability's keys, an ability a project had keys for becomes its first account (a channel when its kind needs no destination), the ability's keys leave the project's `.env`, and an ability switched off for the machine becomes switched off in every project. Installing an ability later does the same for keys a project's `.env` still holds.
 
@@ -179,7 +179,7 @@ connect:
   - { flow: service_account, key_file: GOOGLE_SERVICE_ACCOUNT_FILE, token_url: https://oauth2.googleapis.com/token, scopes: [https://www.googleapis.com/auth/analytics.readonly], token_env: GA4_TOKEN }
 ```
 
-A key may read its values from the service once the account is signed in (`choices`), so the user picks instead of typing (the analytics property): a request through the account, a pointer to the items (`*` steps into every element of an array), and in each item the value, its label and a prefix to strip. The UI shows a list; typing stays possible. `GET /api/projects/{slug}/connections/{id}/choices/{name}`.
+A key may read its values from the service once the account is signed in (`choices`), so the user picks instead of typing (the analytics property): a request through the account, a pointer to the items (`*` steps into every element of an array), and in each item the value, its label and a prefix to strip. With `pages: N` (at most 20) the request names `{{page}}` and is read page by page until one comes back empty (every repository, not the first 100). The UI shows a list, a search field when it is long; typing stays possible. `GET /api/projects/{slug}/connections/{id}/choices/{name}`.
 
 ```yaml
 choices:
@@ -194,6 +194,7 @@ Every URL's host must be in `hosts` (or come from a `${VAR}` host). Variables in
 
 ### Placeholders
 
+- `{{arg|json}}`: the argument as JSON (also valid YAML), `null` when it is missing or empty: `title: {{title|json}}` and `tags: {{tags|json}}` in frontmatter, whatever the title holds.
 - `{{arg}}` and `{{arg|default}}`: the tool's arguments. A string that is exactly one placeholder takes the argument's own JSON value (numbers stay numbers). A default may hold placeholders of its own: `{{repo|${GITHUB_REPO}}}` (the argument, else the account's key), `{{title|{{tag}}}}`.
 - `${NAME}`: a variable from `.env`, filled by the daemon at call time. The model never sees values. `${NAME|default}` uses the default when the variable is not set; `${NAME|urlencode}` encodes the value for a place in a URL path.
 - `map`: replace an argument before templating: `map: { orientation: { landscape: 1536x1024, portrait: 1024x1536, "*": 1024x1024 } }`.
@@ -210,7 +211,7 @@ provides:
 
 The ability's arguments are KIQR's (`prompt`, `size`, `width`, `height`, `orientation`, `aspect`, `asset`, `name`, `title`); `size` presets become `width`/`height`. A `result` with `file_url` or `file_b64` makes the daemon fetch or decode the file and put it on the asset. A non-JSON response body is taken as the file itself.
 
-When a publish goes through a channel, the publish tool receives `title`, `text` (Markdown), `html`, `summary`, `tags`, `asset` and the channel's destination fields. Its `result.text` or a `url` in the answer becomes the publication's link.
+When a publish goes through a channel, the publish tool receives `title`, `text` (Markdown), `html`, `summary`, `tags`, `asset` (`type`, `id`; the id is a slug of the title), `date` (YYYY-MM-DD) and `datetime` (RFC 3339) of the publish, `image` (the asset's first image as named in `{{files}}`, when it has one) and the channel's destination fields. Its `result.text` or a `url` in the answer becomes the publication's link.
 
 ### Uploading files
 
@@ -280,6 +281,28 @@ sources:
 ```
 
 Numbers may be numbers or numeric strings; days `YYYYMMDD` or `YYYY-MM-DD`. Use KIQR's metric names so the plan and the Performance page understand them: `sessions`, `users`, `pageviews`, `organic_sessions`, `key_events`, `conversion_rate`, `clicks`, `impressions`, `ctr`, `average_position`. The marketplace's Google Analytics, Search Console and Plausible manifests are worked examples.
+
+### Learning
+
+A connection whose accounts hold what the product is (a repository's README and docs) declares `learn:`. With the account's Source switch on, KIQR reads those documents through the ability's own tools, extracts each into facts like a page of the site, and writes the profile and the brief again from everything; each fact cites the document's link. It reads them when the switch goes on (or once the account is signed in), with every crawl, on "Learn now" (`POST …/connections/{id}/learn`), and every week.
+
+```yaml
+learn:
+  label: Learn the product from its README, docs and releases   # what the switch says
+  documents:
+    - { tool: gh_readme, title: README, url: "https://github.com/${GITHUB_REPO}#readme" }
+    - tool: gh_tree                       # one call, then one per entry of its answer
+      args: { path: docs }
+      each: { list: "", where: { type: file }, only: [.md, .mdx], value: /path, tool: gh_file, arg: path, max: 20 }
+      title: "{{value}}"
+      url: "https://github.com/${GITHUB_REPO}/blob/HEAD/{{value}}"
+```
+
+- `tool` is one of the ability's tools that only reads; `args` are its arguments. A document that is not there (a 404) is skipped.
+- `each` calls `tool` once per entry of the first answer (`list` points at the array; empty: the answer is one), keeping entries whose fields equal `where` and whose `value` ends in one of `only`, at most `max` (20, up to 50), with the value as the argument `arg`.
+- `title` and `url` may name the account's keys (`${GITHUB_REPO}`), never a secret, and under `each` `{{value}}`. The text is what the tool said: a `result.text`, a text file (a raw-text answer such as GitHub's `application/vnd.github.raw` is text), else the JSON.
+
+The GitHub manifest in the marketplace is the worked example.
 
 ### Transports
 

@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 // One configuration field: a select when it has a fixed set of values (a
 // key's `options`, a destination's `enum`), free text otherwise. Every form
 // that sets up an ability or a channel goes through it, so a choice is never
@@ -16,9 +18,36 @@ type Props = {
   optional?: boolean;
   onEnter?: () => void;
   ariaLabel?: string;
+  /** A long list read from a service (every repository): typed to search, and any value may be typed. */
+  search?: boolean;
 };
 
-export function FieldInput({ value, onChange, options, labels, placeholder, secret, mono, optional, onEnter, ariaLabel }: Props) {
+export function FieldInput({ value, onChange, options, labels, placeholder, secret, mono, optional, onEnter, ariaLabel, search }: Props) {
+  const listId = useId();
+  if (search && options && options.length > 0)
+    return (
+      <>
+        <input
+          className={`input ${mono ? "mono" : ""}`}
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={`Search ${options.length}, or type it`}
+          list={listId}
+          value={value}
+          aria-label={ariaLabel}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && onEnter?.()}
+        />
+        <datalist id={listId}>
+          {options.map((o) => (
+            <option key={o} value={o}>
+              {labels?.[o] && labels[o] !== o ? labels[o] : undefined}
+            </option>
+          ))}
+        </datalist>
+      </>
+    );
   if (options && options.length > 0)
     return (
       <select className={`input ${mono ? "mono" : ""}`} value={value} aria-label={ariaLabel} onChange={(e) => onChange(e.target.value)}>
@@ -27,7 +56,7 @@ export function FieldInput({ value, onChange, options, labels, placeholder, secr
         </option>
         {options.map((o) => (
           <option key={o} value={o}>
-            {labels?.[o] ? `${labels[o]} (${o})` : o}
+            {labels?.[o] && labels[o] !== o ? `${labels[o]} (${o})` : o}
           </option>
         ))}
       </select>

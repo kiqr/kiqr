@@ -4,6 +4,11 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+- An account can be a source as well as a channel: switch on "Source" and Seemo learns the business from it into the profile and the brief, beside the website. A GitHub repository is the first: its About line, README, docs, changelog and releases, read again with every crawl, on "Learn now" and every week. Abilities declare what to read with `learn:`.
+- Abilities that publish to files a site builds from (a static site through a pull request) get the publish's `date`, `datetime` and the asset's first `image`, and `{{value|json}}` writes a value safely into frontmatter.
+- A list read from the service (an account's repositories, properties) reads every page, not the first 100, and a long one is a search field.
+- A channel's publish tool can require an option Seemo prepares for each publish (the files a site is built from): a publish without it is refused with what is missing, before the card.
+
 ## v0.3.5 — 2026-11-01
 
 - A factory reset on a machine KIQR is reached at over the network can keep the network settings ("Keep the network settings", checked when it listens beyond this machine), so the web UI comes back at the same address.

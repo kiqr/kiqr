@@ -489,7 +489,7 @@ function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Abi
           <p className="muted sm">KIQR's own key, on this machine; every project uses it.</p>
         </>
       ) : (
-        <AccountList slug={slug} ability={{ id: a.id, name: a.name, auth: a.auth, connect: a.connect }} kinds={a.kinds ?? []} onChange={onChange} />
+        <AccountList slug={slug} ability={{ id: a.id, name: a.name, auth: a.auth, connect: a.connect, learn: a.learn }} kinds={a.kinds ?? []} onChange={onChange} />
       )}
       {rivals.map((c) => (
         <div key={c.id} className="ab-prefer">

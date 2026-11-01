@@ -872,10 +872,18 @@ pub(crate) async fn key_choices(app: &App, slug: &str, conn: &Connection, name: 
     let stored = kiqr_core::connections::env_for(app.store.home(), slug, Some(conn), &m);
     let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, &m, Some(conn)).await?);
     let env = move |k: &str| minted.get(k).cloned().or_else(|| stored(k));
-    let out = http_exec(&m, &ch.request, &json!({}), &ResultMap::default(), &env, &Files::default()).await?;
     let mut seen = std::collections::BTreeSet::new();
-    Ok(extensions::pointer_all(&out.json, &ch.list)
-        .into_iter()
+    let mut found = Vec::new();
+    for page in 1..=ch.pages() {
+        let out = http_exec(&m, &ch.request, &json!({ "page": page }), &ResultMap::default(), &env, &Files::default()).await?;
+        let items: Vec<Value> = extensions::pointer_all(&out.json, &ch.list).into_iter().cloned().collect();
+        if items.is_empty() {
+            break;
+        }
+        found.extend(items);
+    }
+    Ok(found
+        .iter()
         .filter_map(|item| {
             let raw = extensions::pointer(item, &ch.value)?;
             let raw = raw.as_str().map(str::to_string).unwrap_or_else(|| raw.to_string());
@@ -960,7 +968,7 @@ fn action(m: &Manifest, tool: Option<&str>, c: &Connection, args: &Value, env: &
 /// The account's keys a target may name (`${GITHUB_REPO}`): never a secret.
 /// Targets are logged and shown, so a token, a password or anything a
 /// sign-in keeps stays out even when a manifest names it.
-fn target_env(app: &App, slug: &str, m: &Manifest, c: &Connection) -> impl Fn(&str) -> Option<String> + Clone {
+pub(crate) fn target_env(app: &App, slug: &str, m: &Manifest, c: &Connection) -> impl Fn(&str) -> Option<String> + Clone {
     let env = kiqr_core::connections::env_for(app.store.home(), slug, Some(c), m);
     let written = kiqr_core::connect::written_tokens(&m.connect);
     move |k: &str| {
@@ -1200,7 +1208,9 @@ async fn send(m: &Manifest, req: &HttpRequest, args: &Value, env: &(impl Fn(&str
 async fn http_exec(m: &Manifest, req: &HttpRequest, args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone), files: &Files) -> Result<ExecOut> {
     let a = send(m, req, args, env, files).await?;
     // A file straight back.
-    if !a.ctype.starts_with("application/json") && !a.ctype.starts_with("text/") && !a.bytes.is_empty() && map.file_url.is_none() && map.file_b64.is_none() {
+    // A vendor's raw text (GitHub's `application/vnd.github.raw`) is text, not a file.
+    let raw_text = a.ctype.starts_with("application/vnd.") && a.ctype.contains("raw") && std::str::from_utf8(&a.bytes).is_ok();
+    if !raw_text && !a.ctype.starts_with("application/json") && !a.ctype.starts_with("text/") && !a.bytes.is_empty() && map.file_url.is_none() && map.file_b64.is_none() {
         return Ok(ExecOut { json: json!({ "bytes": a.bytes.len(), "mime": a.ctype }), text: None, file: Some((a.bytes.clone(), map.mime.clone().unwrap_or(a.ctype.clone()))) });
     }
     read_result(m, &a.client, a.json(), map).await

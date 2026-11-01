@@ -65,7 +65,7 @@ pub(crate) async fn publisher(app: &App, slug: &str, c: &Channel) -> Result<(Man
 }
 
 /// What the publisher sets itself on every publish; never an option.
-const PUBLISH_ARGS: &[&str] = &["title", "subject", "text", "html", "summary", "tags", "asset", "note", "files"];
+const PUBLISH_ARGS: &[&str] = &["title", "subject", "text", "html", "summary", "tags", "asset", "note", "files", "date", "datetime", "image"];
 
 /// The choices a kind's publish tool takes per publish: the properties of its
 /// input beyond what the publisher fills in and the channel's destination.
@@ -89,6 +89,14 @@ fn check_options(m: &Manifest, k: &ChannelKind, given: &serde_json::Map<String, 
         }
         out.insert(n.clone(), v.clone());
     }
+    // An option the tool requires is prepared for each publish (the files a site is built from, which Seemo writes).
+    let input = m.tools.iter().find(|t| t.name == k.publish).map(|t| &t.input);
+    for n in input.and_then(|i| i["required"].as_array()).into_iter().flatten().filter_map(Value::as_str) {
+        if offered.contains_key(n) && out.get(n).is_none_or(|v| v.is_null() || v == "" || v.as_array().is_some_and(Vec::is_empty)) {
+            let what = offered[n]["description"].as_str().map(|d| format!(" ({d})")).unwrap_or_default();
+            return Err(bad(format!("{} needs '{n}' for each publish{what}; ask Seemo to prepare it", k.label)));
+        }
+    }
     Ok(out)
 }
 
@@ -109,6 +117,7 @@ fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "accounts": accounts,
         "options": publish_options(m, k),
+        "learn": crate::accounts::learn_view(m),
     })
 }
 
@@ -152,6 +161,8 @@ pub struct NewChannel {
     pub same_as: Option<String>,
     /// The new channel's own keys, by name (from the user, never from Seemo).
     pub secrets: BTreeMap<String, String>,
+    /// A source too: the project learns from it.
+    pub learns: bool,
 }
 
 /// Check a channel proposal against the kinds available; returns what will be saved.
@@ -209,6 +220,8 @@ pub async fn channel_preview(app: &App, slug: &str, b: &NewChannel) -> Result<Va
         "same_as_label": same.as_ref().map(|c| c.label.clone()),
         "ready": ready,
         "destination": destination,
+        // Learning only where the ability can teach the project.
+        "learns": b.learns && m.learn.is_some(),
     }))
 }
 
@@ -221,6 +234,7 @@ pub async fn save_channel(app: &App, slug: &str, preview: &Value, by: &str, secr
         destination: preview["destination"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default(),
         secrets,
         same_as: preview["same_as"].as_str().map(str::to_string),
+        learns: preview["learns"].as_bool().unwrap_or(false),
     };
     let c = crate::accounts::create(app, slug, new, by).await?;
     let mut v = channel_view(app, slug, &c).await;
@@ -387,6 +401,10 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
         "tags": a.tags,
         "asset": { "type": a.kind, "id": a.id },
         "note": preview["note"],
+        // For files a site builds from (frontmatter, a dated path): the day of this publish, and the asset's first image as named in `{{files}}`.
+        "date": Utc::now().format("%Y-%m-%d").to_string(),
+        "datetime": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "image": a.files.iter().find(|f| f.role != "body" && mime_guess::from_path(&f.path).first_or_octet_stream().type_() == "image").map(|f| f.path.clone()),
     });
     for (dk, dv) in &c.destination {
         args[dk] = dv.clone();

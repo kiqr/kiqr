@@ -306,6 +306,13 @@ a.mk-author:hover { color: var(--accent); }
 .acc-name .input { max-width: 240px; }
 .acc-def { color: var(--accent); }
 .acc-used { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.acc-roles { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+.acc-role { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.acc-role b { font-size: 13px; font-weight: 600; }
+.acc-role b svg { color: var(--accent-2); vertical-align: -1px; }
+.acc-make { padding-left: 50px; display: flex; flex-direction: column; gap: 8px; }
+.acc-learned { margin: 0 0 0 50px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.acc-learned svg { vertical-align: -1px; }
 .acc-used svg { color: var(--accent-2); vertical-align: -2px; margin-right: 3px; }
 .channel .acc-used { margin-top: 6px; }
 .acc-used .dim { color: var(--dim, var(--muted)); }

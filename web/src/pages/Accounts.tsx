@@ -1,11 +1,13 @@
 // Accounts: a project's accounts of a service, each with its own keys (two
 // WordPress sites, two analytics properties), used by every ability of that
-// service. For an ability that publishes, every account is a channel. Used by
-// the ability window and the Channels page; installing an ability adds none,
-// the project adds them here.
+// service. For an ability that publishes, an account is a channel; for one
+// that can teach the project (a GitHub repository), a source; one that can do
+// both has a switch for each. Used by the ability window and the Channels
+// page; installing an ability adds none, the project adds them here.
 import { useEffect, useState } from "react";
-import { Check, ExternalLink, Loader2, Pencil, Plus, Star, Trash2, Users, X } from "lucide-react";
-import { api, useEvents, type Account, type AccountActivity, type ConnectInfo, type KindInfo } from "../api";
+import { BookOpen, Check, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Send, Star, Trash2, Users, X } from "lucide-react";
+import { api, useEvents, type Account, type AccountActivity, type ConnectInfo, type KindInfo, type LearnInfo } from "../api";
+import { Switch } from "./Switch";
 import { ago } from "./Project";
 import { ConnectButton } from "./ConnectButton";
 import { Hint, SecretField } from "./SecretField";
@@ -13,7 +15,7 @@ import { enumOf, FieldInput } from "./FieldInput";
 import "../settings.css";
 
 /** What an add form needs to know about the ability. */
-export type AbilityInfo = { id: string; name: string; auth: { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string }[]; connect?: ConnectInfo | null };
+export type AbilityInfo = { id: string; name: string; auth: { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string }[]; connect?: ConnectInfo | null; learn?: LearnInfo | null };
 
 export const ACCOUNT_EVENTS = ["connection_saved", "connection_deleted", "secret_set", "connect_finished"];
 
@@ -120,8 +122,119 @@ export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Acco
   );
 }
 
-/** One account in a list: its name, whether it works, the default, its keys, remove. */
-export function AccountCard({ slug, a, several, onChange }: { slug: string; a: Account; several: boolean; onChange: () => void }) {
+/** One switch with what it means: "Channel · publish to it". */
+function RoleSwitch({ icon, name, says, on, disabled, onChange }: { icon: React.ReactNode; name: string; says: string; on: boolean; disabled?: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <label className="acc-role">
+      <Switch on={on} disabled={disabled} onChange={onChange} />
+      <span>
+        <b>
+          {icon} {name}
+        </b>
+        <span className="muted sm"> {says}</span>
+      </span>
+    </label>
+  );
+}
+
+/**
+ * What an account is for, when it can be more than one thing: a channel
+ * (publish to it) and a source (learn from it into the profile). Turning the
+ * channel on asks for its destination first; the source can be read again now.
+ */
+function AccountRoles({ slug, a, kinds, onChange }: { slug: string; a: Account; kinds: KindInfo[]; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [making, setMaking] = useState<KindInfo | null>(null);
+  const [dest, setDest] = useState<Record<string, string>>({});
+  const [learning, setLearning] = useState(false);
+  useEvents(slug, (e) => e.type === "job_finished" && (e as { job?: string }).job === "learn" && (setLearning(false), onChange()), { demo: false });
+  const canChannel = kinds.length > 0;
+  // Only abilities that can teach have something to choose; a channel-only one stays as it was.
+  if (!a.learn) return null;
+  const run = async (f: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await f();
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const fields: Field[] = Object.entries(making?.destination ?? {}).map(([k, spec]) => {
+    const s = spec as { label?: string; help?: string; placeholder?: string; optional?: boolean };
+    return { key: k, label: s.label ?? k, help: s.help, placeholder: s.placeholder, optional: s.optional, options: enumOf(spec) };
+  });
+  const destOk = fields.every((f) => f.optional || (dest[f.key] ?? "").trim());
+  return (
+    <div className="acc-roles">
+      {canChannel && (
+        <RoleSwitch
+          icon={<Send size={12} />}
+          name="Channel"
+          says={a.channel ? `publishes to it${a.destination_text ? ` (${a.destination_text})` : ""}` : "publish to it"}
+          on={a.channel || !!making}
+          disabled={busy}
+          onChange={(on) => (on ? (setMaking(kinds[0]), setDest({})) : making ? setMaking(null) : void run(() => api.updateAccount(slug, a.id, { kind: "" })))}
+        />
+      )}
+      {making && !a.channel && (
+        <div className="acc-make">
+          {kinds.length > 1 && (
+            <div className="scope">
+              {kinds.map((k) => (
+                <button key={k.kind} className={`chip ${making.kind === k.kind ? "acc" : ""}`} onClick={() => (setMaking(k), setDest({}))}>
+                  {k.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <Fields fields={fields} values={dest} onChange={(k, v) => setDest({ ...dest, [k]: v })} />
+          <div className="acts">
+            <button className="btn p sm" disabled={busy || !destOk} onClick={() => void run(() => api.updateAccount(slug, a.id, { kind: making.kind, destination: dest })).then(() => setMaking(null))}>
+              <Check size={13} /> Make it a channel
+            </button>
+          </div>
+        </div>
+      )}
+      <RoleSwitch
+        icon={<BookOpen size={12} />}
+        name="Source"
+        says={a.learn?.label ?? "learn from it into the profile"}
+        on={!!a.source}
+        disabled={busy}
+        onChange={(on) => void run(() => api.updateAccount(slug, a.id, { learns: on })).then(() => on && a.ready && setLearning(true))}
+      />
+      {a.source && (
+        <p className="muted sm acc-learned">
+          {learning ? (
+            <>
+              <Loader2 size={12} className="spin" /> Learning from it…
+            </>
+          ) : a.last_learned ? (
+            `Learned from ${a.learned ?? 0} document${a.learned === 1 ? "" : "s"} ${ago(a.last_learned)}; read again every week.`
+          ) : a.ready ? (
+            "Not read yet."
+          ) : (
+            "Read once it is connected."
+          )}
+          {a.ready && !learning && (
+            <button className="lnk-btn" disabled={busy} onClick={() => void run(() => api.learnAccount(slug, a.id)).then(() => setLearning(true))}>
+              <RefreshCw size={11} /> Learn now
+            </button>
+          )}
+        </p>
+      )}
+      {error && <p className="err sm">{error}</p>}
+    </div>
+  );
+}
+
+/** One account in a list: its name, whether it works, the default, its keys, what it is for, remove. */
+export function AccountCard({ slug, a, several, kinds = [], onChange }: { slug: string; a: Account; several: boolean; kinds?: KindInfo[]; onChange: () => void }) {
   const [open, setOpen] = useState(!a.ready);
   const [log, setLog] = useState(false);
   const [naming, setNaming] = useState(false);
@@ -163,6 +276,8 @@ export function AccountCard({ slug, a, several, onChange }: { slug: string; a: A
         <span className={`chip sm ${a.ready ? "ok" : "warn"}`}>
           <b /> {a.ready ? "connected" : "not connected"}
         </span>
+        {a.learn && a.channel && <span className="chip sm">channel</span>}
+        {a.source && <span className="chip sm" title={a.learn?.label}>source</span>}
         {several &&
           (a.default ? (
             <span className="chip sm acc-def" title="Seemo uses this one when it does not name another">
@@ -196,6 +311,7 @@ export function AccountCard({ slug, a, several, onChange }: { slug: string; a: A
         )}
       </div>
       <UsedBy a={a} />
+      <AccountRoles slug={slug} a={a} kinds={kinds} onChange={onChange} />
       {open && <AccountKeys slug={slug} a={a} onChange={onChange} />}
       <span className="acc-links">
         {!open && (
@@ -258,7 +374,11 @@ function Fields({ fields, values, onChange }: { fields: Field[]; values: Record<
  * the keys by hand, and everything optional (the name too) wait behind links.
  */
 export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel }: { slug: string; ability: AbilityInfo; kinds?: KindInfo[]; shareable?: { id: string; label: string }[]; onDone: () => void; onCancel: () => void }) {
-  const [kind, setKind] = useState<KindInfo | undefined>(kinds?.[0]);
+  const [picked, setKind] = useState<KindInfo | undefined>(kinds?.[0]);
+  // An ability that publishes and can teach: a channel, a source, or both (both to start).
+  const [asChannel, setAsChannel] = useState(true);
+  const [learns, setLearns] = useState(!!ability.learn);
+  const kind = asChannel ? picked : undefined;
   const [label, setLabel] = useState("");
   const [dest, setDest] = useState<Record<string, string>>({});
   const [keys, setKeys] = useState<Record<string, string>>({});
@@ -299,8 +419,8 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
     try {
       const secrets = mode === "keys" ? Object.fromEntries(Object.entries(keys).filter(([, v]) => v.trim())) : undefined;
       const same_as = mode === "share" ? share : undefined;
-      if (kind) await api.createChannel(slug, { label: name, kind: kind.kind, connection: ability.id, destination: dest, secrets, same_as });
-      else await api.createAccount(slug, { ability: ability.id, label: name, secrets, same_as });
+      if (kind) await api.createChannel(slug, { label: name, kind: kind.kind, connection: ability.id, destination: dest, secrets, same_as, learns: !!ability.learn && learns });
+      else await api.createAccount(slug, { ability: ability.id, label: name, secrets, same_as, learns: !!ability.learn && learns });
       onDone();
     } catch (e) {
       setError((e as Error).message);
@@ -343,7 +463,13 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
       <p className="cap">
         New {noun} · {kind?.label ?? ability.name}
       </p>
-      {kinds && kinds.length > 1 && (
+      {ability.learn && (
+        <div className="acc-roles">
+          {kinds && kinds.length > 0 && <RoleSwitch icon={<Send size={12} />} name="Channel" says="publish to it" on={asChannel} onChange={(on) => (setAsChannel(on), setDest({}))} />}
+          <RoleSwitch icon={<BookOpen size={12} />} name="Source" says={ability.learn.label} on={learns} onChange={setLearns} />
+        </div>
+      )}
+      {kind && kinds && kinds.length > 1 && (
         <div className="scope">
           {kinds.map((k) => (
             <button key={k.kind} className={`chip ${kind?.kind === k.kind ? "acc" : ""}`} onClick={() => (setKind(k), setDest({}))}>
@@ -373,7 +499,7 @@ export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel 
       {error && <p className="err sm">{error}</p>}
       <div className="acts">
         {mode === "connect" && ability.connect ? (
-          <ConnectButton slug={slug} ability={ability.id} connect={ability.connect} auth={ability.auth.map((k) => ({ ...k, set: null }))} values={keys} disabled={!ok} fresh={{ label: name, kind: kind?.kind, destination: dest }} onStarted={(id, p) => (setPaste(p), void reloadCreated(id))} onDone={onDone} />
+          <ConnectButton slug={slug} ability={ability.id} connect={ability.connect} auth={ability.auth.map((k) => ({ ...k, set: null }))} values={keys} disabled={!ok} fresh={{ label: name, kind: kind?.kind, destination: dest, learns: !!ability.learn && learns }} onStarted={(id, p) => (setPaste(p), void reloadCreated(id))} onDone={onDone} />
         ) : (
           <button className="btn p sm" disabled={!ok || saving} onClick={() => void save()}>
             {saving ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Add the {noun}
@@ -424,14 +550,17 @@ export function AccountList({ slug, ability, kinds, onChange }: { slug: string; 
   useEvents(slug, (e) => ACCOUNT_EVENTS.includes(e.type) && void load(), { demo: false });
   const changed = () => (void load(), onChange());
   const publishes = kinds.length > 0;
-  const noun = publishes ? "channel" : "account";
+  // One that can also be a source is an account first; the switches say what for.
+  const noun = publishes && !ability.learn ? "channel" : "account";
   const shareable = (list ?? []).filter((a) => a.ready).map((a) => ({ id: a.id, label: a.label }));
   // Other abilities of the same service use these accounts too: one sign-in for all of them.
   const others = [...new Map((list ?? []).flatMap((a) => a.used_by ?? []).filter((u) => u.id !== ability.id).map((u) => [u.id, u.name])).values()];
   return (
     <div className="ab-con">
       <p className="muted sm">
-        {publishes
+        {ability.learn
+          ? `Each account has its own keys and belongs to this project: ${publishes ? "a channel to publish to, a source Seemo learns the business from, or both" : "a source Seemo learns the business from"}.`
+          : publishes
           ? `Each channel has its own account: add one per ${kinds.map((k) => k.label.toLowerCase()).join(" or ")}. They belong to this project.`
           : "Each account has its own keys and belongs to this project. With more than one, Seemo uses the default unless it names another."}
       </p>
@@ -441,7 +570,7 @@ export function AccountList({ slug, ability, kinds, onChange }: { slug: string; 
         </p>
       )}
       {list === null && <Loader2 size={14} className="spin" />}
-      {list?.map((a) => <AccountCard key={a.id} slug={slug} a={a} several={list.length > 1} onChange={changed} />)}
+      {list?.map((a) => <AccountCard key={a.id} slug={slug} a={a} several={list.length > 1} kinds={kinds} onChange={changed} />)}
       {list && list.length === 0 && !adding && <p className="muted sm">No {noun} yet.</p>}
       {adding ? (
         <AccountForm slug={slug} ability={ability} kinds={publishes ? kinds : undefined} shareable={shareable} onDone={() => (setAdding(false), changed())} onCancel={() => setAdding(false)} />

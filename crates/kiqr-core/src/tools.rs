@@ -644,6 +644,7 @@ pub fn catalogue() -> Vec<Tool> {
                     "connection": { "type": "string", "description": "Ability id, when several offer the kind" },
                     "destination": { "type": "object", "description": "The kind's destination fields, e.g. {to: 'jane@example.com'}", "additionalProperties": true },
                     "same_as": { "type": "string", "description": "A channel or account id from list_channels' `accounts` whose account this one shares" },
+                    "learns": { "type": "boolean", "description": "Also a source: the project learns from it into the business profile (a GitHub repository's README and docs). Only for kinds whose ability can teach; propose it when the account holds what the product is" },
                 }),
                 &["kind", "destination"],
             ),
