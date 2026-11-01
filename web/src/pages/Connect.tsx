@@ -16,7 +16,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { AlertCircle, ArrowLeft, Check, Download, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal } from "lucide-react";
 import { api, useAsync, useEvents, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability, type Account, type KindInfo, type PlaceKind, type ProgramStatus } from "../api";
 import { ConnectButton } from "./ConnectButton";
-import { AccountKeys, ACCOUNT_EVENTS, accountIdentity, accountService, byGroup, chosenLabel, Fields, LoginEditor, ownLabel, permissionSummary, PermissionMatrix, placeFields, PlaceFieldsForm, placeKinds, placeNoun, placeReady, placesOf, sentence, serviceOf, sessionChip, signsInByHand, useSession, type Field } from "./Accounts";
+import { AccountKeys, ACCOUNT_EVENTS, accountIdentity, accountService, byGroup, chosenLabel, Fields, LoginEditor, ownLabel, permissionSummary, PermissionMatrix, PlaceFieldsForm, placeKinds, placeNoun, placeReady, placesOf, sentence, serviceOf, sessionChip, signsInByHand, useSession, type Field } from "./Accounts";
 import { Hands, startUrlOf } from "./Hands";
 import { LogPane, SystemProgram, useMachine, useProgramLog } from "./Programs";
 import { isService, serviceIcon } from "./abilityBits";
@@ -269,8 +269,8 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
   const Icon = serviceIcon(service.icon, service.group);
   // The kind it publishes as: this ability's, else another of the service's (the one signing in may only read).
   const kind: KindInfo | undefined = ab?.kinds?.[0] ?? service.installed.flatMap((a) => a.kinds ?? [])[0];
-  // The first place, only when nothing can go out without one, and only what is typed: a field picked from a list read through the account waits for the places step.
-  const place = placeFields(Object.fromEntries(Object.entries(kind?.place ?? {}).filter(([, f]) => !f.optional && !f.choices)));
+  // Connecting is signing in; places (a subreddit, a property) come in the places step after it, which can wait.
+  const place: Field[] = [];
   const [mode, setMode] = useState<"connect" | "keys">(ab?.connect ? "connect" : "keys");
   const [values, setValues] = useState<Record<string, string>>({});
   const [label, setLabel] = useState("");

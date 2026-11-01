@@ -99,7 +99,10 @@ export function Hands({ slug, account, name, startUrl, onClose }: { slug: string
     const s = live.current;
     if (!s || over.current) return;
     queue.current = queue.current.then(() =>
-      api.handsInput(slug, s.hands, s.token, input).catch((e) => {
+      api.handsInput(slug, s.hands, s.token, input).then((r) => {
+        // The browser refused it (a click on its own bar, a key it does not know): said once, gone on the next input.
+        setError(r.ok ? null : r.message || "the browser did not take that");
+      }).catch((e) => {
         const m = (e as Error).message;
         if (/over|not your session/i.test(m)) {
           over.current = true;

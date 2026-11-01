@@ -732,7 +732,7 @@ export const api = {
   accountSession: (slug: string, id: string) => req<{ has_session: boolean; session: SessionStatus; login: LoginRef | null; live_view: boolean }>(`/api/projects/${slug}/connections/${id}/session`),
   /** Take the controls of the account's program (plain same-origin requests: the daemon checks where they come from). */
   startHands: (slug: string, id: string, url?: string) => req<{ hands: string; token: string; can: HandsCan }>(`/api/projects/${slug}/connections/${id}/hands`, { method: "POST", body: JSON.stringify(url ? { url } : {}) }),
-  handsInput: (slug: string, hands: string, token: string, input: HandsInput) => req<{ ok: boolean }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/input`, { method: "POST", body: JSON.stringify({ token, ...input }) }),
+  handsInput: (slug: string, hands: string, token: string, input: HandsInput) => req<{ ok: boolean; message?: string | null }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/input`, { method: "POST", body: JSON.stringify({ token, ...input }) }),
   endHands: (slug: string, hands: string, token: string, signedIn: boolean) => req<{ ended: boolean }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/end`, { method: "POST", body: JSON.stringify({ token, signed_in: signedIn }), keepalive: true }),
   /** The account its ability uses when nothing names one. */
   defaultAccount: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}/default`, { method: "POST", body: "{}" }),

@@ -602,6 +602,9 @@ impl Session {
 #[serde(default)]
 pub struct LiveView {
     pub frame: Step,
+    /// Optional: answers the window's geometry as JSON (`ow`, `oh`, `iw`, `ih`: the window's and the
+    /// page's width and height in CSS pixels), so a click on a frame of the whole window lands on the page.
+    pub metrics: Step,
     pub click: Step,
     pub key: Step,
     #[serde(rename = "type")]

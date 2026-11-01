@@ -68,7 +68,10 @@ session:
   every: 12h
 live_view:
   frame: { name: frame, call: browser_watch }
+  # The frame is the whole window; the page says where it sits in it (its size, and its offset from the window's corner), which puts a click on the page.
+  metrics: { name: metrics, call: browser_evaluate, args: { expression: "({ ow: window.outerWidth, oh: window.outerHeight, iw: window.innerWidth, ih: window.innerHeight, ox: (window.mozInnerScreenX || 0) - window.screenX, oy: (window.mozInnerScreenY || 0) - window.screenY })" } }
   click: { name: click, call: browser_click_at, args: { x: "{{px}}", y: "{{py}}" } }
   key: { name: key, call: browser_press_key, args: { key: "{{key}}" } }
-  type: { name: type, call: browser_evaluate, args: { expression: "document.execCommand('insertText', false, {{text|json}})" } }
+  # Typed text goes key by key: a real keystroke each, nothing set from a script.
+  type: { name: type, call: browser_press_key, args: { key: "{{char}}" } }
   navigate: { name: navigate, call: browser_navigate, args: { url: "{{url}}", wait_until: domcontentloaded } }

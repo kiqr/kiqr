@@ -223,16 +223,66 @@ async fn input_route(State(app): State<App>, Path((slug, hands)): Path<(String, 
     }
     h.touch();
     let view = h.manifest.live_view.clone().expect("live_view");
+    // Text goes key by key when the step takes `{{char}}` (a real keystroke each, which a page cannot tell from a person's).
+    if b.kind == "type" && view.type_.args.as_ref().is_some_and(|a| a.to_string().contains("{{char}}")) {
+        for ch in b.text.chars() {
+            let key = match ch {
+                '\n' => "Enter".to_string(),
+                '\t' => "Tab".to_string(),
+                c => c.to_string(),
+            };
+            let out = h.step(&app, &view.type_, json!({ "char": key })).await.map_err(|e| bad(format!("{e:#}")))?;
+            if out.is_error {
+                return Ok(Json(json!({ "ok": false, "message": out.text })));
+            }
+        }
+        return Ok(Json(json!({ "ok": true })));
+    }
+    let mut geometry = Value::Null;
     let (step, args) = match b.kind.as_str() {
-        "click" => (&view.click, json!({ "x": b.x, "y": b.y, "px": (b.x * b.width.max(1.0)).round() as i64, "py": (b.y * b.height.max(1.0)).round() as i64 })),
+        "click" => {
+            let (mut px, mut py) = ((b.x * b.width.max(1.0)).round() as i64, (b.y * b.height.max(1.0)).round() as i64);
+            // A frame of the whole window: the click is moved onto the page (below the tab strip and address bar), in CSS pixels.
+            if !view.metrics.call.trim().is_empty() {
+                let m = h.step(&app, &view.metrics, json!({})).await.map_err(|e| bad(format!("{e:#}")))?;
+                // The answer is JSON, or a `result` holding the JSON as text (an MCP tool's answer wrapped once).
+                let mut g: Value = m.structured.clone().unwrap_or_else(|| serde_json::from_str(m.text.trim()).unwrap_or(Value::Null));
+                for _ in 0..2 {
+                    match g.get("result").cloned() {
+                        Some(Value::String(t)) => g = serde_json::from_str(t.trim()).unwrap_or(Value::Null),
+                        Some(inner @ Value::Object(_)) => g = inner,
+                        _ => break,
+                    }
+                }
+                let num = |k: &str| g.get(k).and_then(Value::as_f64).filter(|v| *v > 0.0);
+                geometry = g.clone();
+                if let (Some(ow), Some(oh), Some(iw), Some(ih)) = (num("ow"), num("oh"), num("iw"), num("ih")) {
+                    // Where the page sits in the window: as the page says (`ox`, `oy`, from its position on the screen), else
+                    // below the window's bars and between its side borders (half the width difference each side).
+                    let off = |k: &str| g.get(k).and_then(Value::as_f64).filter(|v| *v >= 0.0);
+                    let (ox, oy) = (off("ox").unwrap_or((ow - iw) / 2.0), off("oy").unwrap_or(oh - ih));
+                    let (x, y) = (b.x * ow - ox, b.y * oh - oy);
+                    if y < 0.0 || x < 0.0 {
+                        return Ok(Json(json!({ "ok": false, "message": "that is the browser's own bar, not the page" })));
+                    }
+                    (px, py) = (x.round() as i64, y.round() as i64);
+                }
+            }
+            (&view.click, json!({ "x": b.x, "y": b.y, "px": px, "py": py }))
+        }
         "key" => (&view.key, json!({ "key": b.key })),
         "type" => (&view.type_, json!({ "text": b.text })),
         "navigate" => (&view.navigate, json!({ "url": b.url })),
         other => return Err(bad(format!("'{other}' is not something the live view does"))),
     };
     // What the person types is never logged; only that something happened.
+    let mut at = json!({ "px": args.get("px"), "py": args.get("py"), "frame": [b.width, b.height], "geometry": geometry });
     let out = h.step(&app, step, args).await.map_err(|e| bad(format!("{e:#}")))?;
-    Ok(Json(json!({ "ok": !out.is_error })))
+    if !out.text.trim().is_empty() {
+        at["answer"] = Value::String(kiqr_core::profile::truncate_chars(out.text.trim(), 200));
+    }
+    // Where a click went (page pixels, the frame's size, the window's geometry): what a person needs to see why it landed where it did.
+    Ok(Json(json!({ "ok": !out.is_error, "message": if out.is_error { Value::String(out.text) } else { Value::Null }, "at": if b.kind == "click" { at } else { Value::Null } })))
 }
 
 #[derive(Deserialize, Default)]
