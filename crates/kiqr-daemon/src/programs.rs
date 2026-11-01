@@ -50,6 +50,11 @@ fn platform() -> (&'static str, &'static str) {
     (os, arch)
 }
 
+/// Everything an ability's program needs is there.
+pub fn all_satisfied(m: &Manifest) -> bool {
+    m.requires.iter().all(satisfied)
+}
+
 /// The program is there at its version: `check` (default `<program> --version`,
 /// or `uv tool list` for a uv tool) prints something containing the version.
 pub fn satisfied(r: &Requirement) -> bool {

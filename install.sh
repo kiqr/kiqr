@@ -220,9 +220,9 @@ wait_running() {
 # ----------------------------------------------------- system programs
 
 # Seemo's browser (sites behind a login, X, Reddit) draws to a virtual display
-# on Linux. KIQR installs its own Xvfb when the browser is first set up, so this
-# is only an offer: the system's package, for machines where that is preferred.
-# Asked once, here, where sudo is at hand; -y says yes; no terminal skips it.
+# on Linux: Xvfb, from the system's own packages. Asked once, here, where sudo
+# is at hand; Enter or -y says yes; no terminal skips it and the app shows the
+# command later (or installs it through the desktop's password dialog).
 system_programs() {
   [ "$(uname -s)" = Linux ] || return 0
   have Xvfb && return 0
@@ -235,20 +235,20 @@ system_programs() {
   fi
   [ -n "$pkg" ] || return 0
   say ""
-  say "Seemo's browser (for sites behind a login, X and Reddit) needs one system program on Linux, Xvfb."
-  say "KIQR can install its own copy later without root; the system's package ($pkg) works too."
+  say "Seemo's browser (for sites behind a login, X and Reddit) needs one system program on Linux: Xvfb ($pkg)."
   if [ "${KIQR_YES:-}" = 1 ]; then
     answer=y
   elif [ -t 0 ]; then
-    printf 'Install %s now with sudo? [y/N] ' "$pkg"
-    read -r answer </dev/tty 2>/dev/null || answer=n
+    printf 'Install it now with sudo? [Y/n] ' 
+    read -r answer </dev/tty 2>/dev/null || answer=y
+    [ -n "$answer" ] || answer=y
   else
     say "Not asked (no terminal). Install it any time with:  $cmd"
     return 0
   fi
   case "$answer" in
-    y|Y|yes|YES) sh -c "$cmd" || say "That did not go through; KIQR installs its own Xvfb when the browser is set up." ;;
-    *) say "Skipped. KIQR installs its own Xvfb when the browser is set up, or run:  $cmd" ;;
+    y|Y|yes|YES) sh -c "$cmd" || say "That did not go through. KIQR shows the command again when the browser is set up:  $cmd" ;;
+    *) say "Skipped. KIQR shows it again when the browser is set up, or run:  $cmd" ;;
   esac
 }
 

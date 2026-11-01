@@ -64,7 +64,8 @@ pub fn ready_in(app: &App, slug: Option<&str>, m: &Manifest) -> bool {
 /// command of the ability it names with `program:` (installed and on).
 pub fn program_found(app: &App, slug: Option<&str>, m: &Manifest) -> bool {
     match program_of_sync(app, slug, m) {
-        Some(p) => on_path(&p.command),
+        // The command, and everything it needs (a virtual display): an account is not ready without them.
+        Some(p) => on_path(&p.command) && crate::programs::all_satisfied(&p),
         None => false,
     }
 }
