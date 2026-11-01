@@ -329,11 +329,31 @@ function usable(spec: string, h?: Health) {
   const [provider] = spec.split("/");
   const secret = (n: string) => !!h?.secrets?.find((s) => s.name === n)?.set;
   const tool = (n: string) => !!h?.tools?.find((t) => t.name === n)?.installed;
-  if (provider === "anthropic") return secret("ANTHROPIC_API_KEY") ? "ok" : "Needs ANTHROPIC_API_KEY in .env";
-  if (provider === "openai") return secret("OPENAI_API_KEY") ? "ok" : "Needs OPENAI_API_KEY in .env";
+  if (provider === "anthropic") return secret("ANTHROPIC_API_KEY") ? "ok" : `Needs ${keyLabel("ANTHROPIC_API_KEY")}`;
+  if (provider === "openai") return secret("OPENAI_API_KEY") ? "ok" : `Needs ${keyLabel("OPENAI_API_KEY")}`;
   if (provider === "claude-cli") return tool("claude") || secret("CLAUDE_CODE_OAUTH_TOKEN") ? "ok" : "Needs Claude Code installed";
   if (provider === "codex-cli") return tool("codex") ? "ok" : "Needs the Codex CLI installed";
   return "Use provider/model, like claude-cli/sonnet";
+}
+
+/** KIQR's own keys by what they are for, never by their names in .env. */
+const KEY_LABELS: Record<string, string> = {
+  ANTHROPIC_API_KEY: "an Anthropic API key",
+  OPENAI_API_KEY: "an OpenAI API key",
+  CLAUDE_CODE_OAUTH_TOKEN: "a Claude Code sign-in",
+  UNBLOCKINGAPI_KEY: "an UnblockingAPI key",
+  KIQR_CLOUD_TOKEN: "a kiqr.cloud sign-in",
+};
+/** "an OpenAI API key", or for a name not known here its words: "Some service key". */
+function keyLabel(env: string): string {
+  if (KEY_LABELS[env]) return KEY_LABELS[env];
+  const words = env.toLowerCase().split("_").filter(Boolean).map((w) => (["api", "url", "id"].includes(w) ? w.toUpperCase() : w)).join(" ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+/** The same, as a label: "Anthropic API key". */
+function keyName(env: string): string {
+  const l = keyLabel(env).replace(/^(an?|the) /, "");
+  return l.charAt(0).toUpperCase() + l.slice(1);
 }
 
 function Models({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (c: Config) => void }) {
@@ -355,7 +375,7 @@ function Models({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (
                 <p className="ds">{p.text}</p>
               </div>
               <div className="pick">
-                <SecretField name={p.env} label={p.env} help={p.help} set={!!h?.secrets?.find((x) => x.name === p.env)?.set} />
+                <SecretField name={p.env} label={keyName(p.env)} help={p.help} set={!!h?.secrets?.find((x) => x.name === p.env)?.set} />
               </div>
             </div>
           ))}
@@ -393,9 +413,8 @@ function Models({ h, draft, setDraft }: { h?: Health; draft: Config; setDraft: (
             ...tools.map((t): [string, React.ReactNode] => [t.name === "claude" ? "Claude Code" : "Codex CLI", <Status ok={t.installed} yes="installed" no="not found" />]),
             ...(h?.secrets ?? [])
               .filter((s) => ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"].includes(s.name))
-              .map((s): [string, React.ReactNode] => [s.name, <Status ok={s.set} yes="set" no="not set" />]),
+              .map((s): [string, React.ReactNode] => [keyName(s.name), <Status ok={s.set} yes="set" no="not set" />]),
           ]}
-          mono
         />
       </Card>
     </>

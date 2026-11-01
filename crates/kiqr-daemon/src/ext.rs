@@ -178,7 +178,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         }
         if let Some((_, m)) = reg.provider(slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(app, Some(slug), m)) {
             let cost = m.provides.get(a.id).and_then(|p| p.cost.as_deref());
-            out.push(with_connection_arg(a.spec(&m.name, cost), &Connection::of(&app.store, slug, m.service())));
+            out.push(with_connection_arg(a.spec(&m.name, cost), &Connection::of(&app.store, slug, m.service()), ""));
         }
     }
     for (_, m) in reg.connections(slug) {
@@ -210,7 +210,13 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
                 Err(e) => tracing::warn!(id = %m.id, error = %e, "could not list the MCP server's tools"),
             }
         }
+        let conns = Connection::of(&app.store, slug, m.service());
         for t in &m.tools {
+            // A role every account of the service switched off is not offered at all.
+            let role = if t.role.is_empty() { "read" } else { t.role.as_str() };
+            if !conns.is_empty() && conns.iter().all(|c| c.allow(role) == kiqr_core::connections::Allow::Off) {
+                continue;
+            }
             let mut name = t.name.clone();
             if out.iter().any(|s| s.name == name) {
                 name = format!("{}_{}", m.id.replace('-', "_"), t.name);
@@ -226,15 +232,17 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
                 cost: t.provide.cost.clone(),
             });
             let last = out.pop().expect("just pushed");
-            out.push(with_connection_arg(last, &Connection::of(&app.store, slug, m.service())));
+            out.push(with_connection_arg(last, &conns, role));
         }
     }
     out
 }
 
 /// With more than one account of an ability in the project, its tools take
-/// `connection`: which one, by name; the default when left out.
-fn with_connection_arg(mut spec: ToolSpec, conns: &[Connection]) -> ToolSpec {
+/// `connection`: which one, by name; the default when left out. Accounts
+/// that switched the tool's role off are not offered.
+fn with_connection_arg(mut spec: ToolSpec, conns: &[Connection], role: &str) -> ToolSpec {
+    let conns: Vec<&Connection> = conns.iter().filter(|c| role.is_empty() || c.allow(role) != kiqr_core::connections::Allow::Off).collect();
     if conns.len() < 2 {
         return spec;
     }
@@ -313,7 +321,7 @@ fn connection_view(app: &App, e: &Entry, m: &Manifest) -> Value {
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "provides": m.provides.iter().map(|(id, p)| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or(""), "cost": p.cost })).collect::<Vec<_>>(),
         "tools": m.tools.iter().map(|t| json!({ "name": t.name, "label": t.label, "cost": t.provide.cost })).collect::<Vec<_>>(),
-        "channels": m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "destination": c.destination, "does": c.roles() })).collect::<Vec<_>>(),
+        "channels": m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "place": c.place, "does": c.roles() })).collect::<Vec<_>>(),
         "service": m.service(),
         "hosts": m.hosts,
         "command": if m.transport == Transport::Mcp { Some(format!("{} {}", m.command, m.args.join(" ")).trim().to_string()) } else { None },
@@ -828,12 +836,25 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
     let conn = pick_connection(app, slug, m, conn)?;
     let mut args = args.clone();
     if let Some(o) = args.as_object_mut() {
-        // Through a channel of a kind this ability declares (any ability of its service, not only
-        // the one that publishes): the channel's destination fills what the call left out.
+        // Through an account of a kind this ability declares (any ability of its service, not only
+        // the one that publishes): the place named (`place`), else the default one, fills what the call left out.
         if let Some(c) = conn.as_ref().filter(|c| c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind)) {
-            for (k, v) in &c.destination {
-                o.entry(k.clone()).or_insert_with(|| v.clone());
+            let named = o.get("place").and_then(Value::as_str).map(str::to_string);
+            if let Some(p) = c.place(named.as_deref()).filter(|p| !p.is_list()) {
+                for (k, v) in &p.fields {
+                    o.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            } else if let Some(n) = named {
+                bail!("'{}' has no place '{n}'", c.label);
             }
+            o.remove("place");
+        }
+    }
+    // What the account allows: a role switched off is refused, whoever asks.
+    if let Some(c) = &conn {
+        let role = tool.and_then(|n| m.tools.iter().find(|t| t.name == n)).map(|t| if t.role.is_empty() { "read".to_string() } else { t.role.clone() }).unwrap_or_else(|| if c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind && k.publishes() && Some(k.publish.as_str()) == tool) { "publish".into() } else { "read".into() });
+        if c.allow(&role) == kiqr_core::connections::Allow::Off {
+            bail!("Seemo may not {} on {}; the user can allow it on the account", if role == "read" { "read".to_string() } else { role.clone() }, c.label);
         }
     }
     let _turn = match (&conn, m.exclusive) {
@@ -923,8 +944,8 @@ pub(crate) async fn action_preview(app: &App, slug: &str, payload: &Value) -> Re
         "account": conn.label,
         "args": args,
         "fields": shown,
-        // A channel the user let Seemo act through on its own: the card is the record.
-        "asks_first": !conn.is_channel() || conn.asks_first,
+        // An account the user let Seemo act through on its own, for this role: the card is the record.
+        "asks_first": conn.allow(&t.role) != kiqr_core::connections::Allow::Auto,
     }))
 }
 
@@ -994,6 +1015,13 @@ async fn check_action(app: &App, slug: &str, m: &Manifest, c: &Connection, a: &A
         }
     }
     Ok(())
+}
+
+/// One call through its transport with no checks or log of its own: for a
+/// send to a list, where the caller holds the account and logs the whole
+/// send as one action.
+pub(crate) async fn run_through(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&Connection>) -> Result<ExecOut> {
+    run(app, slug, m, provide, ability, tool, args, conn).await
 }
 
 /// One call through its transport, after the account's checks.

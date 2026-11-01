@@ -1,12 +1,15 @@
 // The marketplace: what Seemo could do, from the index kiqr.cloud hosts plus
-// what ships with KIQR, installed or not (an installed one says so and offers
-// its update). Installing is for the machine; the keys typed on
-// install are this project's. Advanced: a folder or git URL, broken folders.
+// what ships with KIQR and is not installed yet. Installing is for the
+// machine. An ability of a service (one that signs in to an account) is not
+// installed here: Connect opens the connect wizard, which installs it and
+// adds the account. Advanced: a folder or git URL, broken folders.
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, RefreshCw, Search, Terminal, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, Plug, RefreshCw, Search, Terminal, X } from "lucide-react";
 import { api, type Ability, type Scope } from "../api";
-import { AbilityIcon, Author, hasNewer, OneClick, oneClick } from "./abilityBits";
+import { AbilityIcon, Author, hasNewer, isService, OneClick, oneClick, serviceName } from "./abilityBits";
+import { connectPath, serviceOf } from "./Accounts";
 
 const SHELVES: { id: string; label: string }[] = [
   { id: "all", label: "All" },
@@ -21,7 +24,7 @@ const SHELVES: { id: string; label: string }[] = [
   { id: "tools", label: "Tools" },
 ];
 
-export function Marketplace({ items, index, indexFetched, loaded, onOpen, onChange }: { slug: string; items: Ability[]; index: string; indexFetched?: boolean; loaded: boolean; onOpen: (a: Ability, tab?: "connect") => void; onChange: () => void }) {
+export function Marketplace({ slug, items, index, indexFetched, loaded, onOpen, onChange }: { slug: string; items: Ability[]; index: string; indexFetched?: boolean; loaded: boolean; onOpen: (a: Ability, tab?: "connect") => void; onChange: () => void }) {
   const [q, setQ] = useState("");
   const [shelf, setShelf] = useState("all");
   const [author, setAuthor] = useState("all");
@@ -43,7 +46,7 @@ export function Marketplace({ items, index, indexFetched, loaded, onOpen, onChan
       <h2>
         Marketplace <span className="n">{items.length}</span>
       </h2>
-      <p className="cm-sec-ds">More abilities, by KIQR and by others. Installed once for this machine, then switched on and connected per project.</p>
+      <p className="cm-sec-ds">More abilities, by KIQR and by others. Installed once for this machine and switched on per project; one that works through an account is connected under Accounts.</p>
       <div className="mk-bar">
         <label className="mk-search">
           <Search size={15} />
@@ -83,14 +86,15 @@ export function Marketplace({ items, index, indexFetched, loaded, onOpen, onChan
       )}
       <div className="mk-grid">
         {shown.map((it, i) => (
-          <MarketCard key={it.id} a={it} i={i} onOpen={(tab) => onOpen(it, tab)} onChange={onChange} />
+          <MarketCard key={it.id} slug={slug} a={it} i={i} onOpen={(tab) => onOpen(it, tab)} onChange={onChange} />
         ))}
       </div>
     </section>
   );
 }
 
-function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen: (tab?: "connect") => void; onChange: () => void }) {
+function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability; i: number; onOpen: (tab?: "connect") => void; onChange: () => void }) {
+  const service = isService(a);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +118,7 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
       await api.installAbility(a.id);
       setOpen(false);
       onChange();
-      // Installed for the machine; this project adds its account (or channel) next.
+      // Installed for the machine; one with keys of its own sets them next.
       if (a.auth.length) onOpen("connect");
     } catch (e) {
       setError((e as Error).message);
@@ -158,14 +162,7 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
             Publishes to {c}
           </span>
         ))}
-        {a.auth.length > 0 && <span className="chip dimmed">{a.channels.length ? "your account" : "needs a key"}</span>}
-        {a.tools > 0 && <span className="chip">{a.tools} tools</span>}
-        {a.runs_program && (
-          <span className="chip warn" title={a.command ?? ""}>
-            <Terminal size={11} /> runs a program here
-          </span>
-        )}
-        {a.hosts.length > 0 && <span className="chip dimmed">calls {a.hosts.join(", ")}</span>}
+        {service ? <span className="chip dimmed">via your {serviceName(a)} account</span> : a.auth.length > 0 && <span className="chip dimmed">needs a key</span>}
       </p>
       {error && a.installed && (
         <p className="err" onClick={(e) => e.stopPropagation()}>
@@ -185,6 +182,10 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
               </button>
             )}
           </>
+        ) : service ? (
+          <Link className="mk-install-btn" to={connectPath(slug, { service: serviceOf(a).id })}>
+            <Plug size={14} /> Connect
+          </Link>
         ) : (
           <button className={`mk-install-btn ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)}>
             <Download size={14} /> {open ? "Cancel" : "Install"}
@@ -203,15 +204,12 @@ function MarketCard({ a, i, onOpen, onChange }: { a: Ability; i: number; onOpen:
   );
 }
 
-/** Install is for the machine: the code only. The project then adds its own accounts (its channels, for one that publishes). */
+/** Install is for the machine: the code only. One that works through an account is connected under Accounts afterwards. */
 export function InstallPanel({ a, busy, error, onCancel, onInstall }: { a: Ability; busy: boolean; error: string | null; onCancel: () => void; onInstall: () => void }) {
-  const publishes = a.channels.length > 0;
   return (
     <motion.div className="mk-install" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }} onClick={(e) => e.stopPropagation()}>
-      {publishes ? (
-        <p className="muted sm">Installed once for this machine. Then add a channel per {a.channels.join(" or ")} you publish to, each with its own account{a.connect ? ` (“${a.connect.label}”)` : ""}.</p>
-      ) : a.auth.length > 0 ? (
-        <p className="muted sm">Installed once for this machine. Then add this project's account{a.connect ? ` with “${a.connect.label}”` : ", with its keys"}; a project can have several.</p>
+      {isService(a) ? (
+        <p className="muted sm">Installed once for this machine. Then connect this project's {serviceName(a)} account under Accounts{a.connect ? ` with “${a.connect.label}”` : ""}.</p>
       ) : a.instructions.length > 0 || a.transport === "instructions" ? (
         <p className="muted sm">Instructions Seemo reads before this kind of work. Nothing to connect.</p>
       ) : null}

@@ -272,7 +272,7 @@ export function CalendarPage() {
                             <time>{new Date(it.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
                             <Send size={12} />
                             <span>{it.title}</span>
-                            <small>publish {it.schedule_text}</small>
+                            <small>{it.channel_label ? `to ${it.channel_label}${it.place_label ? ` → ${it.place_label}` : ""}` : `publish ${it.schedule_text}`}</small>
                           </Link>
                         ) : (
                           <Link className="item" key={i} to={`/p/${slug}/tasks#${it.task}`}>

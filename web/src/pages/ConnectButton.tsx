@@ -1,12 +1,12 @@
 // One button instead of typed keys, when an ability's manifest says how its
 // service signs in. It always signs in one account: an existing one again
-// (`account`), or a new one it adds first (`fresh`: its name, and a channel's
-// kind and destination). What is asked first (the site) is typed here; the
+// (`account`), or a new one it adds first (`fresh`: its name, its kind and
+// first place when it publishes, and the permissions chosen). What is asked first (the site) is typed here; the
 // rest comes back from the service, or is shown there for the user to paste
 // into the account when the service will not send it back to a plain-http KIQR.
 import { useState } from "react";
 import { ExternalLink, Loader2, LogIn } from "lucide-react";
-import { api, useEvents, type ConnectInfo } from "../api";
+import { api, useEvents, type Allow, type ConnectInfo } from "../api";
 import { FieldInput } from "./FieldInput";
 
 type Key = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean | string | null };
@@ -18,8 +18,8 @@ export function ConnectButton({ slug, ability, connect, auth, account, fresh, la
   auth: Key[];
   /** The account to sign in again. */
   account?: string;
-  /** For a new account: what to call it, and for a channel its kind and destination. */
-  fresh?: { label?: string; kind?: string; destination?: Record<string, string>; learns?: boolean };
+  /** For a new account: what to call it, its kind and first place when it publishes, what Seemo may do there. */
+  fresh?: { label?: string; kind?: string; place?: Record<string, string>; allow?: Record<string, Allow> };
   /** The button's words, when not the manifest's ("Connect again"). */
   label?: string;
   /** What it asks first, when the form around it already asked (then no fields here). */

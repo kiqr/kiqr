@@ -3,8 +3,9 @@
 // running). Used full-size on the Chats page and compact in the widget.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, Target, X, Zap } from "lucide-react";
-import { api, useAsync, useEvents, type Card, type Message, type Step, type Streaming, type Task } from "../api";
+import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, Target, Users, X, Zap } from "lucide-react";
+import { api, useAsync, useEvents, type Card, type Message, type Network, type Step, type Streaming, type Task } from "../api";
+import { useNetworks } from "../networks";
 import { Markdown } from "../markdown";
 import { ago } from "../pages/Project";
 import { AssetEmbed } from "../pages/AssetEmbed";
@@ -182,22 +183,41 @@ function Steps({ slug, steps, live }: { slug: string; steps: Step[]; live?: bool
 
 // ------------------------------------------------------------------ cards
 
+/** Where a publish goes, in words: "Post on LinkedIn as Company page", "Send to Newsletter (412) from hello@kiqr.dev", "Publish on blog.kiqr.dev". */
+export function publishWhere(p: Record<string, unknown>, networks: Network[]): string {
+  const account = String(p.account_label ?? p.channel_label ?? "");
+  const place = p.place_label ? String(p.place_label) : "";
+  if (p.recipients != null && place) return `Send to ${place} (${String(p.recipients)}) from ${account}`;
+  const net = networks.find((n) => n.kind === p.kind && n.network);
+  if (net) return place ? `Post in ${place} as ${account}` : `Post on ${net.name} as ${account}`;
+  return place ? `Publish on ${account}, in ${place}` : `Publish on ${account}`;
+}
+
+/** Who an email goes to, in words: "Send to Newsletter (412) from hello@kiqr.dev", or to an address. */
+export function emailWhere(p: Record<string, unknown>): string {
+  const from = p.from_label ? ` from ${String(p.from_label)}` : "";
+  if (p.list_label) return `Send to ${String(p.list_label)}${p.recipients != null ? ` (${String(p.recipients)})` : ""}${from}`;
+  return `Send to ${String(p.to ?? "")}${from}`;
+}
+
 function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: string; compact?: boolean }) {
+  const networks = useNetworks(slug);
   if (card.kind === "approval" && card.status === "pending") return <ApprovalCard slug={slug} card={card} compact={compact} />;
   if (card.approval_kind === "task" && card.task) return <TaskCard slug={slug} taskId={card.task} compact={compact} />;
   if (card.approval_kind === "task") return <Resolved kind="task" status={card.status} title={String(card.payload.title ?? "Task")} />;
   if (card.approval_kind === "ability") return <Resolved kind="ability" status={card.status} title={String(card.payload.name ?? "Ability")} />;
-  if (card.approval_kind === "channel") return <Resolved kind="channel" status={card.status} title={String(card.payload.label ?? "Channel")} />;
+  if (card.approval_kind === "channel") return <Resolved kind="place" status={card.status} title={`${String(card.payload.place_label ?? card.payload.label ?? "Place")}${card.payload.account_label ? ` on ${String(card.payload.account_label)}` : ""}`} />;
+  if (card.approval_kind === "list") return <Resolved kind="list" status={card.status} title={String(card.payload.label ?? "List")} />;
   if (card.approval_kind === "plan") return <Resolved kind="plan" status={card.status} title={`${String(card.payload.period ?? "Plan")}${card.status === "approved" && card.result?.version ? ` · v${String(card.result.version)}` : ""}`} />;
   if (card.approval_kind === "campaign") return <Resolved kind="campaign" status={card.status} title={String(card.payload.title ?? "Campaign")} />;
   if (card.approval_kind === "publish" || card.approval_kind === "email") {
     const p = card.payload as Record<string, unknown>;
-    const title = card.approval_kind === "email" ? `“${String(p.subject ?? "")}” to ${String(p.to ?? "")}` : `${String((p.asset as { title?: string })?.title ?? "Asset")} → ${String(p.channel_label ?? p.destination_text ?? "")}`;
+    const title = card.approval_kind === "email" ? `“${String(p.subject ?? "")}” · ${emailWhere(p)}` : `${String((p.asset as { title?: string })?.title ?? "Asset")} · ${publishWhere(p, networks)}`;
     const url = card.result?.url as string | undefined;
     return (
       <div className={`ccard ${card.status}`}>
         <p className="cap">
-          <Send size={13} /> {card.status === "approved" ? (card.approval_kind === "email" ? "Sent" : card.result?.scheduled ? "Scheduled" : p.auto ? "Published by Seemo" : "Published") : card.status === "failed" ? `Publish failed: ${String(card.result?.error ?? "")}` : `${card.approval_kind === "email" ? "Email" : "Publish"} ${card.status}`}
+          <Send size={13} /> {card.status === "approved" ? (card.result?.sending ? `Sending to ${String(card.result?.recipients ?? "")} people` : card.approval_kind === "email" ? "Sent" : card.result?.scheduled ? "Scheduled" : p.auto ? "Published by Seemo" : "Published") : card.status === "failed" ? `Publish failed: ${String(card.result?.error ?? "")}` : `${card.approval_kind === "email" ? "Email" : "Publish"} ${card.status}`}
         </p>
         <p className="ttl">{title}</p>
         {url && (
@@ -254,11 +274,11 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
 }
 
 function Resolved({ kind, status, title }: { kind: string; status: string; title: string }) {
-  const noun = kind === "task" ? "Task" : kind === "ability" ? "Ability" : kind === "channel" ? "Channel" : kind === "plan" ? "Plan" : kind === "campaign" ? "Campaign" : "Change";
+  const noun = kind === "task" ? "Task" : kind === "ability" ? "Ability" : kind === "place" ? "Place" : kind === "list" ? "List" : kind === "plan" ? "Plan" : kind === "campaign" ? "Campaign" : "Change";
   return (
     <div className={`ccard ${status}`}>
       <p className="cap">
-        {kind === "ability" ? <BookOpen size={13} /> : kind === "channel" ? <Send size={13} /> : kind === "plan" || kind === "campaign" ? <Target size={13} /> : <ListChecks size={13} />} {noun} {status === "approved" && (kind === "ability" || kind === "channel" || kind === "campaign") ? "added" : status}
+        {kind === "ability" ? <BookOpen size={13} /> : kind === "place" ? <Send size={13} /> : kind === "list" ? <Users size={13} /> : kind === "plan" || kind === "campaign" ? <Target size={13} /> : <ListChecks size={13} />} {noun} {status === "approved" && (kind === "ability" || kind === "place" || kind === "list" || kind === "campaign") ? "added" : status}
       </p>
       <p className="ttl">{title}</p>
     </div>
@@ -271,6 +291,7 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
   const [error, setError] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   const p = card.payload as Record<string, unknown>;
+  const networks = useNetworks(slug);
   const decide = async (d: "approve" | "decline") => {
     setBusy(d);
     setError(null);
@@ -289,6 +310,7 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
   const isPlan = card.approval_kind === "plan";
   const isCampaign = card.approval_kind === "campaign";
   const isAction = card.approval_kind === "action";
+  const isList = card.approval_kind === "list";
   const objectives = (p.objectives as { id: string; title: string; why?: string; kpi_label?: string; kpi?: string; target?: number | null; unit?: string; by?: string | null }[] | undefined) ?? [];
   const replaces = p.replaces as { version: number; period: string } | null | undefined;
   const next = ((p.next as string[]) ?? []).slice(0, 3);
@@ -296,13 +318,13 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
   const abilityText = String(p.text ?? "");
   const files = (p.files as { name: string; bytes: number }[] | undefined) ?? [];
   const scheduled = isPublish && typeof p.at === "string" && p.at;
-  const caption = isAction ? `Seemo wants to use ${String(p.ability_name ?? "an ability")}` : isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a channel" : isPlan ? (replaces ? "Seemo proposes a revised plan" : "Seemo proposes a marketing plan") : isCampaign ? (p.update ? "Seemo proposes a campaign change" : "Seemo proposes a campaign") : "Seemo proposes a settings change";
-  const yes = isAction ? "Do it" : isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isChannel ? "Add the channel" : isPlan ? "Approve the plan" : isCampaign ? (p.update ? "Apply" : "Add the campaign") : "Apply";
+  const caption = isAction ? `Seemo wants to use ${String(p.ability_name ?? "an ability")}` : isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isChannel ? "Seemo proposes a place to publish" : isList ? `Seemo proposes a list: ${String(p.label ?? "")}` : isPlan ? (replaces ? "Seemo proposes a revised plan" : "Seemo proposes a marketing plan") : isCampaign ? (p.update ? "Seemo proposes a campaign change" : "Seemo proposes a campaign") : "Seemo proposes a settings change";
+  const yes = isAction ? "Do it" : isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isChannel ? "Add the place" : isList ? "Make the list" : isPlan ? "Approve the plan" : isCampaign ? (p.update ? "Apply" : "Add the campaign") : "Apply";
   const no = "Decline";
   return (
     <div className="ccard pending">
       <p className="cap">
-        {isAction ? <Zap size={13} /> : isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : isPlan || isCampaign ? <Target size={13} /> : <Settings2 size={13} />} {caption}
+        {isAction ? <Zap size={13} /> : isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isList ? <Users size={13} /> : isPublish || isEmail || isChannel ? <Send size={13} /> : isPlan || isCampaign ? <Target size={13} /> : <Settings2 size={13} />} {caption}
       </p>
       {isAction ? (
         <>
@@ -345,7 +367,7 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
               </li>
             ))}
           </ul>
-          {((p.channels as string[]) ?? []).length > 0 && <p className="muted sm">Channels in play: {(p.channels as string[]).join(", ")}</p>}
+          {((p.channels as string[]) ?? []).length > 0 && <p className="muted sm">Where it plays out: {(p.channels as string[]).join(", ")}</p>}
           {replaces && <p className="muted sm">Replaces v{replaces.version} ({replaces.period}){p.reason ? `: ${String(p.reason)}` : ""}.</p>}
         </>
       ) : isCampaign ? (
@@ -372,16 +394,7 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
         <>
           <p className="ttl">{isEmail ? String(p.subject ?? "") : String((p.asset as { title?: string })?.title ?? "")}</p>
           <p className="sched">
-            {isEmail ? (
-              <>
-                to <b>{String(p.to ?? "")}</b>
-              </>
-            ) : (
-              <>
-                to <b>{String(p.channel_label ?? "")}</b> <span className="muted">· {String(p.destination_text ?? "")}</span>
-              </>
-            )}
-            <span className="muted"> · via {String(p.connection_name ?? "")}</span>
+            <b>{isEmail ? emailWhere(p) : publishWhere(p, networks)}</b>
             {scheduled && <span className="muted"> · at {when(String(p.at))}</span>}
           </p>
           {!!p.excerpt && <p className={`instr ${more ? "open" : ""}`}>{String(p.excerpt)}</p>}
@@ -402,18 +415,33 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
         </>
       ) : isChannel ? (
         <>
-          <p className="ttl">{String(p.label ?? "")}</p>
+          <p className="ttl">{String(p.list_label ?? p.place_label ?? p.label ?? "")}</p>
           <p className="sched">
-            {String(p.kind_label ?? p.kind ?? "")} via {String(p.connection_name ?? "")}
+            {p.account_label ? (
+              <>
+                on <b>{String(p.account_label)}</b>
+                {p.list_label ? <span className="muted"> · sends to the people on the list</span> : null}
+              </>
+            ) : (
+              <>a new {String(p.kind_label ?? p.kind ?? "")} account</>
+            )}
           </p>
-          <ul className="kvs">
-            {Object.entries((p.destination as Record<string, unknown>) ?? {}).map(([k, v]) => (
-              <li key={k}>
-                <code>{k}</code> <span className="to">{String(v)}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="muted sm">Publishing to it will still ask you each time.</p>
+          {Object.keys((p.place as Record<string, unknown>) ?? {}).length > 0 && (
+            <ul className="kvs">
+              {Object.entries((p.place as Record<string, unknown>) ?? {}).map(([k, v]) => (
+                <li key={k}>
+                  <code>{k.replace(/_/g, " ")}</code> <span className="to">{String(v)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="muted sm">{p.ready === false ? "You connect the account under Accounts before anything goes out. " : ""}Seemo asks before it publishes there unless you let it act on the account on its own.</p>
+        </>
+      ) : isList ? (
+        <>
+          <p className="ttl">{String(p.label ?? "")}</p>
+          {!!p.description && <p className="sched">{String(p.description)}</p>}
+          <p className="muted sm">It starts empty: you add people under Audience, and Seemo never sees their addresses.</p>
         </>
       ) : isAbility ? (
         <>

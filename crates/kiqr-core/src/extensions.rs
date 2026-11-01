@@ -261,8 +261,12 @@ pub struct ExtraTool {
 pub struct ChannelKind {
     pub kind: String,
     pub label: String,
-    /// Destination fields: name → {type, label, help}.
-    pub destination: BTreeMap<String, Value>,
+    /// The fields a place inside an account has (a subreddit, a branch):
+    /// name → {type, label, help, optional, enum}. Empty: the account is the
+    /// one place. A kind with a required field needs a place before anything
+    /// goes out. Older manifests call it `destination`.
+    #[serde(alias = "destination")]
+    pub place: BTreeMap<String, Value>,
     /// What this ability does on channels of the kind: `publish`, `read`,
     /// `reply`, `manage` (`ROLES`). Empty: `publish`. Several abilities of a
     /// service may act on one channel; exactly one publishes to it.
@@ -405,10 +409,16 @@ pub struct Manifest {
     pub summary: String,
     pub transport: Transport,
     /// The service whose accounts this ability uses. Abilities that name the
-    /// same service share its accounts and channels (one sign-in, one browser
-    /// profile, one daily cap) and agree on its key names. Empty: the ability's
-    /// own id, so its accounts are its own.
-    pub service: String,
+    /// same service share its accounts (one sign-in, one browser profile, one
+    /// daily cap) and agree on its key names. Empty: the ability's own id, so
+    /// its accounts are its own. A string, or a block with how the service
+    /// shows in the grid of things to connect (`Service`).
+    pub service: Service,
+    /// What an account of this ability allows Seemo when it is made, by role
+    /// (`connections::PERMISSIONS`); the user changes it on the account. A role
+    /// not named has its default: acting asks, the rest is on.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub allow: BTreeMap<String, crate::connections::Allow>,
     /// One call at a time per account, across every ability of the service
     /// that says so: a browser session that two callers must not drive at once.
     pub exclusive: bool,
@@ -459,7 +469,64 @@ pub struct Manifest {
 impl Manifest {
     /// The service whose accounts this ability uses: `service`, else its own id.
     pub fn service(&self) -> &str {
-        if self.service.is_empty() { &self.id } else { &self.service }
+        if self.service.id.is_empty() { &self.id } else { &self.service.id }
+    }
+    /// The service as the grid of things to connect shows it: the block's
+    /// name, icon and group, else the ability's own.
+    pub fn service_card(&self) -> Service {
+        Service {
+            id: self.service().to_string(),
+            name: if self.service.name.is_empty() { self.name.clone() } else { self.service.name.clone() },
+            icon: if self.service.icon.is_empty() { self.icon.clone() } else { self.service.icon.clone() },
+            group: self.service.group.clone(),
+            profile_hosts: self.service.profile_hosts.clone(),
+        }
+    }
+}
+
+/// A service in the grid of things a project can connect: its id (what
+/// accounts are keyed by), its name and icon as shown, the group it sits in
+/// (`SERVICE_GROUPS`) and the hosts its profiles live on. In a manifest,
+/// `service:` is the id alone or this block.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Service {
+    pub id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub profile_hosts: Vec<String>,
+}
+
+/// Where a service sits in the grid of things to connect.
+pub const SERVICE_GROUPS: &[(&str, &str)] = &[("social", "Social"), ("website", "Website and blog"), ("email", "Email"), ("numbers", "Numbers"), ("passwords", "Passwords"), ("sites", "Sites behind a login"), ("tools", "Tools")];
+
+impl<'de> Deserialize<'de> for Service {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Id(String),
+            Block {
+                #[serde(default)]
+                id: String,
+                #[serde(default)]
+                name: String,
+                #[serde(default)]
+                icon: String,
+                #[serde(default)]
+                group: String,
+                #[serde(default)]
+                profile_hosts: Vec<String>,
+            },
+        }
+        Ok(match Raw::deserialize(d)? {
+            Raw::Id(id) => Service { id, ..Default::default() },
+            Raw::Block { id, name, icon, group, profile_hosts } => Service { id, name, icon, group, profile_hosts },
+        })
     }
 }
 
@@ -471,7 +538,8 @@ impl Default for Manifest {
             version: "0.1.0".into(),
             summary: String::new(),
             transport: Transport::Http,
-            service: String::new(),
+            service: Service::default(),
+            allow: BTreeMap::new(),
             exclusive: false,
             daily_cap: None,
             auth: vec![],
@@ -802,8 +870,24 @@ pub fn validate(m: &Manifest) -> Result<()> {
     if m.name.trim().is_empty() {
         bail!("name is missing");
     }
-    if !m.service.is_empty() && !crate::tools::valid_ext_id(&m.service) {
-        bail!("service must be lowercase letters, digits and dashes (got '{}')", m.service);
+    if !m.service.id.is_empty() && !crate::tools::valid_ext_id(&m.service.id) {
+        bail!("service must be lowercase letters, digits and dashes (got '{}')", m.service.id);
+    }
+    if !m.service.group.is_empty() && !SERVICE_GROUPS.iter().any(|(g, _)| *g == m.service.group) {
+        bail!("service group '{}' is not one of {}", m.service.group, SERVICE_GROUPS.iter().map(|(g, _)| *g).collect::<Vec<_>>().join(", "));
+    }
+    for h in &m.service.profile_hosts {
+        if h.trim().is_empty() || h.contains('/') || h.contains(':') {
+            bail!("service: profile_hosts holds '{h}', which is not a host name");
+        }
+    }
+    for (role, a) in &m.allow {
+        if !crate::connections::PERMISSIONS.contains(&role.as_str()) {
+            bail!("allow names '{role}', which is not one of {}", crate::connections::PERMISSIONS.join(", "));
+        }
+        if !crate::connections::Allow::acts(role) && *a == crate::connections::Allow::Ask {
+            bail!("allow: '{role}' never asks; it is on or off");
+        }
     }
     for a in &m.auth {
         if !valid_env_name(&a.env) {
@@ -1441,6 +1525,25 @@ channels:
         assert!(parse_manifest(&ok.replace(", arg: path", "")).unwrap_err().to_string().contains("arg"));
         let acting = format!("{WP}learn:\n  documents:\n    - {{ tool: publish_article, title: x, url: \"https://myblog.com\" }}\n").replace("    description: Create a post.", "    description: Create a post.\n    role: publish");
         assert!(parse_manifest(&acting).unwrap_err().to_string().contains("may only read"));
+    }
+
+    #[test]
+    fn service_blocks_allow_and_places_parse() {
+        // A service as a string, or as a block with how the connect grid shows it.
+        let m = parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: { id: blogs, name: Blogs, icon: newspaper, group: website, profile_hosts: [blog.example] }\nallow: { publish: auto, learn: off }")).unwrap();
+        assert_eq!((m.service(), m.service.name.as_str(), m.service.group.as_str()), ("blogs", "Blogs", "website"));
+        assert_eq!(m.service_card().profile_hosts, vec!["blog.example".to_string()]);
+        assert_eq!((m.allow["publish"], m.allow["learn"]), (crate::connections::Allow::Auto, crate::connections::Allow::Off));
+        let plain = parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: blogs")).unwrap();
+        assert_eq!((plain.service(), plain.service_card().name.as_str()), ("blogs", plain.name.as_str()), "no block: the ability's own name");
+        assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: { id: blogs, group: nowhere }")).unwrap_err().to_string().contains("group"));
+        assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nallow: { shout: auto }")).unwrap_err().to_string().contains("allow"));
+        assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nallow: { learn: ask }")).unwrap_err().to_string().contains("never asks"));
+        // A kind's place fields, by either name.
+        let with_place = parse_manifest(&WP.replace("destination: { site: { type: string, label: Site } }", "place: { branch: { label: Branch, optional: true } }")).unwrap();
+        assert!(with_place.channels[0].place.contains_key("branch") && !with_place.channels[0].place.contains_key("site"));
+        let old_name = parse_manifest(WP).unwrap();
+        assert!(old_name.channels[0].place.contains_key("site"), "older manifests say destination");
     }
 
     #[test]

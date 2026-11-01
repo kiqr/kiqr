@@ -16,6 +16,7 @@ pub mod connections;
 pub mod crawl;
 pub mod events;
 pub mod intake;
+pub mod lists;
 pub mod extensions;
 pub mod extract;
 pub mod fetch;

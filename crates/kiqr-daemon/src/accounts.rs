@@ -1,8 +1,9 @@
 //! Connections over HTTP: a project's accounts of its installed abilities
-//! (two WordPress sites, two analytics properties), each with its own keys.
-//! A connection whose ability publishes is a channel; `publish.rs` keeps the
-//! `/channels` routes over the same records. The user sees "accounts" and
-//! "channels"; "connection" stays in the code.
+//! (two WordPress sites, two analytics properties), each with its own keys,
+//! its permissions (what Seemo may do through it) and its places (where
+//! inside it content goes). The user sees "accounts"; "connection" stays in
+//! the code, and `publish.rs` keeps `/channels` as an alias over the same
+//! records for one release.
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
@@ -12,7 +13,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use kiqr_core::connections::{self, Connection};
+use kiqr_core::connections::{self, Allow, Connection, Place};
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{Manifest, Transport};
 use kiqr_core::project::Project;
@@ -29,6 +30,9 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/connections/{id}/activity", get(activity))
         .route("/api/projects/{slug}/connections/{id}/choices/{name}", get(choices))
         .route("/api/projects/{slug}/connections/{id}/learn", post(learn_now))
+        .route("/api/projects/{slug}/connections/{id}/allow", put(put_allow))
+        .route("/api/projects/{slug}/connections/{id}/places", post(add_place))
+        .route("/api/projects/{slug}/connections/{id}/places/{place}", put(update_place).delete(remove_place))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -66,6 +70,7 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
     let keys = c.keys(app.store.home(), slug);
     let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
     v["channel"] = json!(c.is_channel());
+    v["publishes"] = json!(c.publishes());
     v["default"] = json!(c.default);
     v["destination_text"] = json!(c.destination_text());
     // Every ability of its service that is on here uses it; on a channel, with what each does there.
@@ -85,11 +90,22 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
     v["service"] = json!(c.service());
     v["used_by"] = json!(used_by);
     // A source: what learning from it reads, when its ability can teach the project.
-    v["source"] = json!(c.learns);
+    v["source"] = json!(c.learns());
     v["can_learn"] = json!(m.as_ref().and_then(|m| m.learn.as_ref()).is_some());
     v["learn"] = m.as_ref().map(learn_view).unwrap_or(Value::Null);
-    // The kinds it could be a channel of, for the Channel switch.
+    // The kinds it could publish as, for making it publishable.
     v["can_publish"] = json!(m.as_ref().is_some_and(|m| !m.channels.is_empty()));
+    // What Seemo may do here: every role its service's abilities have, with the choice made or the default.
+    v["allow"] = json!(permissions(app, slug, c).await.into_iter().map(|(role, a, acts)| json!({ "role": role, "allow": a, "acts": acts })).collect::<Vec<_>>());
+    // Places, a list's with how many people are on it; and whether this account sends to lists at all.
+    v["places"] = json!(c.places.iter().map(|p| {
+        let mut pv = json!(p);
+        if let Some(l) = p.list_id() {
+            pv["contacts"] = json!(kiqr_core::lists::recipients(app.store.home(), slug, l).len());
+        }
+        pv
+    }).collect::<Vec<_>>());
+    v["takes_lists"] = json!(c.is_channel() && crate::publish::takes_lists(app, slug, c).await);
     if c.is_channel() {
         let p = connections::pick_publisher(c, &on);
         v["publisher"] = json!(p.map(|(pm, _)| pm.id.clone()));
@@ -114,7 +130,11 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
                 v["kind_label"] = json!(k.label);
                 v["kind_name"] = json!(k.display_name());
                 v["icon"] = json!(k.icon);
+                // The fields a place here has, and whether one is needed before anything goes out.
+                v["place_fields"] = json!(k.place);
+                v["needs_place"] = json!(crate::publish::needs_place(m, k));
             }
+            v["service_card"] = json!(m.service_card());
         }
         None => {
             v["ability_name"] = json!(c.ability);
@@ -128,21 +148,70 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
     v
 }
 
+/// The roles an account can be allowed, with what it allows now: the roles
+/// the abilities of its service declare on tools and kinds, `learn` when one
+/// can teach the project, `measure` when one reads numbers. Reading is
+/// always there. Each with whether it acts (three choices) or not (on/off).
+pub async fn permissions(app: &App, slug: &str, c: &Connection) -> Vec<(String, Allow, bool)> {
+    let reg = app.registry.read().await;
+    let off = crate::ext::project_off(app, slug);
+    let mut roles: Vec<String> = vec!["read".into()];
+    for (_, m) in reg.connections(slug).into_iter().filter(|(_, m)| m.service() == c.service() && !off.contains(&m.id)) {
+        for t in &m.tools {
+            if !t.role.is_empty() && !roles.contains(&t.role) {
+                roles.push(t.role.clone());
+            }
+        }
+        for k in &m.channels {
+            for r in k.roles() {
+                if !roles.iter().any(|x| x == r) {
+                    roles.push(r.to_string());
+                }
+            }
+        }
+        if m.learn.is_some() && !roles.iter().any(|r| r == "learn") {
+            roles.push("learn".into());
+        }
+        if !m.sources.is_empty() && !roles.iter().any(|r| r == "measure") {
+            roles.push("measure".into());
+        }
+    }
+    let order = |r: &str| connections::PERMISSIONS.iter().position(|p| *p == r).unwrap_or(99);
+    roles.sort_by_key(|r| order(r));
+    roles.into_iter().map(|r| { let a = c.allow(&r); let acts = Allow::acts(&r); (r, a, acts) }).collect()
+}
+
+/// What an account of this service starts with: the manifests' `allow`
+/// defaults, the first to name a role winning.
+pub async fn default_allow(app: &App, slug: &str, service: &str) -> BTreeMap<String, Allow> {
+    let reg = app.registry.read().await;
+    let mut out = BTreeMap::new();
+    for m in reg.of_service(slug, service) {
+        for (role, a) in &m.allow {
+            out.entry(role.clone()).or_insert(*a);
+        }
+    }
+    out
+}
+
 #[derive(Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct NewConnection {
     pub ability: String,
     pub label: String,
-    /// Set for a channel: one of the kinds the ability publishes.
+    /// One of the kinds the ability publishes; empty: the service's first kind that does, if any.
     pub kind: String,
-    /// A channel's destination, already checked (`publish::channel_preview`).
-    pub destination: BTreeMap<String, Value>,
+    /// The first place's fields, already checked (`publish::place_check`). Older callers say `destination`.
+    #[serde(alias = "destination")]
+    pub place: BTreeMap<String, Value>,
+    /// What to call that first place; its first value when empty.
+    pub place_label: String,
     /// Keys to save right away, by name.
     pub secrets: BTreeMap<String, String>,
     /// Another connection of the same ability whose keys this one starts with (the same mail account).
     pub same_as: Option<String>,
-    /// A source too: the project learns from it (the ability's `learn:`).
-    pub learns: bool,
+    /// Permissions chosen at setup, over the manifests' defaults: role → auto | ask | off.
+    pub allow: BTreeMap<String, String>,
 }
 
 /// Add a connection: its record, then its keys. The first of an ability is its default.
@@ -150,11 +219,14 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
     let _ = Project::load(&app.store, slug)?;
     let m = manifest(app, slug, &b.ability).await.ok_or_else(|| bad(format!("'{}' is not installed", b.ability)))?;
     let kind = b.kind.trim().to_ascii_lowercase();
-    if !kind.is_empty() && !m.channels.iter().any(|k| k.kind == kind) {
+    // An account of a service that publishes is publishable from the start (its kind), unless told otherwise.
+    let kind = if kind.is_empty() { crate::publish::kinds(app, slug).await.into_iter().find(|(o, k)| o.service() == m.service() && k.publishes()).map(|(_, k)| k.kind).unwrap_or_default() } else { kind };
+    if !kind.is_empty() && !crate::publish::kinds(app, slug).await.iter().any(|(o, k)| o.service() == m.service() && k.kind == kind) {
         return Err(bad(format!("{} does not publish '{kind}'", m.name)));
     }
-    if b.learns && m.learn.is_none() {
-        return Err(bad(format!("{} has nothing to learn from", m.name)));
+    let mut allow = default_allow(app, slug, m.service()).await;
+    for (role, a) in &b.allow {
+        allow.insert(role.clone(), parse_allow(role, a)?);
     }
     let same = match b.same_as.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => Some(Connection::find(&app.store, slug, m.service(), s).ok_or_else(|| bad(format!("{} has no account '{s}' here to share", m.name)))?),
@@ -174,14 +246,18 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
         id: connections::new_id(&app.store, slug, &label),
         label,
         ability: m.id.clone(),
-        service: m.service.clone(),
+        service: m.service.id.clone(),
         default: siblings.is_empty(),
         created_by: by.to_string(),
         kind,
-        destination: b.destination,
-        learns: b.learns,
+        allow,
         ..Default::default()
     };
+    let mut c = c;
+    if !b.place.is_empty() {
+        let label = if b.place_label.trim().is_empty() { b.place.values().find_map(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| c.label.clone()) } else { b.place_label.trim().to_string() };
+        c.put_place(Place { id: String::new(), kind: c.kind.clone(), label, fields: b.place, default: true });
+    }
     c.save(&app.store, slug)?;
     let home = app.store.home();
     if let Some(s) = &same {
@@ -195,11 +271,10 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
             return Err(e);
         }
     }
-    let what = if c.is_channel() { "channel" } else { "account" };
-    app.store.commit(&format!("{what}({slug}): add {} ({})", c.label, m.name)).await?;
+    app.store.commit(&format!("account({slug}): add {} ({})", c.label, m.name)).await?;
     app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
     // Learn from it now when it is ready; otherwise the scheduler does once it is signed in.
-    if c.learns && ready(app, slug, &c, &m) {
+    if c.learns() && m.learn.is_some() && ready(app, slug, &c, &m) {
         let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
     }
     Ok(c)
@@ -209,15 +284,29 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
 #[serde(default)]
 pub struct Patch {
     pub label: Option<String>,
-    pub destination: Option<serde_json::Map<String, Value>>,
-    /// false lets Seemo publish through this channel without a card.
+    /// Permissions to change: role → auto | ask | off (on/off for roles that never act).
+    pub allow: Option<BTreeMap<String, String>>,
+    /// Older callers: false is `allow.publish = auto`, true is `ask`.
     pub asks_first: Option<bool>,
-    /// The ability that publishes to this channel, of those that can; empty goes back to the default.
-    pub publisher: Option<String>,
-    /// The Source switch: learn from this account.
+    /// Older callers: the Source switch, now `allow.learn`.
     pub learns: Option<bool>,
-    /// The Channel switch: a kind its abilities publish (with `destination`), or empty for none.
+    /// The ability that publishes here, of those that can; empty goes back to the default.
+    pub publisher: Option<String>,
+    /// Make it publishable as a kind its service publishes (with the first `place` when the kind needs one), or empty to stop publishing.
     pub kind: Option<String>,
+    #[serde(alias = "destination")]
+    pub place: Option<BTreeMap<String, Value>>,
+}
+
+fn parse_allow(role: &str, a: &str) -> Result<Allow, ApiError> {
+    if !connections::PERMISSIONS.contains(&role) {
+        return Err(bad(format!("'{role}' is not something an account allows ({})", connections::PERMISSIONS.join(", "))));
+    }
+    let v = Allow::parse(a).ok_or_else(|| bad(format!("'{a}' is not auto, ask or off")))?;
+    if !Allow::acts(role) && v == Allow::Ask {
+        return Err(bad(format!("'{role}' never asks; it is on or off")));
+    }
+    Ok(v)
 }
 
 pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connection, ApiError> {
@@ -228,38 +317,48 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connect
         }
         c.label = l;
     }
-    let mut learn_now = false;
+    let was_learning = c.learns();
+    let mut changes: BTreeMap<String, String> = p.allow.unwrap_or_default();
+    if let Some(a) = p.asks_first {
+        changes.insert("publish".into(), if a { "ask" } else { "auto" }.into());
+    }
     if let Some(on) = p.learns {
-        let m = manifest_for(app, slug, &c).await;
-        if on && m.as_ref().and_then(|m| m.learn.as_ref()).is_none() {
+        changes.insert("learn".into(), if on { "on" } else { "off" }.into());
+    }
+    let m = manifest_for(app, slug, &c).await;
+    for (role, a) in &changes {
+        let v = parse_allow(role, a)?;
+        if role == "learn" && v != Allow::Off && m.as_ref().and_then(|m| m.learn.as_ref()).is_none() {
             return Err(bad(format!("nothing to learn from in '{}'", c.label)));
         }
-        learn_now = on && !c.learns && m.as_ref().is_some_and(|m| ready(app, slug, &c, m));
-        c.learns = on;
+        c.allow.insert(role.clone(), v);
     }
-    let mut destination = p.destination;
+    let learn_now = c.learns() && !was_learning && m.as_ref().is_some_and(|m| m.learn.is_some() && ready(app, slug, &c, m));
+    let mut place = p.place;
     if let Some(k) = p.kind.map(|k| k.trim().to_ascii_lowercase()) {
         if k.is_empty() {
             c.kind.clear();
-            c.destination.clear();
+            c.places.clear();
             c.publisher.clear();
         } else if k != c.kind {
-            // Becoming a channel: the destination is checked against the kind, as for a new one.
-            let d = destination.take().unwrap_or_default();
-            let checked = crate::publish::channel_preview(app, slug, &crate::publish::NewChannel { label: c.label.clone(), kind: k.clone(), connection: Some(c.ability.clone()), destination: d, ..Default::default() }).await?;
-            c.kind = k;
-            c.destination = checked["destination"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+            // Becoming publishable: the first place is checked against the kind, as for a new one.
+            let fields = place.take().unwrap_or_default();
+            let (_, kind, checked) = crate::publish::place_check(app, slug, &k, Some(&c.ability), &fields).await?;
+            c.kind = kind.kind.clone();
+            c.places.clear();
+            if !checked.is_empty() {
+                c.put_place(Place { id: String::new(), kind: c.kind.clone(), label: place_label(&checked, &c.label), fields: checked, default: true });
+            }
         }
     }
-    if let Some(d) = destination {
+    if let Some(fields) = place {
+        // The default place's fields, checked.
         if !c.is_channel() {
-            return Err(bad("only a channel has a destination"));
+            return Err(bad("only an account that publishes has places"));
         }
-        let checked = crate::publish::channel_preview(app, slug, &crate::publish::NewChannel { label: c.label.clone(), kind: c.kind.clone(), connection: Some(c.ability.clone()), destination: d, ..Default::default() }).await?;
-        c.destination = checked["destination"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-    }
-    if let Some(a) = p.asks_first {
-        c.asks_first = a;
+        let (_, _, checked) = crate::publish::place_check(app, slug, &c.kind, Some(&c.ability), &fields).await?;
+        let (id, label) = c.place(None).map(|p| (p.id.clone(), p.label.clone())).unwrap_or_default();
+        c.put_place(Place { id, kind: c.kind.clone(), label: if label.is_empty() { place_label(&checked, &c.label) } else { label }, fields: checked, default: true });
     }
     if let Some(id) = p.publisher.map(|s| s.trim().to_string()) {
         if !c.is_channel() {
@@ -274,7 +373,7 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connect
         c.publisher = id;
     }
     c.save(&app.store, slug)?;
-    app.store.commit(&format!("{}({slug}): {}", if c.is_channel() { "channel" } else { "account" }, c.label)).await?;
+    app.store.commit(&format!("account({slug}): {}", c.label)).await?;
     app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
     if learn_now {
         let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
@@ -282,10 +381,98 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connect
     Ok(c)
 }
 
+/// What to call a place from its fields: the first text value, else the account's name.
+fn place_label(fields: &BTreeMap<String, Value>, fallback: &str) -> String {
+    fields.values().find_map(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| fallback.to_string())
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct PlaceBody {
+    pub label: String,
+    pub fields: BTreeMap<String, Value>,
+    pub default: bool,
+    /// A mailing list (by id or name) as the place, on a mail account.
+    pub list: String,
+}
+
+/// Add a place to an account: the kind's fields checked, or a list of people
+/// to email. The first place is the default.
+pub async fn create_place(app: &App, slug: &str, id: &str, b: PlaceBody) -> Result<(Connection, Place), ApiError> {
+    let mut c = Connection::load(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    if !c.is_channel() {
+        return Err(bad(format!("'{}' does not publish, so it has no places", c.label)));
+    }
+    let place = if !b.list.trim().is_empty() {
+        if !crate::publish::takes_lists(app, slug, &c).await {
+            return Err(bad(format!("'{}' does not send to lists of people; only a mail account does", c.label)));
+        }
+        let l = kiqr_core::lists::List::find(&app.store, slug, &b.list).ok_or_else(|| bad(format!("no list '{}'", b.list.trim())))?;
+        Place { id: format!("list-{}", l.id), kind: Place::LIST.into(), label: if b.label.trim().is_empty() { l.label.clone() } else { b.label.trim().to_string() }, fields: [("list".to_string(), json!(l.id))].into_iter().collect(), default: b.default }
+    } else {
+        let (_, _, checked) = crate::publish::place_check(app, slug, &c.kind, Some(&c.ability), &b.fields).await?;
+        if checked.is_empty() {
+            return Err(bad(format!("a place on '{}' needs its fields", c.label)));
+        }
+        Place { id: String::new(), kind: c.kind.clone(), label: if b.label.trim().is_empty() { place_label(&checked, &c.label) } else { b.label.trim().to_string() }, fields: checked, default: b.default }
+    };
+    if c.places.iter().any(|p| p.id != place.id && p.label.eq_ignore_ascii_case(&place.label)) {
+        return Err(bad(format!("'{}' already has a place called '{}'", c.label, place.label)));
+    }
+    c.put_place(place.clone());
+    let saved = c.places.iter().find(|p| p.label == place.label).cloned().unwrap_or(place);
+    c.save(&app.store, slug)?;
+    app.store.commit(&format!("account({slug}): {} publishes to {}", c.label, saved.label)).await?;
+    app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+    Ok((c, saved))
+}
+
+async fn add_place(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(b): Json<PlaceBody>) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let (c, p) = create_place(&app, &slug, &id, b).await?;
+    let mut v = view(&app, &slug, &c).await;
+    v["place"] = json!(p);
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+async fn update_place(State(app): State<App>, Path((slug, id, pid)): Path<(String, String, String)>, Json(b): Json<PlaceBody>) -> ApiResult<Value> {
+    let mut c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let mut p = c.places.iter().find(|p| p.id == pid).cloned().ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no place '{pid}' on '{}'", c.label)))?;
+    if !b.label.trim().is_empty() {
+        p.label = b.label.trim().to_string();
+    }
+    if !b.fields.is_empty() && !p.is_list() {
+        let (_, _, checked) = crate::publish::place_check(&app, &slug, &c.kind, Some(&c.ability), &b.fields).await?;
+        p.fields = checked;
+    }
+    if b.default {
+        p.default = true;
+    }
+    c.put_place(p);
+    c.save(&app.store, &slug)?;
+    app.store.commit(&format!("account({slug}): {}'s places", c.label)).await?;
+    app.bus.emit(Some(&slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+    Ok(Json(view(&app, &slug, &c).await))
+}
+
+async fn remove_place(State(app): State<App>, Path((slug, id, pid)): Path<(String, String, String)>) -> ApiResult<Value> {
+    let mut c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let gone = c.remove_place(&pid).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no place '{pid}' on '{}'", c.label)))?;
+    c.save(&app.store, &slug)?;
+    app.store.commit(&format!("account({slug}): {} no longer publishes to {}", c.label, gone.label)).await?;
+    app.bus.emit(Some(&slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+    Ok(Json(view(&app, &slug, &c).await))
+}
+
+/// `PUT …/allow {role: auto|ask|off, …}`: what Seemo may do here.
+async fn put_allow(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(b): Json<BTreeMap<String, String>>) -> ApiResult<Value> {
+    let c = update(&app, &slug, &id, Patch { allow: Some(b), ..Default::default() }).await?;
+    Ok(Json(view(&app, &slug, &c).await))
+}
+
 pub async fn delete(app: &App, slug: &str, id: &str) -> Result<(), ApiError> {
     let c = Connection::delete(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
     app.mcp.stop_connection(&c.id).await;
-    app.store.commit(&format!("{}({slug}): remove {}", if c.is_channel() { "channel" } else { "account" }, c.label)).await?;
+    app.store.commit(&format!("account({slug}): remove {}", c.label)).await?;
     app.bus.emit(Some(slug), EventKind::ConnectionDeleted { connection: c.id, ability: c.ability });
     Ok(())
 }
@@ -311,10 +498,16 @@ async fn list(State(app): State<App>, Path(slug): Path<String>, Query(q): Query<
 }
 
 async fn create_route(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewConnection>) -> Result<(StatusCode, Json<Value>), ApiError> {
-    if !b.kind.trim().is_empty() {
-        return Err(bad("a channel is added under /channels, where its destination is checked"));
+    // A first place comes checked against its kind.
+    let mut b = b;
+    if !b.place.is_empty() {
+        let m = manifest(&app, &slug, &b.ability).await.ok_or_else(|| bad(format!("'{}' is not installed", b.ability)))?;
+        let kind = if b.kind.trim().is_empty() { crate::publish::kinds(&app, &slug).await.into_iter().find(|(o, k)| o.service() == m.service() && k.publishes()).map(|(_, k)| k.kind).unwrap_or_default() } else { b.kind.trim().to_ascii_lowercase() };
+        let (_, k, checked) = crate::publish::place_check(&app, &slug, &kind, Some(&m.id), &b.place).await?;
+        b.kind = k.kind.clone();
+        b.place = checked;
     }
-    let c = create(&app, &slug, NewConnection { destination: BTreeMap::new(), ..b }, "user").await?;
+    let c = create(&app, &slug, b, "user").await?;
     Ok((StatusCode::CREATED, Json(view(&app, &slug, &c).await)))
 }
 
@@ -347,8 +540,8 @@ async fn put_secret(State(app): State<App>, Path((slug, id, name)): Path<(String
 /// "Learn now": read this source again and write the profile from it.
 async fn learn_now(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
     let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    if !c.learns {
-        return Err(bad(format!("'{}' is not a source; switch learning on first", c.label)));
+    if !c.learns() {
+        return Err(bad(format!("'{}' is not a source; allow learning on it first", c.label)));
     }
     crate::learn::start(&app, &slug, Some(c.id.clone())).await?;
     Ok(Json(json!({ "started": true })))

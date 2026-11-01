@@ -11,6 +11,7 @@ mod connect;
 mod ext;
 mod images;
 mod learn;
+mod lists;
 mod market;
 mod marketing;
 mod mcp_host;

@@ -484,11 +484,21 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
         "plan" => crate::marketing::plan_preview(&app, &slug, &b.payload)?,
         "campaign" => crate::marketing::campaign_preview(&app, &slug, &b.payload)?,
         "action" => crate::ext::action_preview(&app, &slug, &b.payload).await?,
+        "list" => {
+            let label = b.payload["label"].as_str().unwrap_or("").trim().to_string();
+            if label.is_empty() {
+                return Err(bad("a list needs a name"));
+            }
+            if kiqr_core::lists::List::find(&app.store, &slug, &label).is_some() {
+                return Err(bad(format!("there is a list called '{label}' already")));
+            }
+            json!({ "label": label, "description": b.payload["description"].as_str().unwrap_or("").trim() })
+        }
         other => return Err(bad(format!("unknown approval kind '{other}'"))),
     };
-    // A channel the user let Seemo publish through on its own: the card is
+    // An account the user let Seemo publish or act through on its own: the card is
     // put in the chat as a record and answered at once with the outcome.
-    let auto = matches!(b.kind.as_str(), "publish" | "action") && preview["asks_first"].as_bool() == Some(false);
+    let auto = matches!(b.kind.as_str(), "publish" | "action" | "email") && preview["asks_first"].as_bool() == Some(false);
     let mut preview = preview;
     if auto {
         preview["auto"] = json!(true);
@@ -497,7 +507,11 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
     let (id, preview) = open_approval(&app, &slug, &b.kind, preview, b.chat, b.task, !auto).await?;
     if auto {
         let approval = app.approvals.read().await.get(&id).cloned().ok_or_else(|| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "the approval vanished".into()))?;
-        let done = if b.kind == "action" { crate::ext::do_action(&app, &slug, &preview).await } else { crate::publish::do_publish(&app, &slug, &preview, &by).await };
+        let done = match b.kind.as_str() {
+            "action" => crate::ext::do_action(&app, &slug, &preview).await,
+            "email" => crate::publish::do_email(&app, &slug, &preview).await,
+            _ => crate::publish::do_publish(&app, &slug, &preview, &by).await,
+        };
         let decision = match done {
             Ok(v) => Decision { status: "approved".into(), result: v },
             Err(ApiError(_, msg)) => Decision { status: "failed".into(), result: json!({ "failed": true, "error": msg, "note": "It failed. Say so in one line; do not retry unless asked." }) },
@@ -635,6 +649,10 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
             },
             "email" => match crate::publish::do_email(&app, &slug, &approval.payload).await {
                 Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(e) => return Err(e),
+            },
+            "list" => match crate::lists::create_list(&app, &slug, crate::lists::NewList { label: approval.payload["label"].as_str().unwrap_or("").to_string(), description: approval.payload["description"].as_str().unwrap_or("").to_string() }, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
+                Ok(l) => Decision { status: "approved".into(), result: json!({ "created": true, "list": l.id, "label": l.label, "note": "The list exists and is empty. The user adds people under Audience; you never handle addresses." }) },
                 Err(e) => return Err(e),
             },
             "plan" => match crate::marketing::approve_plan(&app, &slug, &approval).await {
@@ -951,11 +969,14 @@ async fn calendar(State(app): State<App>, Path(slug): Path<String>, Query(r): Qu
             items.push(json!({ "kind": "task", "task": t.id, "title": t.title, "at": at, "schedule_text": t.schedule.describe(tz) }));
         }
     }
-    // Publishes the daemon will do: scheduled assets, with the channel they go to.
+    // Publishes the daemon will do: scheduled assets, with the account (and the place in it) they go to.
     for a in assets::list(&app.store, &slug)?.into_iter().filter(|a| a.status == assets::Status::Scheduled) {
         let Some(at) = a.publish_at.filter(|t| *t >= from - chrono::Duration::seconds(1) && *t <= to) else { continue };
-        let label = a.channel.as_deref().and_then(|c| kiqr_core::channels::Channel::load(&app.store, &slug, c).ok()).map(|c| c.label).unwrap_or_else(|| a.channel.clone().unwrap_or_default());
-        items.push(json!({ "kind": "publish", "asset": { "type": a.kind, "id": a.id, "title": a.title }, "title": a.title, "at": at, "channel": a.channel, "channel_label": label, "schedule_text": format!("to {label}") }));
+        let account = a.channel.as_deref().and_then(|c| kiqr_core::channels::Channel::load(&app.store, &slug, c).ok());
+        let label = account.as_ref().map(|c| c.label.clone()).unwrap_or_else(|| a.channel.clone().unwrap_or_default());
+        let place_label = account.as_ref().and_then(|c| c.place(a.place.as_deref())).map(|p| p.label.clone());
+        let where_ = match &place_label { Some(p) => format!("to {label} ({p})"), None => format!("to {label}") };
+        items.push(json!({ "kind": "publish", "asset": { "type": a.kind, "id": a.id, "title": a.title }, "title": a.title, "at": at, "channel": a.channel, "channel_label": label, "place": a.place, "place_label": place_label, "schedule_text": where_ }));
     }
     items.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
     Ok(Json(items))

@@ -1,19 +1,22 @@
 // Setup → Abilities: the one page for everything Seemo can do in this
 // project. Core abilities (code, switch off but never leave), what is
 // installed from the marketplace, what you taught it; each opens in its own
-// modal. "Teach Seemo something" adds one in plain words. The marketplace
-// sits below. Installing is for the machine; switches, keys and copies of
-// the instructions are per project.
+// modal. "Teach Seemo something" adds one in plain words. Abilities of a
+// service (WordPress, GitHub, analytics) are plumbing behind an account: they
+// show as "via your X account" and Connect opens the connect wizard. The
+// marketplace sits below. Installing is for the machine; switches and copies
+// of the instructions are per project.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence } from "motion/react";
-import { AlertTriangle, BookOpen, KeyRound, Loader2, Plug, Plus, RefreshCw, Send, Sparkles, Terminal } from "lucide-react";
+import { AlertTriangle, BookOpen, KeyRound, Loader2, Plug, Plus, RefreshCw, Send, Sparkles } from "lucide-react";
 import { api, useAsync, useEvents, type Ability } from "../api";
 import { Switch } from "./Switch";
 import { AbilityModal } from "./AbilityModal";
 import { Advanced, Marketplace } from "./Marketplace";
 import { TeachForm, type TeachDraft } from "./TeachForm";
-import { AbilityIcon, Author, hasNewer, isOn, OneClick, oneClick, RELOAD_ON, stateOf } from "./abilityBits";
+import { AbilityIcon, Author, hasNewer, isOn, isService, OneClick, oneClick, RELOAD_ON, serviceName, stateOf } from "./abilityBits";
+import { connectPath, serviceOf } from "./Accounts";
 import "../profile.css";
 import "../settings.css";
 import "../chat.css";
@@ -33,8 +36,10 @@ export function AbilitiesPage() {
   const market = data.data?.market ?? [];
   const contracts = data.data?.contracts ?? [];
   const guide = data.data?.guide ?? null;
-  const yours = useMemo(() => abilities.filter((a) => a.source === "yours" || a.source === "local").sort(byName), [abilities]);
-  const fromMarket = useMemo(() => abilities.filter((a) => !a.core && (a.source === "marketplace" || a.source === "shipped")).sort(byName), [abilities]);
+  const yours = useMemo(() => abilities.filter((a) => (a.source === "yours" || a.source === "local") && !isService(a)).sort(byName), [abilities]);
+  const fromMarket = useMemo(() => abilities.filter((a) => !a.core && (a.source === "marketplace" || a.source === "shipped") && !isService(a)).sort(byName), [abilities]);
+  // Through an account of their service: signed in on the Accounts page, not here.
+  const services = useMemo(() => abilities.filter((a) => isService(a)).sort(byName), [abilities]);
   const builtin = useMemo(() => abilities.filter((a) => a.core), [abilities]);
   const on = abilities.filter(isOn).length;
   const opened = useMemo(() => (openId ? [...abilities, ...market, ...(guide ? [guide] : [])].find((a) => a.id === openId) ?? null : null), [openId, abilities, market, guide]);
@@ -76,7 +81,7 @@ export function AbilitiesPage() {
         <div>
           <p className="cap">Setup</p>
           <h1 className="d2">Abilities</h1>
-          <p className="muted">Everything Seemo can do here. Installed once for this machine; switched on, connected and taught per project. Click one to see what it includes and to set it up.</p>
+          <p className="muted">Everything Seemo knows how to do here. What works through one of your accounts (your blog, your analytics) is connected under Accounts; the rest is switched on and taught here. Click one to see what it includes.</p>
         </div>
         <div className="cm-acts">
           <span className="chip">
@@ -130,11 +135,12 @@ export function AbilitiesPage() {
           </div>
         )}
         {yours.length > 0 && <Group label="Yours" items={yours} slug={slug} onOpen={open} onChange={data.reload} />}
-        {fromMarket.length > 0 && <Group label="From the marketplace" items={fromMarket} slug={slug} onOpen={open} onChange={data.reload} />}
+        {fromMarket.length > 0 && <Group label="Installed" items={fromMarket} slug={slug} onOpen={open} onChange={data.reload} />}
+        {services.length > 0 && <Group label="With your accounts" sub="What Seemo can do on the accounts you connect under Setup → Accounts. Connect one and these switch on." items={services} slug={slug} onOpen={open} onChange={data.reload} />}
         {builtin.length > 0 && <Group label="Built in" items={builtin} slug={slug} cols={2} onOpen={open} onChange={data.reload} />}
       </section>
 
-      <Marketplace slug={slug} items={[...market, ...fromMarket]} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a, tab) => open(a, tab)} onChange={data.reload} />
+      <Marketplace slug={slug} items={market} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a, tab) => open(a, tab)} onChange={data.reload} />
 
       <Advanced slug={slug} broken={data.data?.broken ?? []} envFile={data.data?.env_file ?? "~/.kiqr/.env"} projectEnvFile={data.data?.project_env_file ?? null} index={data.data?.index ?? ""} machineFolder={(data.data?.env_file ?? "~/.kiqr/.env").replace(/\/\.env$/, "/abilities")} onDone={data.reload} onGuide={() => guide && open(guide, "instructions")} />
 
@@ -147,10 +153,11 @@ function byName(a: Ability, b: Ability) {
   return a.name.localeCompare(b.name);
 }
 
-function Group({ label, items, slug, cols, onOpen, onChange }: { label: string; items: Ability[]; slug: string; cols?: 2; onOpen: (a: Ability, tab?: "overview" | "instructions" | "connect") => void; onChange: () => void }) {
+function Group({ label, sub, items, slug, cols, onOpen, onChange }: { label: string; sub?: string; items: Ability[]; slug: string; cols?: 2; onOpen: (a: Ability, tab?: "overview" | "instructions" | "connect") => void; onChange: () => void }) {
   return (
     <>
       <p className="cap ab-cap">{label}</p>
+      {sub && <p className="muted sm ab-sub">{sub}</p>}
       <ul className={`mk-list ab-list ${cols === 2 ? "cols2" : ""}`}>
         {items.map((a) => (
           <Row key={a.id} slug={slug} a={a} onOpen={onOpen} onChange={onChange} />
@@ -194,6 +201,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
   };
   const needs = !a.ready && a.installed;
   const newer = a.installed && a.updatable && hasNewer(a);
+  const service = isService(a);
   return (
     <li className={`mk-row ab-row ${isOn(a) ? "on" : "off"}`}>
       <div className="main" role="button" tabIndex={0} onClick={() => onOpen(a)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen(a))}>
@@ -217,19 +225,14 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
                   <BookOpen size={11} /> instructions
                 </button>
               )}
-              {a.auth.length > 0 && (
-                <button className={`part ${a.missing.length ? "warn" : ""}`} title={a.core ? "KIQR's own key" : a.channels.length ? "This project's channels, each with its own account" : "This project's accounts"} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
-                  <KeyRound size={11} /> {a.core ? "key" : a.channels.length ? "channels" : (a.accounts?.length ?? 0) > 1 ? `${a.accounts?.length} accounts` : "account"}
+              {service ? (
+                <button className={`part ${a.missing.length ? "warn" : ""}`} title={`Every ability of ${serviceName(a)} shares this project's ${serviceName(a)} account`} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
+                  <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? `via your ${serviceName(a)} account` : "needs an account"}
                 </button>
-              )}
-              {a.transport === "mcp" ? (
-                <span className={`part ${a.program_found === false ? "warn" : ""}`}>
-                  <Plug size={11} /> MCP server
-                </span>
-              ) : a.runs_program ? (
-                <span className="part">
-                  <Terminal size={11} /> program
-                </span>
+              ) : a.auth.length > 0 ? (
+                <button className={`part ${a.missing.length ? "warn" : ""}`} title="KIQR's own key" onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
+                  <KeyRound size={11} /> key
+                </button>
               ) : null}
               {a.channels.length > 0 && (
                 <span className="part">
@@ -242,7 +245,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
                 </span>
               )}
             </span>
-            {needs && (a.core || !a.missing.length) && <span className="warn"> · needs {a.missing.length ? a.auth.filter((k) => a.missing.includes(k.env)).map((k) => k.label || k.env).join(", ") : a.program_found === false ? "its program" : "setup"}</span>}
+            {needs && !service && (a.core || !a.missing.length) && <span className="warn"> · needs {a.missing.length ? a.auth.filter((k) => a.missing.includes(k.env)).map((k) => k.label || "a key").join(", ") : a.program_found === false ? "its program" : "setup"}</span>}
           </p>
         </div>
         <div className="acts" onClick={(e) => e.stopPropagation()}>
@@ -251,10 +254,17 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
               {updating ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Update to {a.latest}
             </button>
           )}
-          <span title={a.paused || a.machine_off ? "Off for this project" : needs ? (a.channels.length ? "No channel yet; opens it so you can add one" : "Not connected yet; opens it so you can") : "On for this project"}>
-            {/* A switch that cannot flip yet still does something: it opens the ability where the missing step is. */}
-            <Switch on={!a.paused && !a.machine_off && a.ready} disabled={busy} onChange={(want) => (!a.ready ? onOpen(a, a.auth.length ? "connect" : "overview") : void toggle(want))} />
-          </span>
+          {service && !a.ready ? (
+            // Not connected yet: the account is the missing step, and the wizard sets it up.
+            <Link className="btn g sm" to={connectPath(slug, { service: serviceOf(a).id })}>
+              <Plug size={13} /> Connect
+            </Link>
+          ) : (
+            <span title={a.paused || a.machine_off ? "Off for this project" : needs ? "Not connected yet; opens it so you can" : "On for this project"}>
+              {/* A switch that cannot flip yet still does something: it opens the ability where the missing step is. */}
+              <Switch on={!a.paused && !a.machine_off && a.ready} disabled={busy} onChange={(want) => (!a.ready ? onOpen(a, a.auth.length ? "connect" : "overview") : void toggle(want))} />
+            </span>
+          )}
         </div>
       </div>
       {error && (

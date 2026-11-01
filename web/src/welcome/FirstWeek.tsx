@@ -146,7 +146,7 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
               ))}
           </div>
         )}
-        {posts.length > 0 && <p className="dim sm">They wait as drafts in your Library until you approve them for a channel.</p>}
+        {posts.length > 0 && <p className="dim sm">They wait as drafts in your Library until you approve them for where they go.</p>}
       </section>
 
       <div className="wl-cta">

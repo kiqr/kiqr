@@ -12,6 +12,7 @@ import { useNetworks } from "../networks";
 import { openSeemo } from "../SeemoWidget";
 import { ASK_FOR_PLAN } from "./Plan";
 import { useSignIns } from "./SignIns";
+import { connectPath } from "./Accounts";
 
 type StepState = "done" | "now" | "skipped";
 type Step = {
@@ -94,7 +95,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
   const intake = useAsync(() => api.intake(slug).catch(() => null), [slug]);
   const assets = useAsync(() => api.assets(slug).catch(() => [] as Asset[]), [slug]);
   const planView = useAsync(() => api.plan(slug).catch(() => null), [slug]);
-  const channels = useAsync(() => api.channels(slug).catch(() => null), [slug]);
+  const accounts = useAsync(() => api.accounts(slug).catch(() => null), [slug]);
   const signIns = useSignIns();
   const tasks = useAsync(() => api.tasks(slug).catch(() => []), [slug]);
   const perf = useAsync(() => api.performance(slug).catch(() => null), [slug]);
@@ -113,7 +114,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       if (e.type === "job_finished" && e.job === "posts") setWriting(false);
       if (e.type === "plan_saved") planView.reload();
       if (e.type === "task_saved" || e.type === "task_deleted") tasks.reload();
-      if (e.type === "connection_saved" || e.type === "connection_deleted") channels.reload();
+      if (e.type === "connection_saved" || e.type === "connection_deleted") accounts.reload();
       if (e.type === "metrics_snapshot") perf.reload();
       if (e.type === "intake_saved") (intake.reload(), setup.reload());
       if (["extension_installed", "extension_removed", "extension_paused", "connection_saved", "connect_finished"].includes(e.type)) setup.reload();
@@ -162,7 +163,8 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
   const said = (i?.networks ?? []).flatMap((k) => networks.filter((n) => n.kind === k || n.name.toLowerCase() === k.toLowerCase()).map((n) => n.name).slice(0, 1));
   const sugs = setup.data?.suggestions ?? [];
   const toSetUp = sugs.filter((s) => !s.ready);
-  const ch = channels.data?.channels ?? [];
+  // The accounts content can be published to.
+  const ch = (accounts.data?.connections ?? []).filter((c) => c.publishes ?? c.channel);
   const connected = i?.networks.length ? ch.some((c) => i.networks.includes(c.kind)) : ch.length > 0;
   const measured = (perf.data?.sources ?? []).some((s) => s.provider && s.id !== "kiqr");
   const rhythm = RHYTHM[i?.time ?? ""] ?? RHYTHM[""];
@@ -260,8 +262,8 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
             why: toSetUp[0]?.why[0]?.kind === "site" ? "Seen on your site" : undefined,
             state: st("setup", toSetUp.length === 0),
             optional: true,
-            to: `/p/${slug}/abilities${toSetUp[0] ? `#ability=${toSetUp[0].id}` : ""}`,
-            action: toSetUp.length ? "Set up" : "See abilities",
+            to: toSetUp[0] ? connectPath(slug, { service: toSetUp[0].id }) : `/p/${slug}/accounts`,
+            action: toSetUp.length ? "Set up" : "See accounts",
           } satisfies Step,
         ]
       : []),
@@ -273,26 +275,26 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       why: said.length ? `You said: ${list(said)}` : undefined,
       state: st("connect", connected),
       optional: true,
-      to: `/p/${slug}/channels`,
-      action: connected ? "See channels" : "Connect",
+      to: connected ? `/p/${slug}/accounts` : connectPath(slug, { group: "social" }),
+      action: connected ? "See accounts" : "Connect",
     },
     {
       id: "posts",
       icon: MessageSquareText,
       title: approved ? "Your first posts" : "Approve your first posts",
       text: approved
-        ? "Approved. They go out on the channel and at the time you picked."
+        ? "Approved. They go out where and when you picked."
         : !ch.length
-          ? `${drafts ? `${drafts} draft${drafts === 1 ? " waits" : "s wait"} for you. ` : ""}A post is approved for the channel it goes out on, so connect one first.`
+          ? `${drafts ? `${drafts} draft${drafts === 1 ? " waits" : "s wait"} for you. ` : ""}A post is approved for the account it goes out on, so connect one first.`
           : drafts
-          ? `${drafts} draft${drafts === 1 ? "" : "s"} wait below. Approve one for a channel, or ask Seemo to change it.`
+          ? `${drafts} draft${drafts === 1 ? "" : "s"} wait below. Approve one for an account, or ask Seemo to change it.`
           : writing
             ? "Seemo is writing three posts in your brand. They land below as drafts."
             : "Three posts from your profile, in your voice and your colours. Nothing goes out until you approve it.",
       state: st("posts", approved),
       optional: true,
-      to: approved ? `/p/${slug}/library/post` : !ch.length ? `/p/${slug}/channels` : undefined,
-      action: approved ? "See posts" : "Connect a channel",
+      to: approved ? `/p/${slug}/library/post` : !ch.length ? connectPath(slug, { group: "social" }) : undefined,
+      action: approved ? "See posts" : "Connect an account",
       run: approved || !ch.length ? undefined : drafts ? { label: "See the drafts", go: () => document.getElementById("todo-drafts")?.scrollIntoView({ behavior: "smooth", block: "start" }) } : { label: writing ? "Writing…" : "Write them", go: writePosts },
     },
     {
@@ -312,7 +314,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       text: measured ? "Connected. Seemo reads them once a day and tells you how the plan is going." : objective ? `Your plan counts ${kpi!.toLowerCase()}. Connect where that number lives, and Seemo tells you how it's going.` : "Connect your analytics, and Seemo tells you what works.",
       state: st("numbers", measured),
       optional: true,
-      to: `/p/${slug}/performance`,
+      to: measured ? `/p/${slug}/performance` : connectPath(slug, { group: "numbers" }),
       action: measured ? "See performance" : "Connect",
     },
     {

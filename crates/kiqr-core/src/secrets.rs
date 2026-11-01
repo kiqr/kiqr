@@ -94,6 +94,12 @@ pub fn write_env(path: &Path, name: &str, value: &str) -> Result<()> {
     }
     let mut text = lines.join("\n");
     text.push('\n');
+    write_private(path, &text)
+}
+
+/// Write a file only this user may read (mode 0600 where modes exist): the
+/// `.env` files, a list's contacts.
+pub fn write_private(path: &Path, text: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

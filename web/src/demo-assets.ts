@@ -209,14 +209,15 @@ export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T
     return n;
   };
   const body = init?.body ? JSON.parse(String(init.body)) : {};
-  if (action === "approve") return ok(settle({ channel: body.channel, publish_error: null }));
+  if (action === "approve") return ok(settle({ channel: body.channel, place: body.place || null, publish_error: null }));
   if (action === "schedule" && init?.method === "DELETE") return ok(settle({ publish_at: null, publish_error: null }));
-  if (action === "schedule") return ok(settle({ channel: body.channel || found.channel, publish_at: body.at, publish_error: null }));
+  if (action === "schedule") return ok(settle({ channel: body.channel || found.channel, place: body.place || found.place || null, publish_at: body.at, publish_error: null }));
   if (action === "unpublish") return ok(settle({ publications: [] }));
   if (action === "publish") {
-    const channel = body.channel || found.channel || "me-by-email";
-    settle({ channel, publish_at: null, publish_error: null, publications: [...found.publications, { connector: channel, account: "you@example.com", at: ago(0) }] });
-    return ok({ published: true, url: null, detail: "sent", channel_label: "Me by email" });
+    const channel = body.channel || found.channel || "hello-mail";
+    const place = body.place || found.place || null;
+    settle({ channel, place, publish_at: null, publish_error: null, publications: [...found.publications, { connector: channel, place, account: "hello@unblockingapi.com", at: ago(0) }] });
+    return ok({ published: true, url: null, detail: "sent", channel_label: "hello@unblockingapi.com" });
   }
   if (init?.method === "PATCH") return ok(settle(body));
   if (init?.method === "PUT") return ok(settle(JSON.parse(String(init.body))));

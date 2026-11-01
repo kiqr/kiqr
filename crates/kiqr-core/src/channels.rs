@@ -26,8 +26,9 @@ mod tests {
         let h = markdown_to_html("# Hi\n\nOne *two* [three](https://x.y).\n\n- a\n- b\n");
         assert!(h.contains("<h1>Hi</h1>") && h.contains("<em>two</em>") && h.contains("<li>a</li>"));
         assert!(valid_id("email-to-jane") && !valid_id("Email") && !valid_id("-x"));
-        let c = Channel { destination: [("to".to_string(), serde_json::json!("jane@example.com"))].into_iter().collect(), ..Default::default() };
-        assert_eq!(c.destination_text(), "jane@example.com");
+        let mut c = Channel { kind: "page".into(), ..Default::default() };
+        c.put_place(crate::connections::Place { label: "r/rust".into(), kind: "page".into(), fields: [("subreddit".to_string(), serde_json::json!("rust"))].into_iter().collect(), ..Default::default() });
+        assert_eq!(c.destination_text(), "r/rust");
     }
 }
 

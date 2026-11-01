@@ -57,6 +57,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::market::routes())
         .merge(crate::images::routes())
         .merge(crate::publish::routes())
+        .merge(crate::lists::routes())
         .merge(crate::reset::routes())
         .merge(crate::setup::routes())
         .merge(crate::marketing::routes())

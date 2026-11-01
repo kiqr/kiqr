@@ -27,6 +27,9 @@ projects/*/connections/*/.env
 # An account's working folder (a browser profile) and its activity log stay here too.
 projects/*/connections/*/data/
 projects/*/connections/*/activity.jsonl
+# The people on a list and what was sent to them: personal data stays on this machine.
+projects/*/lists/*/contacts.csv
+projects/*/lists/*/sends/
 ";
 
 const ENV_TEMPLATE: &str = "\

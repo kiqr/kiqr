@@ -15,7 +15,7 @@ import "../chat.css";
 
 export const PLAN_EVENTS = ["plan_saved", "campaign_saved", "campaign_deleted", "asset_saved", "asset_deleted", "task_saved", "task_deleted"];
 
-export const ASK_FOR_PLAN = "Propose a marketing plan for this period from the business brief: two to four objectives with a KPI each, what this period is for, and the channels in play. Read the Plan the marketing instructions first.";
+export const ASK_FOR_PLAN = "Propose a marketing plan for this period from the business brief: two to four objectives with a KPI each, what this period is for, and where to show up. Read the Plan the marketing instructions first.";
 
 export function PlanPage() {
   const { slug = "" } = useParams();
@@ -177,9 +177,9 @@ function PlanHero({ slug, period, version, summary, channels, progress }: { slug
           )}
           {channels.length > 0 && (
             <p className="plan-chans">
-              <span className="cap">Channels</span>
+              <span className="cap">Where</span>
               {channels.map((c) => (
-                <Link key={c} className="tk" to={`/p/${slug}/channels`}>
+                <Link key={c} className="tk" to={`/p/${slug}/accounts`}>
                   <Send size={11} /> {networkName(c, networks)}
                 </Link>
               ))}

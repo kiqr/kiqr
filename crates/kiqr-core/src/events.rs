@@ -119,8 +119,13 @@ pub enum EventKind {
     // Abilities and channels.
     /// An ability made a file into an asset: `ability` is image, video or music.
     MediaCreated { ability: String, asset_type: String, id: String, file: String, provider: String },
-    /// A connection (one account of an ability in a project) was added or changed; `kind` is set for a channel.
+    /// An account (a connection of a service in a project) was added or changed; `kind` is set when its service publishes.
     ConnectionSaved { connection: String, label: String, ability: String, #[serde(default)] kind: String },
+    /// A list of people to email was added, changed or had people added or removed.
+    ListChanged { list: String, label: String, contacts: usize },
+    ListDeleted { list: String },
+    /// A send to a list is under way: so many of the people done, so many failed.
+    ListSending { list: String, subject: String, sent: usize, failed: usize, total: usize, #[serde(default)] done: bool },
     ConnectionDeleted { connection: String, ability: String },
     /// An ability acted through an account (anything but reading), logged on it.
     AccountActed { connection: String, ability: String, role: String, #[serde(default)] target: String, #[serde(default)] url: Option<String> },
@@ -128,8 +133,8 @@ pub enum EventKind {
     /// same role on the same target was done already) or `cap` (the service's
     /// daily cap is reached).
     ActionRefused { connection: String, ability: String, why: String, message: String },
-    /// An asset went out through a channel.
-    AssetPublished { asset_type: String, id: String, channel: String, #[serde(default)] url: Option<String> },
+    /// An asset went out through an account, to a place in it when it has places.
+    AssetPublished { asset_type: String, id: String, channel: String, #[serde(default)] place: Option<String>, #[serde(default)] url: Option<String> },
     /// The user approved an asset for a channel (it is Ready), or set when the
     /// daemon publishes it (`at` set: Scheduled).
     AssetApproved { asset_type: String, id: String, title: String, channel: String, #[serde(default)] at: Option<chrono::DateTime<chrono::Utc>> },
@@ -195,6 +200,9 @@ impl EventKind {
                 | EventKind::MediaCreated { .. }
                 | EventKind::ConnectionSaved { .. }
                 | EventKind::ConnectionDeleted { .. }
+                | EventKind::ListChanged { .. }
+                | EventKind::ListDeleted { .. }
+                | EventKind::ListSending { .. }
                 | EventKind::AccountActed { .. }
                 | EventKind::ActionRefused { .. }
                 | EventKind::AssetPublished { .. }

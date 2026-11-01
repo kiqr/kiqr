@@ -146,12 +146,13 @@ export type Asset = {
   updated_at: string;
   files: { role: string; path: string; bytes: number; sha256: string }[];
   source?: Record<string, unknown>;
-  /** The channel the user approved it for (Ready); when the daemon publishes it (Scheduled); why a scheduled publish failed. */
+  /** The account the user approved it for (Ready), and the place in it; when the daemon publishes it (Scheduled); why a scheduled publish failed. */
   channel?: string | null;
+  place?: string | null;
   publish_at?: string | null;
   publish_error?: string | null;
   archived?: boolean;
-  publications: { connector: string; account?: string; url?: string; at: string; run?: string }[];
+  publications: { connector: string; place?: string | null; account?: string; url?: string; at: string; run?: string }[];
 };
 export type TypeCount = { type: string; count: number };
 export type NewAsset = { type: string; title: string; tags?: string[]; summary?: string; source?: Record<string, unknown>; files?: { role: string; name: string; text: string }[] };
@@ -299,10 +300,10 @@ export type PerfSource = { id: string; label: string; provider: string | null; c
 export type PerfMetric = { source: string; metric: string; label: string; lower_is_better: boolean; last7: number | null; prev7: number | null; last30: number | null; series: { date: string; value: number }[] };
 export type PerfKpi = { objective: string; title: string; kpi: string; label: string | null; target: number | null; unit: string; by: string | null; source: string | null; measured: boolean; value: number | null; prev: number | null; window_days: number };
 export type Performance = { sources: PerfSource[]; metrics: PerfMetric[]; tops: Record<string, { key: string; value: number }[]>; kpis: PerfKpi[]; plan_period: string | null; today: string; refreshed?: { note: string; ok: boolean }[] };
-/** A task run coming up, or a publish the daemon will do (`kind: "publish"`, with the asset and channel). */
-export type CalendarItem = { kind?: "task" | "publish"; task?: string; asset?: { type: string; id: string; title: string }; channel?: string | null; channel_label?: string; title: string; at: string; schedule_text: string };
+/** A task run coming up, or a publish the daemon will do (`kind: "publish"`, with the asset, the account and the place in it). */
+export type CalendarItem = { kind?: "task" | "publish"; task?: string; asset?: { type: string; id: string; title: string }; channel?: string | null; channel_label?: string; place?: string | null; place_label?: string | null; title: string; at: string; schedule_text: string };
 /** What waits for the user: open approvals from every chat, drafts to approve, what is approved but not sent, publishes coming up, failed publishes. */
-/** A channel kind: where content can go. Installed ones carry what their ability declares; listed ones only a name. */
+/** A kind of place content can go (the code's channel kind). Installed ones carry what their ability declares; listed ones only a name. */
 export type Network = { kind: string; name: string; icon: string; network: boolean; installed: boolean; text_limit?: number | null; image?: { width: number; height: number } | null; preview?: string; ability?: string };
 /** A profile the business has where an ability in the marketplace could publish. */
 export type Suggestion = { kind: string; name: string; profile_url: string; ability: string; ability_name: string };
@@ -321,10 +322,30 @@ export type ToolGroup = { id: string; label: string; tools: string[] };
 export type Scope = { scope: "global" } | { scope: "project"; project: string };
 /** A key an ability needs. `set` says where, for a core ability's own key (this project or the machine); an installed ability's keys live on its accounts. */
 export type MarketAuth = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: "project" | "global" | boolean | null };
-/** One of this project's accounts of an ability (a channel, when it publishes): which keys it has, never their values. */
+/** One of this project's accounts of an ability: which keys it has, never their values. */
 export type AccountSummary = { id: string; label: string; default: boolean; channel: boolean; kind: string; destination_text: string; missing: string[]; set: string[] };
-/** A kind of channel an ability publishes to, and what a channel of it needs. */
-export type KindInfo = { kind: string; label: string; name: string; destination: Record<string, unknown> };
+/** A kind an ability publishes as, and the fields a place of it has. */
+export type KindInfo = { kind: string; label: string; name: string; place: Record<string, PlaceField>; does?: string[] };
+/** How far Seemo may go with one role on an account: on its own, after a yes, or not at all. Roles that never act know only auto (on) and off. */
+export type Allow = "auto" | "ask" | "off";
+/** One role an account can be allowed: `acts` roles change something out there and have three choices. */
+export type Permission = { role: string; allow: Allow; acts: boolean };
+/** Somewhere inside an account content can go: a subreddit, a branch, a list of people (`kind: "list"`, `fields.list`). */
+export type Place = { id: string; kind: string; label: string; fields?: Record<string, unknown>; default?: boolean };
+/** One field a place has, as its kind declares it. */
+export type PlaceField = { type?: string; label?: string; help?: string; optional?: boolean; enum?: string[]; placeholder?: string };
+/** A service as the grid of things to connect shows it. `group` is one of SERVICE_GROUPS. */
+export type ServiceCard = { id: string; name?: string; icon?: string; group?: string; profile_hosts?: string[] };
+/** Where a service sits in the grid of things to connect, in the order shown. */
+export const SERVICE_GROUPS: { id: string; label: string }[] = [
+  { id: "social", label: "Social" },
+  { id: "website", label: "Website and blog" },
+  { id: "email", label: "Email" },
+  { id: "numbers", label: "Numbers" },
+  { id: "passwords", label: "Passwords" },
+  { id: "sites", label: "Sites behind a login" },
+  { id: "tools", label: "Tools" },
+];
 /** How an ability signs in with one button (its manifest's `connect`): what to ask first, what comes back. */
 export type ConnectInfo = { label: string; flow: "redirect" | "oauth2" | "cloud"; needs: string[]; returns: string[]; https_only: boolean; /** kiqr.cloud finishes this sign-in (it holds the provider's app). */ via_cloud?: boolean; provider?: string | null };
 /** One instructions file of an ability, and where its text is overridden. */
@@ -380,8 +401,13 @@ export type Ability = {
   signed_in?: "project" | "machine" | null;
   /** This project's accounts of it; empty for one that needs no keys. */
   accounts?: AccountSummary[];
-  /** The kinds of channel it publishes to. */
+  /** The kinds it publishes as. */
   kinds?: KindInfo[];
+  /** The service it is an ability of: its id, and when the daemon sends it, the card the grid shows. */
+  service?: string | null;
+  service_card?: ServiceCard | null;
+  /** What an account of it allows Seemo at first (the manifest's `allow`). */
+  allow?: Record<string, Allow>;
   /** An account of it can be a source too: what the Source switch says. */
   learn?: LearnInfo | null;
   active_for: string[];
@@ -395,20 +421,32 @@ export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts
 export type SignIn = { id: string; name: string; signed_in: boolean; account: string | null; per_project?: boolean; scope?: "project" | "machine" | null; waiting: { user_code: string; verification_uri: string; verification_uri_complete?: string | null } | null };
 /** A key on one account: set or not, never its value. */
 export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean; /** A sign-in keeps it (a token): never typed. */ written?: boolean; /** Its values are read through the account once it is signed in. */ choices?: boolean };
-/** One account of an ability in this project, with its own keys. With a `kind` it is a channel: where the project publishes. */
+/** One account in this project: everything Seemo signs in to (an X account, a mail account, a site), with its own keys, what Seemo may do there, and the places inside it. */
 export type Account = {
   id: string;
   label: string;
   ability: string;
   ability_name: string;
   default: boolean;
-  /** True for a channel. */
+  /** It has a kind: its service publishes. */
   channel: boolean;
+  /** It may be published to now (a kind, and publishing is not off). */
+  publishes?: boolean;
   kind: string;
-  destination: Record<string, unknown>;
+  kind_label?: string;
+  kind_name?: string;
   created_by: string;
   created_at: string;
-  asks_first: boolean;
+  /** What Seemo may do here, by role. */
+  allow?: Permission[];
+  /** Where inside it content goes. */
+  places?: Place[];
+  /** The fields a place here has, and whether one is needed before anything goes out. */
+  place_fields?: Record<string, PlaceField>;
+  needs_place?: boolean;
+  /** Its places are lists of people (a mail account), when the daemon says so. */
+  takes_lists?: boolean;
+  service_card?: ServiceCard;
   publications: number;
   last_published?: string | null;
   connection_name: string;
@@ -429,8 +467,9 @@ export type Account = {
   publisher?: string | null;
   publisher_name?: string | null;
   publishers?: { id: string; name: string }[];
-  /** A source: the project learns from it into the profile. */
+  /** Learning from it is allowed: the project learns from it into the profile. */
   source?: boolean;
+  can_learn?: boolean;
   /** Its ability can teach the project; what the switch says. */
   learn?: LearnInfo | null;
   /** Its ability publishes somewhere: it can be a channel. */
@@ -444,7 +483,12 @@ export type Channel = Account;
 /** Where KIQR listens, when a factory reset could keep it (it isn't the default). `remote`: reachable from other machines. */
 export type ResetNetwork = { host: string; port: number; remote: boolean };
 export type AccountActivity = { connection: string; service: string; today: number; daily_cap: number | null; activity: { at: string; ability: string; role: string; tool: string; target?: string; url?: string | null }[] };
-export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }>; learn?: LearnInfo | null };
+/** A list of people the project emails. The addresses live outside git; this is the record and the counts. */
+export type MailList = { id: string; label: string; description: string; contacts: number; unsubscribed: number; created_at: string; created_by?: string };
+export type Contact = { email: string; name?: string; consent?: string; added?: string | null; unsubscribed?: string | null };
+/** One send to a list: so many sent, so many failed, still running or not. */
+export type ListSend = { key: string; sent: number; failed: number; at: string | null; running: boolean };
+export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; place: Record<string, PlaceField>; needs_place?: boolean; takes_lists?: boolean; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }>; learn?: LearnInfo | null };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -529,7 +573,7 @@ export const api = {
   calendar: (slug: string, from?: string, to?: string) =>
     req<CalendarItem[]>(`/api/projects/${slug}/calendar${from ? `?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}` : ""}`),
   todo: (slug: string) => req<Todo>(`/api/projects/${slug}/todo`),
-  /** Every channel kind the project knows: its abilities' in full, the marketplace's by name. */
+  /** Every kind of place the project knows: its abilities' in full, the marketplace's by name. */
   networks: (slug: string) => req<{ networks: Network[] }>(`/api/projects/${slug}/networks`),
   dismissSuggestion: (slug: string, kind: string) => req<{ dismissed: string }>(`/api/projects/${slug}/suggestions/${encodeURIComponent(kind)}/dismiss`, { method: "POST", body: "{}" }),
   /** Drop the cached marketplace index and read it again in the background; `marketplace_refreshed` follows. */
@@ -573,8 +617,8 @@ export const api = {
   /** The same for one project: its own .env wins over the machine's. */
   setProjectSecret: (slug: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
 
-  /** Start signing in, into one account: `connection` to sign one in again, else a new one is added first (a channel with `kind` and `destination`). Saves what was asked first and returns the page to open; `callback: false` means the user pastes what it shows into the account. */
-  startConnect: (slug: string, id: string, b: { connection?: string; label?: string; kind?: string; destination?: Record<string, string>; learns?: boolean; origin: string; values: Record<string, string> }) =>
+  /** Start signing in, into one account: `connection` to sign one in again, else a new one is added first (with its `kind`, a first `place` and the permissions chosen). Saves what was asked first and returns the page to open; `callback: false` means the user pastes what it shows into the account. */
+  startConnect: (slug: string, id: string, b: { connection?: string; label?: string; kind?: string; place?: Record<string, string>; allow?: Record<string, Allow>; origin: string; values: Record<string, string> }) =>
     req<{ url: string; callback: boolean; connection: string; fields: string[] }>(`/api/projects/${slug}/connect/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(b) }),
 
   // KIQR's own sign-ins: kiqr.cloud, and UnblockingAPI by account
@@ -585,8 +629,16 @@ export const api = {
 
   // Accounts: one setup of an ability in a project, with its own keys
   accounts: (slug: string, ability?: string) => req<{ connections: Account[] }>(`/api/projects/${slug}/connections${ability ? `?ability=${encodeURIComponent(ability)}` : ""}`),
-  createAccount: (slug: string, b: { ability: string; label?: string; secrets?: Record<string, string>; same_as?: string; learns?: boolean }) => req<Account>(`/api/projects/${slug}/connections`, { method: "POST", body: JSON.stringify(b) }),
-  updateAccount: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean; learns?: boolean; kind?: string }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
+  account: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}`),
+  /** A new account: its kind and first place when it publishes, its keys, what Seemo may do there (over the manifest's defaults). */
+  createAccount: (slug: string, b: { ability: string; label?: string; kind?: string; place?: Record<string, string>; place_label?: string; secrets?: Record<string, string>; same_as?: string; allow?: Record<string, Allow> }) => req<Account>(`/api/projects/${slug}/connections`, { method: "POST", body: JSON.stringify(b) }),
+  updateAccount: (slug: string, id: string, p: { label?: string; allow?: Record<string, Allow>; publisher?: string; kind?: string; place?: Record<string, unknown> }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
+  /** What Seemo may do here: role → auto, ask or off (on/off for roles that never act). */
+  setAllow: (slug: string, id: string, allow: Record<string, Allow>) => req<Account>(`/api/projects/${slug}/connections/${id}/allow`, { method: "PUT", body: JSON.stringify(allow) }),
+  /** A place inside an account: the kind's fields, or a list of people (`list`, its id) on a mail account. */
+  addPlace: (slug: string, id: string, b: { label?: string; fields?: Record<string, string>; default?: boolean; list?: string }) => req<Account & { place: Place }>(`/api/projects/${slug}/connections/${id}/places`, { method: "POST", body: JSON.stringify(b) }),
+  updatePlace: (slug: string, id: string, place: string, b: { label?: string; fields?: Record<string, string>; default?: boolean }) => req<Account>(`/api/projects/${slug}/connections/${id}/places/${encodeURIComponent(place)}`, { method: "PUT", body: JSON.stringify(b) }),
+  removePlace: (slug: string, id: string, place: string) => req<Account>(`/api/projects/${slug}/connections/${id}/places/${encodeURIComponent(place)}`, { method: "DELETE" }),
   deleteAccount: (slug: string, id: string) => req<void>(`/api/projects/${slug}/connections/${id}`, { method: "DELETE" }),
   /** One key of an account; an empty value clears it. Never read back. */
   accountChoices: (slug: string, id: string, name: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/connections/${id}/choices/${name}`),
@@ -594,24 +646,35 @@ export const api = {
   /** The account its ability uses when nothing names one. */
   defaultAccount: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}/default`, { method: "POST", body: "{}" }),
 
-  // Channels and publishing
+  // Publishing. `/channels` is the older view: the accounts that publish, and the kinds with their per-publish options.
   channels: (slug: string) => req<{ channels: Channel[]; kinds: ChannelKindInfo[] }>(`/api/projects/${slug}/channels`),
-  createChannel: (slug: string, c: { label: string; kind: string; connection?: string; destination: Record<string, string>; secrets?: Record<string, string>; same_as?: string; learns?: boolean }) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(c) }),
-  deleteChannel: (slug: string, id: string) => req<void>(`/api/projects/${slug}/channels/${id}`, { method: "DELETE" }),
-  /** `asks_first: false` lets Seemo publish through the channel on its own. */
   learnAccount: (slug: string, id: string) => req<{ started: boolean }>(`/api/projects/${slug}/connections/${id}/learn`, { method: "POST" }),
   accountActivity: (slug: string, id: string, limit = 20) => req<AccountActivity>(`/api/projects/${slug}/connections/${id}/activity?limit=${limit}`),
-  updateChannel: (slug: string, id: string, p: { label?: string; destination?: Record<string, unknown>; asks_first?: boolean; publisher?: string }) => req<Channel>(`/api/projects/${slug}/channels/${id}`, { method: "PUT", body: JSON.stringify(p) }),
-  /** Publish an asset now, through the channel it was approved for or the one given. From the UI the click is the yes. */
-  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel = "", note = "", options: Record<string, unknown> = {}) =>
-    req<{ published: boolean; url: string | null; detail: string; channel_label: string }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel, note, options, by: "user" }) }),
-  /** The user's yes to an asset, for a channel: it becomes Ready. Status is never set by hand; these change what it follows from. */
-  approveAsset: (slug: string, a: Pick<Asset, "type" | "id">, channel: string) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/approve`, { method: "POST", body: JSON.stringify({ channel }) }),
-  scheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">, at: string, channel = "", options: Record<string, unknown> = {}) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "POST", body: JSON.stringify({ at, channel, options }) }),
+  /** Publish an asset now, to the account (and place) it was approved for or the one given. From the UI the click is the yes. */
+  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, account = "", note = "", options: Record<string, unknown> = {}, place = "") =>
+    req<{ published: boolean; url: string | null; detail: string; channel_label: string; place_label?: string | null; recipients?: number }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel: account, place, note, options, by: "user" }) }),
+  /** The user's yes to an asset, for an account and a place in it: it becomes Ready. Status is never set by hand; these change what it follows from. */
+  approveAsset: (slug: string, a: Pick<Asset, "type" | "id">, account: string, place = "") => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/approve`, { method: "POST", body: JSON.stringify({ channel: account, place }) }),
+  scheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">, at: string, account = "", options: Record<string, unknown> = {}, place = "") => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "POST", body: JSON.stringify({ at, channel: account, place, options }) }),
   unscheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "DELETE" }),
   unpublishAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/unpublish`, { method: "POST", body: "{}" }),
   archiveAsset: (slug: string, a: Pick<Asset, "type" | "id">, archived: boolean) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}`, { method: "PATCH", body: JSON.stringify({ archived }) }),
   sendEmail: (slug: string, m: { to: string; subject: string; text: string; asset?: { type: string; id: string } }) => req<{ sent: boolean; to: string; subject: string; connection: string }>(`/api/projects/${slug}/email`, { method: "POST", body: JSON.stringify(m) }),
+
+  // Lists: the people the project emails (Audience)
+  lists: (slug: string) => req<{ lists: MailList[] }>(`/api/projects/${slug}/lists`),
+  list: (slug: string, id: string) => req<MailList>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}`),
+  createList: (slug: string, b: { label: string; description?: string }) => req<MailList>(`/api/projects/${slug}/lists`, { method: "POST", body: JSON.stringify(b) }),
+  updateList: (slug: string, id: string, b: { label?: string; description?: string }) => req<MailList>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(b) }),
+  deleteList: (slug: string, id: string) => req<void>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  contacts: (slug: string, id: string) => req<{ list: string; contacts: Contact[] }>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}/contacts`),
+  /** Add people; `consent` is how they agreed to hear from the business, in the user's words. */
+  addContacts: (slug: string, id: string, contacts: { email: string; name?: string }[], consent: string) => req<{ added: number; list: MailList }>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}/contacts`, { method: "POST", body: JSON.stringify({ contacts, consent }) }),
+  removeContact: (slug: string, id: string, email: string) => req<{ removed: boolean; list: MailList }>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}/contacts`, { method: "DELETE", body: JSON.stringify({ email }) }),
+  /** A CSV file's text: an email column (or a column of addresses), a name column when there is one. */
+  importContacts: (slug: string, id: string, csv: string, consent: string) => req<{ found: number; added: number; list: MailList }>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}/import`, { method: "POST", body: JSON.stringify({ csv, consent }) }),
+  unsubscribe: (slug: string, id: string, email: string) => req<{ unsubscribed: boolean; list: MailList }>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}/unsubscribe`, { method: "POST", body: JSON.stringify({ email }) }),
+  listSends: (slug: string, id: string) => req<{ list: string; sends: ListSend[] }>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}/sends`),
 };
 
 let demoTelemetry = true;
@@ -627,7 +690,7 @@ let demoIntake: Intake = { goal: "", goal_note: "", customers: "", time: "", net
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith("/api/signins")) return Promise.resolve({ signins: [{ id: "kiqr-cloud", name: "kiqr.cloud", signed_in: false, account: null, waiting: null }, { id: "unblockingapi", name: "UnblockingAPI", signed_in: false, account: null, waiting: null }], cloud_url: "https://kiqr.cloud" } as T);
-  if (/\/(chats|approvals|tasks|calendar|channels|connections|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|channels|connections|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|lists)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

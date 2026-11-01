@@ -126,9 +126,12 @@ pub struct Asset {
     /// What it was made from: a content gap, a topic cluster, a brief version… Free-form.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub source: serde_json::Map<String, serde_json::Value>,
-    /// The channel the user approved it for. Set, the asset is Ready.
+    /// The account the user approved it for. Set, the asset is Ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// The place inside that account, when it has places (a subreddit, a list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
     /// When the daemon publishes it to that channel. Set, the asset is Scheduled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_at: Option<DateTime<Utc>>,
@@ -192,7 +195,11 @@ pub struct AssetFile {
 /// Where an asset went out.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Publication {
+    /// The account it went through (older records call it the connector).
     pub connector: String,
+    /// The place inside the account, when it has places (a subreddit, a list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,6 +388,7 @@ pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
         files: Vec::new(),
         source,
         channel: None,
+        place: None,
         publish_at: None,
         publish_options: Default::default(),
         publish_error: None,
@@ -585,7 +593,7 @@ mod tests {
         let mut a = a;
         a.publish_at = Some(Utc::now() + chrono::Duration::hours(1));
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Scheduled);
-        a.publications.push(Publication { connector: "blog".into(), account: None, url: None, at: Utc::now(), run: None });
+        a.publications.push(Publication { connector: "blog".into(), place: None, account: None, url: None, at: Utc::now(), run: None });
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Published);
         a.archived = true;
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Archived);

@@ -139,7 +139,7 @@ const synthesis: [string, string, string[]][] = [
   ["voice", "Brand voice", ["Plain and technical", "Short sentences, no superlatives", "Shows code before claims"]],
   ["competitors", "Competitors", ["Bright Data", "ScrapingBee", "Zyte", "Apify"]],
   ["seo", "SEO", ["Targets 'web unblocking API' and 'scraping API'", "One landing page per template", "Comparison pages for each competitor"]],
-  ["channels", "Channels", ["Developer blog with tutorials", "Discord community", "X and GitHub"]],
+  ["channels", "Where it shows up", ["Developer blog with tutorials", "Discord community", "X and GitHub"]],
   ["content", "Content", ["Tutorials: rank tracker, price monitoring", "Explainers on proxies and browser challenges", "Monthly changelog since March 2025"]],
   ["integrations", "Integrations", ["Zapier, n8n and Make", "Google Sheets", "Plain REST from any language"]],
   ["trust", "Trust", ["Case studies: Acme, Northwind", "Testimonials from engineering leads", "No page content kept after delivery"]],

@@ -6,9 +6,10 @@
 // panel so a second connected source does not push the rest down a screen.
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Loader2, Minus, RefreshCw, Sparkles, Target } from "lucide-react";
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Loader2, Minus, Plug, RefreshCw, Sparkles, Target } from "lucide-react";
 import { api, useAsync, useEvents, type PerfKpi, type PerfMetric } from "../api";
 import { ago } from "./Project";
+import { connectPath } from "./Accounts";
 import "../profile.css";
 
 export const PERF_EVENTS = ["metrics_snapshot", "metrics_failed", "plan_saved", "extension_installed", "extension_removed", "secret_set", "config_changed"];
@@ -120,10 +121,10 @@ export function PerformancePage() {
           </span>
           <div className="min0">
             <b>Connect your analytics</b>
-            <p className="muted">Google Analytics, Search Console or Plausible, from the marketplace. Until then only what KIQR publishes is counted.</p>
+            <p className="muted">Connect the account where your numbers live, and Seemo reads them once a day. Until then only what KIQR publishes is counted.</p>
           </div>
-          <Link className="btn p" to={`/p/${slug}/abilities#marketplace`}>
-            <Sparkles size={14} /> Find an analytics ability
+          <Link className="btn p" to={connectPath(slug, { group: "numbers" })}>
+            <Plug size={14} /> Connect your analytics
           </Link>
         </div>
       )}
@@ -172,9 +173,9 @@ export function PerformancePage() {
                     {s.taken_at ? ` · ${ago(s.taken_at)}` : " · not read yet"}
                   </span>
                 ) : s.candidates.length ? (
-                  <Link to={`/p/${slug}/abilities#ability=${s.candidates[0].id}`}>Connect {s.candidates[0].name}</Link>
+                  <Link to={connectPath(slug, { service: s.candidates[0].id })}>Connect {s.candidates[0].name}</Link>
                 ) : (
-                  <Link to={`/p/${slug}/abilities#marketplace`}>Find a source</Link>
+                  <Link to={connectPath(slug, { group: "numbers" })}>Connect a source</Link>
                 )}
               </li>
             ))}
@@ -308,7 +309,7 @@ function KpiTile({ k, slug }: { k: PerfKpi; slug: string }) {
         <>
           <div className="plan-bar" />
           <span className="sub">
-            <Link to={`/p/${slug}/abilities#marketplace`}>{k.source ? `Connect a ${k.source} source` : "Connect a source"}</Link>
+            <Link to={connectPath(slug, { group: "numbers" })}>{k.source ? `Connect a ${k.source} source` : "Connect a source"}</Link>
           </span>
         </>
       )}

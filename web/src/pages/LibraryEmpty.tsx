@@ -40,7 +40,7 @@ function groups(name: string, offering: string, gap: string, audience: string): 
       ideas: [
         { icon: Laugh, name: "Memes", example: `The one about ${audience.toLowerCase()} everyone will recognise` },
         { icon: Sparkles, name: "Social images", example: "Quote cards and announcements in your brand colours" },
-        { icon: Image, name: "Banners", example: "Hero images and ad creatives sized for every channel" },
+        { icon: Image, name: "Banners", example: "Hero images and ad creatives sized for every network" },
         { icon: BarChart3, name: "Infographics", example: "Your numbers and process, drawn as one shareable image" },
       ],
     },

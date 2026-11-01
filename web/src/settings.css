@@ -204,6 +204,7 @@ a.mk-author:hover { color: var(--accent); }
 
 /* Abilities page: rows, parts, the modal */
 .ab-cap { margin: 18px 0 8px; }
+.ab-cap + .ab-sub { margin: -4px 0 10px; max-width: 640px; }
 .ab-row .main { cursor: pointer; border-radius: 10px; margin: -6px -8px; padding: 6px 8px; transition: background 150ms; }
 .ab-row .main:hover, .ab-row .main:focus-visible { background: color-mix(in oklab, var(--panel-2) 70%, transparent); outline: none; }
 .ab-row .nm .chip.sm { font-weight: 500; }

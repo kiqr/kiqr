@@ -90,7 +90,7 @@ export const SECTION_TITLES: Record<string, string> = {
   voice: "Brand voice",
   competitors: "Competitors",
   seo: "SEO",
-  channels: "Channels",
+  channels: "Where it shows up",
   content: "Content",
   integrations: "Integrations",
   trust: "Trust",

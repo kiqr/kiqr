@@ -384,7 +384,7 @@ export function AssetPage() {
           </div>
           <div className="pcard">
             <p className="cap">{a.status === "published" ? "Published" : a.status === "draft" ? "Approve" : "Publish"}</p>
-            {a.status === "draft" && <p className="muted sm">Approve it for a channel; then publish it now or pick a time. Seemo can ask to publish it too, and you say yes on its card.</p>}
+            {a.status === "draft" && <p className="muted sm">Approve it for where it goes; then publish it now or pick a time. Seemo can ask to publish it too, and you say yes on its card.</p>}
             <AssetActions slug={slug} a={a} onChange={asset.reload} />
           </div>
           <div className="pcard">

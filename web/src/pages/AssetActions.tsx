@@ -1,20 +1,22 @@
 // What you can do with an asset, by where it stands. Nobody sets the status:
-// it follows from the facts. Approve picks the channel (Ready), Schedule sets
-// the time (Scheduled), Publish sends it (Published). Unpublish, Archive and
+// it follows from the facts. Approve picks where it goes, an account and a
+// place in it (Ready), Schedule sets the time (Scheduled), Publish sends it
+// (Published). Unpublish, Archive and
 // Bring back are the only steps backwards. The same block sits under a post
 // in the chat, in the Library's modal, on the asset page and on the To do page.
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, Archive, ArchiveRestore, CalendarClock, Check, ExternalLink, Loader2, Send, Undo2 } from "lucide-react";
 import { FieldInput } from "./FieldInput";
-import { api, useAsync, type Asset, type AssetStatus, type Channel } from "../api";
+import { api, useAsync, type Account, type Asset, type AssetStatus, type ChannelKindInfo, type MailList } from "../api";
 import { networkOf, useNetworks } from "../networks";
 import type { Network } from "../api";
 import { ago } from "./Project";
+import { connectPath, placeText } from "./Accounts";
 
 export const STATUSES: AssetStatus[] = ["draft", "ready", "scheduled", "published", "archived"];
 export const STATUS_TONE: Record<AssetStatus, string> = { draft: "", ready: "acc", scheduled: "ai", published: "ok", archived: "" };
-/** Badge wording, sentence case like "All". Ready reads as Approved: the user said yes to it for a channel. */
+/** Badge wording, sentence case like "All". Ready reads as Approved: the user said yes to it for an account. */
 export const STATUS_LABEL: Record<AssetStatus, string> = { draft: "Draft", ready: "Approved", scheduled: "Scheduled", published: "Published", archived: "Archive" };
 
 export function StatusChip({ a, channel }: { a: Asset; channel?: string }) {
@@ -37,31 +39,53 @@ function defaultAt() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** The channels of a post's network (its channel kind); everything that can publish otherwise. */
-function fitting(a: Asset, ready: Channel[], networks: Network[]) {
+/** The accounts of a post's network (its kind); everything that can publish otherwise. */
+function fitting(a: Asset, ready: Account[], networks: Network[]) {
   const net = networkOf(a, networks);
   if (!net) return ready;
   const hit = ready.filter((c) => c.kind === net.kind);
   return hit.length ? hit : ready;
 }
 
+/** One place an asset can go: an account, and a place in it when it has places. */
+type Target = { key: string; account: Account; place: string; text: string };
+const keyOf = (account: string, place?: string | null) => `${account}::${place ?? ""}`;
+
+/** Every account that publishes, one entry per place where it has places: "hello@kiqr.dev → Newsletter (412)". */
+function targetsOf(accounts: Account[], lists: MailList[]): Target[] {
+  return accounts.flatMap((c) =>
+    (c.places ?? []).length
+      ? [...(c.places ?? [])].sort((x, y) => Number(!!y.default) - Number(!!x.default)).map((p) => ({ key: keyOf(c.id, p.id), account: c, place: p.id, text: `${c.label} → ${placeText(p, lists)}` }))
+      : [{ key: keyOf(c.id), account: c, place: "", text: c.label }],
+  );
+}
+
 export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: Asset; compact?: boolean; onChange: () => void }) {
-  const channels = useAsync(() => api.channels(slug).catch(() => ({ channels: [] as Channel[], kinds: [] })), [slug]);
-  const all = channels.data?.channels ?? [];
+  const accounts = useAsync(() => api.accounts(slug).then((r) => r.connections).catch(() => [] as Account[]), [slug]);
+  // The kinds' per-publish choices (a blog: draft or published) come with the older view.
+  const kinds = useAsync(() => api.channels(slug).then((r) => r.kinds).catch(() => [] as ChannelKindInfo[]), [slug]);
+  const lists = useAsync(() => api.lists(slug).then((r) => r.lists).catch(() => [] as MailList[]), [slug]);
+  const all = (accounts.data ?? []).filter((c) => c.publishes ?? c.channel);
   const ready = all.filter((c) => c.ready);
   const networks = useNetworks(slug);
-  const choices = fitting(a, ready, networks);
+  const targets = targetsOf(fitting(a, ready, networks), lists.data ?? []);
+  const everywhere = targetsOf(all, lists.data ?? []);
   const [pick, setPick] = useState("");
   const [mode, setMode] = useState<"" | "schedule" | "channel">("");
   const [at, setAt] = useState(defaultAt);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const own = all.find((c) => c.id === a.channel);
-  const chosen = pick || (mode !== "channel" && a.channel) || choices[0]?.id || "";
-  const chosenLabel = all.find((c) => c.id === chosen)?.label ?? chosen;
-  // Choices the channel's kind offers per publish (a blog: draft or published), the first value by default.
-  const target = all.find((c) => c.id === (a.channel || chosen));
-  const offered = Object.entries(channels.data?.kinds.find((k) => k.kind === target?.kind && k.connection === target?.ability)?.options ?? {}).filter(([, s]) => s.enum?.length);
+  const ownKey = a.channel ? keyOf(a.channel, a.place) : "";
+  const own = everywhere.find((t) => t.key === ownKey) ?? everywhere.find((t) => t.account.id === a.channel && !a.place);
+  const ownText = own?.text ?? all.find((c) => c.id === a.channel)?.label ?? a.channel ?? "";
+  const chosenKey = pick || (mode !== "channel" && ownKey) || targets[0]?.key || "";
+  const chosen = everywhere.find((t) => t.key === chosenKey) ?? targets.find((t) => t.key === chosenKey);
+  const chosenAccount = chosen?.account.id ?? a.channel ?? "";
+  const chosenPlace = chosen?.place ?? a.place ?? "";
+  const chosenLabel = chosen?.text ?? chosenKey;
+  // Choices the account's kind offers per publish (a blog: draft or published), the first value by default.
+  const target = all.find((c) => c.id === (a.channel || chosenAccount));
+  const offered = Object.entries(kinds.data?.find((k) => k.kind === target?.kind && k.connection === target?.ability)?.options ?? {}).filter(([, s]) => s.enum?.length);
   const [opts, setOpts] = useState<Record<string, string>>({});
 
   const run = async (what: string, fn: () => Promise<unknown>) => {
@@ -80,11 +104,11 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   };
   const spin = (what: string, Icon: typeof Check) => (busy === what ? <Loader2 size={14} className="spin" /> : <Icon size={14} />);
 
-  const picker = choices.length > 1 && (
-    <select className="input sm" value={chosen} onChange={(e) => setPick(e.target.value)} aria-label="Channel">
-      {choices.map((c) => (
-        <option key={c.id} value={c.id}>
-          {c.label} ({c.destination_text})
+  const picker = targets.length > 1 && (
+    <select className="input sm" value={chosenKey} onChange={(e) => setPick(e.target.value)} aria-label="Where it goes">
+      {targets.map((t) => (
+        <option key={t.key} value={t.key}>
+          {t.text}
         </option>
       ))}
     </select>
@@ -92,7 +116,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   const scheduleRow = mode === "schedule" && (
     <div className="aa-row">
       <input className="input sm" type="datetime-local" value={at} onChange={(e) => setAt(e.target.value)} />
-      <button className="btn p sm" disabled={!!busy || !at} onClick={() => void run("schedule", () => api.scheduleAsset(slug, a, new Date(at).toISOString(), chosen, opts))}>
+      <button className="btn p sm" disabled={!!busy || !at} onClick={() => void run("schedule", () => api.scheduleAsset(slug, a, new Date(at).toISOString(), chosenAccount, opts, chosenPlace))}>
         {spin("schedule", CalendarClock)} Schedule
       </button>
       <button className="btn t sm" onClick={() => setMode("")}>
@@ -117,18 +141,18 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
       </div>
     );
   } else if (a.status === "draft") {
-    body = !channels.data ? null : ready.length === 0 ? (
+    body = !accounts.data ? null : ready.length === 0 ? (
       <div className="aa-row">
         <span className="muted sm">
-          Approve it once there is somewhere to send it. <Link to={`/p/${slug}/channels`}>Add a channel</Link>.
+          Approve it once there is somewhere to send it. <Link to={connectPath(slug)}>Connect an account</Link>.
         </span>
         {archive}
       </div>
     ) : (
       <div className="aa-row">
         {picker}
-        <button className="btn p sm" disabled={!!busy || !chosen} onClick={() => void run("approve", () => api.approveAsset(slug, a, chosen))}>
-          {spin("approve", Check)} Approve{choices.length === 1 ? ` for ${chosenLabel}` : ""}
+        <button className="btn p sm" disabled={!!busy || !chosen} onClick={() => void run("approve", () => api.approveAsset(slug, a, chosenAccount, chosenPlace))}>
+          {spin("approve", Check)} Approve{targets.length === 1 ? ` for ${chosenLabel}` : ""}
         </button>
         {archive}
       </div>
@@ -139,17 +163,17 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
         <div className="aa-row">
           {a.status === "scheduled" && a.publish_at ? (
             <span className="chip ai">
-              <CalendarClock size={11} /> {whenAt(a.publish_at)} to {own?.label ?? a.channel}
+              <CalendarClock size={11} /> {whenAt(a.publish_at)} to {ownText}
             </span>
           ) : (
             <span className="chip acc">
-              <Check size={11} /> Approved for {own?.label ?? a.channel}
+              <Check size={11} /> Approved for {ownText}
             </span>
           )}
           {mode === "channel" ? (
             <>
-              {picker || <span className="muted sm">No other channel.</span>}
-              <button className="btn g sm" disabled={!!busy || !chosen || chosen === a.channel} onClick={() => void run("approve", () => api.approveAsset(slug, a, chosen))}>
+              {picker || <span className="muted sm">Nowhere else to send it.</span>}
+              <button className="btn g sm" disabled={!!busy || !chosen || chosenKey === ownKey} onClick={() => void run("approve", () => api.approveAsset(slug, a, chosenAccount, chosenPlace))}>
                 {spin("approve", Check)} Use it
               </button>
               <button className="btn t sm" onClick={() => setMode("")}>
@@ -175,9 +199,9 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
                   <CalendarClock size={14} /> Schedule
                 </button>
               )}
-              {ready.length > 1 && (
+              {targetsOf(ready, lists.data ?? []).length > 1 && (
                 <button className="btn t sm" disabled={!!busy} onClick={() => setMode("channel")}>
-                  Change channel
+                  Change where
                 </button>
               )}
               {archive}
@@ -194,7 +218,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
           {a.publications.map((p, i) => (
             <li key={i}>
               <Send size={12} />
-              <span>{all.find((c) => c.id === p.connector)?.label ?? p.connector}</span>
+              <span>{everywhere.find((t) => t.key === keyOf(p.connector, p.place))?.text ?? (accounts.data ?? []).find((c) => c.id === p.connector)?.label ?? p.connector}</span>
               {p.url ? (
                 <a href={p.url} target="_blank" rel="noreferrer">
                   open <ExternalLink size={11} />
@@ -207,7 +231,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
           ))}
         </ul>
         <div className="aa-row">
-          <button className="btn t sm" disabled={!!busy} title="KIQR stops counting it as published. What is on the channel stays there." onClick={() => void run("unpublish", () => api.unpublishAsset(slug, a))}>
+          <button className="btn t sm" disabled={!!busy} title="KIQR stops counting it as published. What went out stays where it went." onClick={() => void run("unpublish", () => api.unpublishAsset(slug, a))}>
             {spin("unpublish", Undo2)} Unpublish
           </button>
           {archive}

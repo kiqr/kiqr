@@ -2,10 +2,14 @@
 //! own keys. Every installed ability of that service (its manifest's
 //! `service`, else its id) uses the project's accounts of it: one sign-in for
 //! all of them. A project can have as many as it wants (two WordPress
-//! sites, two analytics properties). A connection whose ability publishes is
-//! a channel: it also has a kind, a destination, "asks first" and a count of
-//! what went out. Installing an ability only puts its code on the machine;
-//! everything that says *which* account lives here.
+//! sites, two analytics properties). The user sees an **account**; what Seemo
+//! may do through it is its permissions (`allow`, one per role: on its own,
+//! ask first, off), and where its service has several places to publish (a
+//! subreddit, a repository branch, a mailing list) it has **places**. An
+//! account of a service that publishes has a `kind` and a count of what went
+//! out; the code still calls that a channel, the user never does. Installing
+//! an ability only puts its code on the machine; everything that says *which*
+//! account lives here.
 //!
 //! `projects/<slug>/connections/<id>/connection.yaml`, committed, and
 //! `projects/<slug>/connections/<id>/.env`, the keys, never committed.
@@ -20,6 +24,71 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+/// How far Seemo may go with one role on an account: on its own (the card
+/// is the record), after a yes (the card waits), or not at all. Roles that
+/// never act (`read`, `learn`, `measure`) know only `auto` (on) and `off`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Allow {
+    #[serde(alias = "on")]
+    Auto,
+    #[default]
+    Ask,
+    Off,
+}
+
+/// Everything an account can be allowed: the tool roles plus learning the
+/// business from it and measuring (reading its numbers).
+pub const PERMISSIONS: &[&str] = &["read", "reply", "publish", "manage", "learn", "measure"];
+/// The roles that change something out there, and so ask by default.
+pub const ACTING: &[&str] = &["reply", "publish", "manage"];
+
+impl Allow {
+    pub fn acts(role: &str) -> bool {
+        ACTING.contains(&role)
+    }
+    /// What an account allows when nothing was chosen: acting asks, the rest is on.
+    pub fn default_for(role: &str) -> Allow {
+        if Allow::acts(role) { Allow::Ask } else { Allow::Auto }
+    }
+    pub fn parse(s: &str) -> Option<Allow> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" | "on" => Some(Allow::Auto),
+            "ask" => Some(Allow::Ask),
+            "off" => Some(Allow::Off),
+            _ => None,
+        }
+    }
+}
+
+/// Somewhere inside an account that content can go: a subreddit, a branch,
+/// a mailing list. Its `fields` are what the kind's `place` declares; a
+/// mailing list's one field is `list`, the list's id.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Place {
+    pub id: String,
+    /// The channel kind it belongs to.
+    pub kind: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, Value>,
+    /// The one a publish goes to when none is named.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
+}
+
+impl Place {
+    /// `list`, a mailing list on a mail account.
+    pub const LIST: &'static str = "list";
+    pub fn is_list(&self) -> bool {
+        self.kind == Self::LIST
+    }
+    pub fn list_id(&self) -> Option<&str> {
+        self.is_list().then(|| self.fields.get("list").and_then(Value::as_str)).flatten()
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -39,31 +108,40 @@ pub struct Connection {
     /// `user`, or `chat:<id>`.
     pub created_by: String,
     pub created_at: DateTime<Utc>,
-    /// A channel's kind (`email`, `wordpress`…); empty for a connection that does not publish.
+    /// The kind its service publishes as (`email`, `wordpress`…); empty for an
+    /// account of a service that does not publish. The code's "channel".
     #[serde(skip_serializing_if = "String::is_empty")]
     pub kind: String,
-    /// Destination fields as the kind declares them: `to`, `subject`…
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub destination: BTreeMap<String, Value>,
+    /// What Seemo may do here, by role (`PERMISSIONS`); a role not listed has
+    /// its default (`Allow::default_for`). The manifest's `allow` fills it
+    /// when the account is made; the user changes it on the account.
+    pub allow: BTreeMap<String, Allow>,
+    /// Where inside the account content goes, when the kind has places.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<Place>,
     /// The ability that publishes here, when the user picked one of several
     /// (`pick_publisher`). Empty: the one it was made with, else the first on.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub publisher: String,
-    /// A publish Seemo proposes shows a card and waits for a yes. Off, Seemo
-    /// publishes here on its own and the card only records what went out.
-    pub asks_first: bool,
     pub publications: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_published: Option<DateTime<Utc>>,
-    /// A source: the project learns from it (its ability's `learn:`, into
-    /// the business profile). An account can be a channel, a source, or both.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub learns: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_learned: Option<DateTime<Utc>>,
     /// Documents read the last time.
     #[serde(skip_serializing_if = "is_zero")]
     pub learned: u32,
+    /// Records from before permissions and places, read on load and folded
+    /// into `allow` and `places` by `normalize`; never written again.
+    #[doc(hidden)]
+    #[serde(skip_serializing)]
+    pub destination: BTreeMap<String, Value>,
+    #[doc(hidden)]
+    #[serde(skip_serializing)]
+    pub asks_first: Option<bool>,
+    #[doc(hidden)]
+    #[serde(skip_serializing)]
+    pub learns: Option<bool>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -81,21 +159,108 @@ impl Default for Connection {
             created_by: "user".into(),
             created_at: Utc::now(),
             kind: String::new(),
-            destination: BTreeMap::new(),
+            allow: BTreeMap::new(),
+            places: Vec::new(),
             publisher: String::new(),
-            asks_first: true,
             publications: 0,
             last_published: None,
-            learns: false,
             last_learned: None,
             learned: 0,
+            destination: BTreeMap::new(),
+            asks_first: None,
+            learns: None,
         }
     }
 }
 
 impl Connection {
+    /// An account of a service that publishes (it has a kind).
     pub fn is_channel(&self) -> bool {
         !self.kind.is_empty()
+    }
+
+    /// May be published to: it has a kind and publishing is not switched off.
+    pub fn publishes(&self) -> bool {
+        self.is_channel() && self.allow("publish") != Allow::Off
+    }
+
+    /// What Seemo may do here with one role: the choice made, else the default.
+    pub fn allow(&self, role: &str) -> Allow {
+        self.allow.get(role).copied().unwrap_or_else(|| Allow::default_for(role))
+    }
+
+    /// Learning from it is on (the account is a source).
+    pub fn learns(&self) -> bool {
+        self.allow("learn") != Allow::Off
+    }
+
+    /// A record from before permissions and places, read into the new shape:
+    /// "asks first" off is publishing on its own, the Source switch is the
+    /// learn permission, a destination is the account's one place. Saving
+    /// writes the new shape; nothing is lost.
+    fn normalize(&mut self) {
+        if self.asks_first.take() == Some(false) {
+            self.allow.entry("publish".into()).or_insert(Allow::Auto);
+        }
+        match self.learns.take() {
+            Some(true) => {
+                self.allow.entry("learn".into()).or_insert(Allow::Auto);
+            }
+            Some(false) => {
+                self.allow.entry("learn".into()).or_insert(Allow::Off);
+            }
+            None => {}
+        }
+        if !self.destination.is_empty() && self.places.is_empty() {
+            let fields = std::mem::take(&mut self.destination);
+            // An old email channel's `to` names the place; anything else, its first text.
+            let label = fields.get("to").and_then(|v| v.as_str().map(str::to_string)).or_else(|| fields.values().find_map(|v| v.as_str().map(str::to_string))).unwrap_or_else(|| self.label.clone());
+            self.places.push(Place { id: "main".into(), kind: self.kind.clone(), label, fields, default: true });
+        }
+        self.destination.clear();
+    }
+
+    /// The place a call means: the one named (by id or label), else the
+    /// default, else the only one. None when the account has none, or the
+    /// name is unknown.
+    pub fn place(&self, named: Option<&str>) -> Option<&Place> {
+        match named.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => self.places.iter().find(|p| p.id == n || p.label.eq_ignore_ascii_case(n)),
+            None => self.places.iter().find(|p| p.default).or_else(|| (self.places.len() == 1).then(|| &self.places[0])),
+        }
+    }
+
+    /// Add or replace a place; the first one is the default.
+    pub fn put_place(&mut self, mut p: Place) {
+        if p.id.is_empty() {
+            p.id = crate::assets::slugify(&p.label);
+        }
+        if self.places.is_empty() {
+            p.default = true;
+        }
+        if let Some(i) = self.places.iter().position(|o| o.id == p.id) {
+            p.default = p.default || self.places[i].default;
+            self.places[i] = p;
+        } else {
+            self.places.push(p);
+        }
+        if self.places.iter().filter(|p| p.default).count() > 1 {
+            let keep = self.places.iter().rposition(|p| p.default).unwrap_or(0);
+            for (i, o) in self.places.iter_mut().enumerate() {
+                o.default = i == keep;
+            }
+        }
+    }
+
+    pub fn remove_place(&mut self, id: &str) -> Option<Place> {
+        let i = self.places.iter().position(|p| p.id == id)?;
+        let gone = self.places.remove(i);
+        if gone.default {
+            if let Some(first) = self.places.first_mut() {
+                first.default = true;
+            }
+        }
+        Some(gone)
     }
 
     /// The service it is an account of: `service`, else the ability it was made with.
@@ -110,7 +275,8 @@ impl Connection {
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
                 let f = e.path().join("connection.yaml");
-                if let Ok(Some(c)) = store.read_yaml_opt::<Connection>(&f) {
+                if let Ok(Some(mut c)) = store.read_yaml_opt::<Connection>(&f) {
+                    c.normalize();
                     out.push(c);
                 }
             }
@@ -119,9 +285,9 @@ impl Connection {
         Ok(out)
     }
 
-    /// The project's channels: connections that publish.
+    /// The project's accounts that can be published to.
     pub fn channels(store: &Store, slug: &str) -> Result<Vec<Connection>> {
-        Ok(Self::list(store, slug)?.into_iter().filter(Connection::is_channel).collect())
+        Ok(Self::list(store, slug)?.into_iter().filter(Connection::publishes).collect())
     }
 
     /// One service's connections (`Manifest::service`), the default first.
@@ -136,7 +302,10 @@ impl Connection {
             bail!("no connection '{id}'");
         }
         match store.read_yaml_opt::<Connection>(&store.home().connections_dir(slug).join(id).join("connection.yaml"))? {
-            Some(c) => Ok(c),
+            Some(mut c) => {
+                c.normalize();
+                Ok(c)
+            }
             None => bail!("no connection '{id}'"),
         }
     }
@@ -200,10 +369,9 @@ impl Connection {
         crate::extensions::missing_keys(m, |k| keys.contains_key(k))
     }
 
-    /// `jane@example.com` for email, else the first destination value.
+    /// Where a publish goes by default, in words: the default place's label, else nothing.
     pub fn destination_text(&self) -> String {
-        let pick = |k: &str| self.destination.get(k).and_then(|v| v.as_str()).map(str::to_string);
-        pick("to").or_else(|| pick("site")).or_else(|| pick("url")).or_else(|| pick("account")).or_else(|| self.destination.values().find_map(|v| v.as_str().map(str::to_string))).unwrap_or_default()
+        self.place(None).map(|p| p.label.clone()).unwrap_or_default()
     }
 }
 
@@ -325,9 +493,9 @@ pub fn valid_id(id: &str) -> bool {
 /// ability's first kind when that kind needs no destination (a blog), so it
 /// can be published to at once; a plain account otherwise.
 fn first_account(store: &Store, slug: &str, m: &Manifest) -> Connection {
-    let kind = m.channels.first().filter(|k| k.destination.values().all(|spec| spec["optional"].as_bool().unwrap_or(false))).map(|k| k.kind.clone()).unwrap_or_default();
+    let kind = m.channels.first().filter(|k| k.place.values().all(|spec| spec["optional"].as_bool().unwrap_or(false))).map(|k| k.kind.clone()).unwrap_or_default();
     let label = m.channels.first().filter(|_| !kind.is_empty()).map(|k| k.label.clone()).unwrap_or_else(|| m.name.clone());
-    Connection { id: new_id(store, slug, &label), label, ability: m.id.clone(), service: m.service.clone(), default: true, created_by: "kiqr".into(), kind, ..Default::default() }
+    Connection { id: new_id(store, slug, &label), label, ability: m.id.clone(), service: m.service.id.clone(), default: true, created_by: "kiqr".into(), kind, allow: m.allow.clone(), ..Default::default() }
 }
 
 /// A unique id from a label: `email-to-jane`, `email-to-jane-2`.
@@ -526,7 +694,7 @@ mod tests {
         let reader = manifest("id: social-read\nname: Read posts\nservice: social\ntransport: http\nauth:\n  - { env: SOCIAL_TOKEN }\nhosts: [api.social.test]\ntools:\n  - name: read_posts\n    request: { method: GET, url: \"https://api.social.test/feed\" }\n");
         let replier = manifest("id: social-reply\nname: Reply\nservice: social\ntransport: http\nauth:\n  - { env: SOCIAL_TOKEN }\nhosts: [api.social.test]\ntools:\n  - name: reply\n    request: { method: POST, url: \"https://api.social.test/reply\" }\n");
         assert_eq!((reader.service(), wp.service()), ("social", "blog"));
-        let me = Connection { id: new_id(&store, "acme", "Me"), label: "Me".into(), ability: reader.id.clone(), service: reader.service.clone(), default: true, ..Default::default() };
+        let me = Connection { id: new_id(&store, "acme", "Me"), label: "Me".into(), ability: reader.id.clone(), service: reader.service.id.clone(), default: true, ..Default::default() };
         me.save(&store, "acme").unwrap();
         secrets::write_env(&me.env_file(&home, "acme"), "SOCIAL_TOKEN", "t1").unwrap();
         let found = Connection::default_of(&store, "acme", replier.service()).unwrap();
@@ -535,7 +703,7 @@ mod tests {
         assert_eq!(env_for(&home, "acme", Some(&found), &replier)("SOCIAL_TOKEN").as_deref(), Some("t1"));
         assert_eq!(Connection::find(&store, "acme", "social", "ME").map(|c| c.id), Some("me".into()));
         assert!(Connection::of(&store, "acme", "social-read").is_empty(), "an ability with a service is found by the service, not its id");
-        let work = Connection { id: new_id(&store, "acme", "Work"), label: "Work".into(), ability: replier.id.clone(), service: replier.service.clone(), ..Default::default() };
+        let work = Connection { id: new_id(&store, "acme", "Work"), label: "Work".into(), ability: replier.id.clone(), service: replier.service.id.clone(), ..Default::default() };
         work.save(&store, "acme").unwrap();
         Connection::make_default(&store, "acme", "work").unwrap();
         assert_eq!(Connection::default_of(&store, "acme", "social").unwrap().id, "work");
@@ -577,6 +745,52 @@ mod tests {
 
         // Older records with no service are the ability's own.
         assert_eq!(Connection::load(&store, "acme", "news").unwrap().service(), "blog");
+
+        // Permissions: acting asks by default, the rest is on; a role switched off stops publishing.
+        let mut acct = Connection { id: "x".into(), label: "X".into(), kind: "page".into(), ..Default::default() };
+        assert_eq!((acct.allow("publish"), acct.allow("reply"), acct.allow("read"), acct.allow("learn")), (Allow::Ask, Allow::Ask, Allow::Auto, Allow::Auto));
+        assert!(acct.publishes() && acct.learns());
+        acct.allow.insert("publish".into(), Allow::Off);
+        acct.allow.insert("learn".into(), Allow::Off);
+        assert!(!acct.publishes() && !acct.learns() && acct.is_channel());
+        assert_eq!((Allow::parse("on"), Allow::parse("ASK"), Allow::parse("nope")), (Some(Allow::Auto), Some(Allow::Ask), None));
+        assert!(Allow::acts("manage") && !Allow::acts("measure"));
+
+        // Places: the first is the default, one default at a time, names resolve, removing moves the default.
+        acct.put_place(Place { label: "r/rust".into(), kind: "page".into(), fields: [("subreddit".to_string(), serde_json::json!("rust"))].into_iter().collect(), ..Default::default() });
+        acct.put_place(Place { label: "r/selfhosted".into(), kind: "page".into(), ..Default::default() });
+        assert_eq!(acct.places[0].id, "r-rust");
+        assert!(acct.places[0].default && !acct.places[1].default);
+        assert_eq!(acct.place(None).map(|p| p.label.as_str()), Some("r/rust"));
+        assert_eq!(acct.place(Some("R/SELFHOSTED")).map(|p| p.id.as_str()), Some("r-selfhosted"));
+        assert!(acct.place(Some("nowhere")).is_none());
+        acct.put_place(Place { id: "r-selfhosted".into(), label: "r/selfhosted".into(), kind: "page".into(), default: true, ..Default::default() });
+        assert!(acct.places[1].default && !acct.places[0].default);
+        assert_eq!(acct.destination_text(), "r/selfhosted");
+        acct.remove_place("r-selfhosted");
+        assert!(acct.places[0].default && acct.places.len() == 1);
+        let list = Place { id: "list-news".into(), kind: Place::LIST.into(), label: "News".into(), fields: [("list".to_string(), serde_json::json!("news"))].into_iter().collect(), default: false };
+        assert_eq!(list.list_id(), Some("news"));
+
+        // A record from before permissions and places reads into the new shape and is written that way.
+        let old = home.connections_dir("acme").join("legacy");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("connection.yaml"), "id: legacy\nlabel: Legacy\nability: blog\nkind: email\ndestination:\n  to: jane@example.com\n  subject: News\nasks_first: false\nlearns: true\npublications: 2\n").unwrap();
+        let legacy = Connection::load(&store, "acme", "legacy").unwrap();
+        assert_eq!((legacy.allow("publish"), legacy.allow("learn"), legacy.allow("reply")), (Allow::Auto, Allow::Auto, Allow::Ask));
+        assert_eq!(legacy.places.len(), 1);
+        assert_eq!((legacy.places[0].label.as_str(), legacy.places[0].fields["to"].as_str(), legacy.places[0].default), ("jane@example.com", Some("jane@example.com"), true));
+        assert_eq!(legacy.publications, 2);
+        legacy.save(&store, "acme").unwrap();
+        let text = std::fs::read_to_string(old.join("connection.yaml")).unwrap();
+        assert!(!text.contains("asks_first") && !text.contains("destination:") && !text.contains("learns") && text.contains("allow:") && text.contains("places:"), "{text}");
+        let again = Connection::load(&store, "acme", "legacy").unwrap();
+        assert_eq!(again.allow("publish"), Allow::Auto);
+        // One that never said: learning stays on by default, publishing asks.
+        std::fs::write(old.join("connection.yaml"), "id: legacy\nlabel: Legacy\nability: blog\nkind: blog\n").unwrap();
+        let plain = Connection::load(&store, "acme", "legacy").unwrap();
+        assert_eq!((plain.allow("publish"), plain.allow("learn")), (Allow::Ask, Allow::Auto));
+        assert!(plain.places.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

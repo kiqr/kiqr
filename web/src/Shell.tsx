@@ -13,13 +13,14 @@ import {
   ListChecks,
   MessagesSquare,
   Network,
+  Plug,
   Plus,
-  Send,
   Sparkles,
   Settings,
   SlidersHorizontal,
   Swords,
   Target,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import { DEMO } from "./demo";
@@ -37,7 +38,7 @@ type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number; h
  * Project-scoped navigation, grouped by what the user is doing: To do (what needs them) on
  * its own; Marketing (plan, performance, calendar); the Library plus one item per asset type
  * (types are data, so the group grows when Seemo makes a new kind of thing); Business (what
- * KIQR knows); Seemo (chats and tasks); Setup (abilities, channels, project settings) last.
+ * KIQR knows); Seemo (chats and tasks); Setup (abilities, accounts, project settings) last.
  */
 function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting: number): { label: string; items: NavItem[] }[] {
   const n = (id: string) => counts?.find((c) => c.type === id)?.count ?? 0;
@@ -54,6 +55,7 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
         { sub: "plan", label: "Plan", icon: Target },
         { sub: "performance", label: "Performance", icon: BarChart3 },
         { sub: "calendar", label: "Calendar", icon: CalendarDays },
+        { sub: "audience", label: "Audience", icon: Users },
       ],
     },
     // What has been made.
@@ -86,7 +88,7 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
       label: "Setup",
       items: [
         { sub: "abilities", label: "Abilities", icon: Sparkles },
-        { sub: "channels", label: "Channels", icon: Send },
+        { sub: "accounts", label: "Accounts", icon: Plug },
         { sub: "settings", label: "Project settings", icon: SlidersHorizontal },
       ],
     },
@@ -148,7 +150,7 @@ export function Shell() {
                 {g.items.map((it) => {
                   const to = it.sub ? `/p/${current.slug}/${it.sub}` : `/p/${current.slug}`;
                   return (
-                    <NavLink key={it.sub} to={to} end={!it.sub.startsWith("library/")}>
+                    <NavLink key={it.sub} to={to} end={!it.sub.startsWith("library/") && it.sub !== "audience" && it.sub !== "accounts"}>
                       {({ isActive }) => (
                         <>
                           {isActive && <motion.span layoutId="nav-active" className="hl" transition={{ type: "spring", stiffness: 500, damping: 40 }} />}

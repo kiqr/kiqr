@@ -31,11 +31,15 @@ pub async fn installed(app: &App, slug: &str) -> Vec<ChannelKind> {
 }
 
 /// The networks this project can write posts for: the kinds an ability on
-/// here publishes to that are networks (not an inbox or a blog), once each.
+/// here publishes to that are networks (not an inbox or a blog) and that the
+/// project has an account on which may publish, once each. With no account
+/// anywhere yet, every network an ability on here publishes to, so the
+/// first posts can be written before the first sign-in.
 pub async fn for_posts(app: &App, slug: &str) -> Vec<ChannelKind> {
+    let accounts = kiqr_core::connections::Connection::channels(&app.store, slug).unwrap_or_default();
     let mut out: Vec<ChannelKind> = Vec::new();
     for k in installed(app, slug).await.into_iter().filter(|k| k.is_network() && k.publishes()) {
-        if !out.iter().any(|o| o.kind == k.kind) {
+        if !out.iter().any(|o| o.kind == k.kind) && (accounts.is_empty() || accounts.iter().any(|c| c.kind == k.kind)) {
             out.push(k);
         }
     }

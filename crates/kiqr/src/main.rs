@@ -71,25 +71,40 @@ enum Command {
         #[arg(long)]
         title: Option<String>,
     },
-    /// Channels: where a project publishes (an email address, a blog…)
+    /// Where a project publishes: its accounts that publish, with their places (the same as `kiqr accounts ls --publishes`)
     Channels { slug: String },
-    /// Publish an asset through a channel: `kiqr publish <slug> <type>/<id> <channel>`
+    /// Publish an asset through an account: `kiqr publish <slug> <type>/<id> <account> [--place <place>]`
     Publish {
         slug: String,
         asset: String,
-        channel: String,
+        account: String,
+        /// A place on the account (a subreddit, a list), when it has several
+        #[arg(long, default_value = "")]
+        place: String,
         #[arg(long, default_value = "")]
         note: String,
     },
-    /// Send an email through the mail connection (the text is Markdown)
+    /// Send an email from the mail account (the text is Markdown): to an address, or `--list` for everyone on a list
     Email {
         slug: String,
+        /// An address (or several, comma-separated); `-` with `--list`
         to: String,
         subject: String,
         text: String,
+        /// Everyone on this list (id or name), one message each
+        #[arg(long)]
+        list: Option<String>,
+        /// Which mail account sends it, when the project has several
+        #[arg(long)]
+        from: Option<String>,
         /// Attach this asset's files: `type/id`
         #[arg(long)]
         asset: Option<String>,
+    },
+    /// Lists of people a project emails: `kiqr lists ls|add|import|rm`
+    Lists {
+        #[command(subcommand)]
+        cmd: ListsCmd,
     },
     /// KIQR's own sign-ins: `kiqr signin` lists them, `kiqr signin kiqr-cloud` or
     /// `kiqr signin unblockingapi` signs in (a code to enter, or a link to open)
@@ -194,10 +209,10 @@ enum Command {
         #[arg(long)]
         refresh: bool,
     },
-    /// Let Seemo publish through a channel on its own (`--ask` to make it ask again)
+    /// Let Seemo publish through an account on its own (`--ask` to make it ask again); the same as `kiqr accounts allow <slug> <account> publish auto`
     Trust {
         slug: String,
-        channel: String,
+        account: String,
         #[arg(long)]
         ask: bool,
     },
@@ -295,8 +310,22 @@ enum SecretsCmd {
 
 #[derive(Subcommand)]
 enum AccountsCmd {
-    /// A project's accounts of its abilities (channels included), with the abilities that use each
-    Ls { slug: String },
+    /// A project's accounts, with what Seemo may do through each and the abilities that use it
+    Ls {
+        slug: String,
+        /// Only the accounts that publish, with their places
+        #[arg(long)]
+        publishes: bool,
+    },
+    /// What Seemo may do through an account: `kiqr accounts allow <slug> <account> publish auto|ask|off` (read, learn, measure: on|off)
+    Allow { slug: String, account: String, role: String, value: String },
+    /// Places inside an account content goes to: `kiqr accounts places <slug> <account>` lists; `add <label> key=value…` or `add --list <list>`; `rm <place>`
+    Places {
+        slug: String,
+        account: String,
+        #[command(subcommand)]
+        cmd: Option<PlacesCmd>,
+    },
     /// What the abilities did through an account (or channel), newest first
     Activity {
         slug: String,
@@ -318,6 +347,50 @@ enum AccountsCmd {
     Default { slug: String, account: String },
     /// Remove an account and its keys
     Rm { slug: String, account: String },
+}
+
+#[derive(Subcommand)]
+enum PlacesCmd {
+    /// Add a place: `add "r/rust" subreddit=rust`, or `add --list newsletter` on a mail account
+    Add {
+        label: Option<String>,
+        /// `field=value` pairs, the kind's place fields
+        fields: Vec<String>,
+        /// A list of people (id or name) as the place
+        #[arg(long)]
+        list: Option<String>,
+        /// Make it the default place
+        #[arg(long)]
+        default: bool,
+    },
+    /// Remove a place by id
+    Rm { place: String },
+}
+
+#[derive(Subcommand)]
+enum ListsCmd {
+    /// The project's lists, with how many people are on each
+    Ls { slug: String },
+    /// Add an empty list
+    Add {
+        slug: String,
+        label: String,
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    /// Add the people in a CSV file (an `email` column, `name` when there is one): `kiqr lists import <slug> <list> people.csv --consent "signed up on the site"`
+    Import {
+        slug: String,
+        list: String,
+        file: std::path::PathBuf,
+        /// How these people agreed to hear from the business
+        #[arg(long, default_value = "")]
+        consent: String,
+    },
+    /// Mark someone as having left; they are never written to again
+    Unsubscribe { slug: String, list: String, email: String },
+    /// Remove a list and everyone on it
+    Rm { slug: String, list: String },
 }
 
 #[derive(Subcommand)]
@@ -599,35 +672,54 @@ impl Client {
                 let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/render"), &body).await?;
                 println!("{} {}×{} via {} → {}/{} {}", v["file"].as_str().unwrap_or(""), v["width"], v["height"], v["renderer"].as_str().unwrap_or(""), v["asset"]["type"].as_str().unwrap_or(""), v["asset"]["id"].as_str().unwrap_or(""), v["url"].as_str().unwrap_or(""));
             }
-            Command::Channels { slug } => {
-                let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/channels")).await?;
-                let list = v["channels"].as_array().cloned().unwrap_or_default();
-                if list.is_empty() {
-                    println!("No channels yet.");
-                }
-                for c in list {
-                    let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
-                    println!("{:<24} {:<10} {:<28} {:<22} {} published{}{}", s("id"), s("kind"), s("destination_text"), s("connection_name"), c["publications"], if c["asks_first"].as_bool() == Some(false) { "  (Seemo publishes on its own)" } else { "" }, if c["ready"].as_bool() == Some(true) { "" } else { "  (not connected yet)" });
-                }
-                let kinds = v["kinds"].as_array().cloned().unwrap_or_default();
-                if !kinds.is_empty() {
-                    println!("\nKinds a new channel can use: {}", kinds.iter().map(|k| format!("{} via {}", k["kind"].as_str().unwrap_or(""), k["connection_name"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("; "));
-                }
-            }
-            Command::Publish { slug, asset, channel, note } => {
+            Command::Channels { slug } => self.accounts_ls(&slug, true).await?,
+            Command::Publish { slug, asset, account, place, note } => {
                 let (t, i) = asset.split_once('/').ok_or_else(|| anyhow!("asset is type/id"))?;
-                let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/assets/{t}/{i}/publish"), &serde_json::json!({ "channel": channel, "note": note, "by": "user" })).await?;
-                println!("published {} → {}{}", v["asset"]["title"].as_str().unwrap_or(""), v["channel_label"].as_str().unwrap_or(""), v["url"].as_str().map(|u| format!(" {u}")).unwrap_or_else(|| v["detail"].as_str().map(|d| format!(" ({d})")).unwrap_or_default()));
+                let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/assets/{t}/{i}/publish"), &serde_json::json!({ "channel": account, "place": place, "note": note, "by": "user" })).await?;
+                let where_ = format!("{}{}", v["channel_label"].as_str().unwrap_or(""), v["place_label"].as_str().map(|p| format!(" ({p})")).unwrap_or_default());
+                println!("published {} → {where_}{}", v["asset"]["title"].as_str().unwrap_or(""), v["url"].as_str().map(|u| format!(" {u}")).unwrap_or_else(|| v["detail"].as_str().map(|d| format!(" ({d})")).unwrap_or_default()));
             }
-            Command::Email { slug, to, subject, text, asset } => {
-                let mut body = serde_json::json!({ "to": to, "subject": subject, "text": text });
+            Command::Email { slug, to, subject, text, list, from, asset } => {
+                let mut body = serde_json::json!({ "to": if to == "-" { "" } else { to.as_str() }, "subject": subject, "text": text, "list": list.unwrap_or_default(), "from": from.unwrap_or_default() });
                 if let Some(a) = asset {
                     let (t, i) = a.split_once('/').ok_or_else(|| anyhow!("asset is type/id"))?;
                     body["asset"] = serde_json::json!({ "type": t, "id": i });
                 }
                 let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/email"), &body).await?;
-                println!("sent \"{}\" to {} via {}", v["subject"].as_str().unwrap_or(""), v["to"].as_str().unwrap_or(""), v["connection"].as_str().unwrap_or(""));
+                match v["recipients"].as_u64() {
+                    Some(n) => println!("sending \"{}\" to the {n} people on {} from {}", v["subject"].as_str().unwrap_or(""), v["list_label"].as_str().unwrap_or(""), v["from"].as_str().unwrap_or("")),
+                    None => println!("sent \"{}\" to {} via {}", v["subject"].as_str().unwrap_or(""), v["to"].as_str().unwrap_or(""), v["connection"].as_str().unwrap_or("")),
+                }
             }
+            Command::Lists { cmd } => match cmd {
+                ListsCmd::Ls { slug } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/lists")).await?;
+                    let list = v["lists"].as_array().cloned().unwrap_or_default();
+                    if list.is_empty() {
+                        println!("No lists yet. Add one: kiqr lists add {slug} Newsletter");
+                    }
+                    for l in list {
+                        println!("{:<24} {:<28} {} people{}", l["id"].as_str().unwrap_or(""), l["label"].as_str().unwrap_or(""), l["contacts"], l["unsubscribed"].as_u64().filter(|n| *n > 0).map(|n| format!(", {n} left")).unwrap_or_default());
+                    }
+                }
+                ListsCmd::Add { slug, label, description } => {
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/lists"), &serde_json::json!({ "label": label, "description": description })).await?;
+                    println!("added {} ({}). Add people: kiqr lists import {slug} {} people.csv", v["label"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""));
+                }
+                ListsCmd::Import { slug, list, file, consent } => {
+                    let csv = std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/lists/{list}/import"), &serde_json::json!({ "csv": csv, "consent": consent })).await?;
+                    println!("{} addresses in the file, {} new; {} is now {} people", v["found"], v["added"], v["list"]["label"].as_str().unwrap_or(&list), v["list"]["contacts"]);
+                }
+                ListsCmd::Unsubscribe { slug, list, email } => {
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/lists/{list}/unsubscribe"), &serde_json::json!({ "email": email })).await?;
+                    println!("{}", if v["unsubscribed"].as_bool() == Some(true) { format!("{email} has left {list}.") } else { format!("{email} is not on {list}.") });
+                }
+                ListsCmd::Rm { slug, list } => {
+                    self.delete(&format!("/api/projects/{slug}/lists/{list}")).await?;
+                    println!("Removed {list} and everyone on it.");
+                }
+            },
             Command::Signin { id } => match id {
                 None => {
                     let v: serde_json::Value = self.get("/api/signins").await?;
@@ -655,20 +747,37 @@ impl Client {
                 println!("Signed out of {id}.");
             }
             Command::Accounts { cmd } => match cmd {
-                AccountsCmd::Ls { slug } => {
-                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/connections")).await?;
-                    let list = v["connections"].as_array().cloned().unwrap_or_default();
-                    if list.is_empty() {
-                        println!("No accounts yet. Add one: kiqr accounts add {slug} <ability>");
-                    }
-                    for c in list {
-                        let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
-                        let missing = c["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-                        let used_by = c["used_by"].as_array().map(|u| u.iter().filter_map(|x| x["id"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-                        let publisher = c["publisher"].as_str().map(|p| format!("  publishes: {p}")).unwrap_or_default();
-                        println!("{:<24} {:<28} {:<16} {:<9} {:<14} used by {}{publisher}{}", s("id"), s("label"), s("service"), if c["channel"].as_bool() == Some(true) { s("kind") } else { "account".into() }, if c["ready"].as_bool() == Some(true) { "ready".to_string() } else { format!("needs {missing}") }, if used_by.is_empty() { "nothing on here".to_string() } else { used_by }, if c["default"].as_bool() == Some(true) { "  (default)" } else { "" });
-                    }
+                AccountsCmd::Ls { slug, publishes } => self.accounts_ls(&slug, publishes).await?,
+                AccountsCmd::Allow { slug, account, role, value } => {
+                    let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/connections/{account}/allow"), &serde_json::json!({ role.clone(): value })).await?;
+                    println!("{}: {}", v["label"].as_str().unwrap_or(&account), allow_text(&v));
                 }
+                AccountsCmd::Places { slug, account, cmd } => match cmd {
+                    None => {
+                        let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/connections/{account}")).await?;
+                        let places = v["places"].as_array().cloned().unwrap_or_default();
+                        if places.is_empty() {
+                            println!("{} has no places; it is the one place content goes.", v["label"].as_str().unwrap_or(&account));
+                        }
+                        for p in places {
+                            let fields = p["fields"].as_object().map(|o| o.iter().map(|(k, v)| format!("{k}={}", v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+                            println!("{:<24} {:<28} {}{}", p["id"].as_str().unwrap_or(""), p["label"].as_str().unwrap_or(""), fields, if p["default"].as_bool() == Some(true) { "  (default)" } else { "" });
+                        }
+                    }
+                    Some(PlacesCmd::Add { label, fields, list, default }) => {
+                        let mut f = serde_json::Map::new();
+                        for kv in fields {
+                            let (k, v) = kv.split_once('=').ok_or_else(|| anyhow!("a place field is key=value, got '{kv}'"))?;
+                            f.insert(k.trim().to_string(), serde_json::Value::String(v.trim().to_string()));
+                        }
+                        let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/connections/{account}/places"), &serde_json::json!({ "label": label.unwrap_or_default(), "fields": f, "list": list.unwrap_or_default(), "default": default })).await?;
+                        println!("{} now publishes to {} ({})", v["label"].as_str().unwrap_or(&account), v["place"]["label"].as_str().unwrap_or(""), v["place"]["id"].as_str().unwrap_or(""));
+                    }
+                    Some(PlacesCmd::Rm { place }) => {
+                        let _: serde_json::Value = self.delete_json(&format!("/api/projects/{slug}/connections/{account}/places/{place}")).await?;
+                        println!("Removed the place {place} from {account}.");
+                    }
+                },
                 AccountsCmd::Activity { slug, account, limit } => {
                     let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/connections/{account}/activity?limit={limit}")).await?;
                     let cap = v["daily_cap"].as_u64().map(|c| format!(" of {c}")).unwrap_or_default();
@@ -1076,9 +1185,9 @@ impl Client {
                     println!("{} {}", if r["ok"].as_bool() == Some(true) { "ok " } else { "err" }, r["note"].as_str().unwrap_or(""));
                 }
             }
-            Command::Trust { slug, channel, ask } => {
-                let _: serde_json::Value = self.put(&format!("/api/projects/{slug}/channels/{channel}"), &serde_json::json!({ "asks_first": ask })).await?;
-                println!("{}", if ask { format!("Seemo asks before publishing through {channel} again.") } else { format!("Seemo may publish through {channel} on its own; the chat records what went out.") });
+            Command::Trust { slug, account, ask } => {
+                let _: serde_json::Value = self.put(&format!("/api/projects/{slug}/connections/{account}/allow"), &serde_json::json!({ "publish": if ask { "ask" } else { "auto" } })).await?;
+                println!("{}", if ask { format!("Seemo asks before publishing through {account} again.") } else { format!("Seemo may publish through {account} on its own; the chat records what went out.") });
             }
             Command::Todo { slug } => {
                 let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/todo")).await?;
@@ -1292,6 +1401,27 @@ impl Client {
             Err(anyhow!("{}", v["error"].as_str().unwrap_or("request failed")))
         }
     }
+    async fn delete_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let resp = self.http.delete(format!("{}{path}", self.base)).send().await.map_err(connect_hint)?;
+        Self::json(resp).await
+    }
+
+    /// `kiqr accounts ls`, and `kiqr channels` / `--publishes` for the ones that publish, with their places.
+    async fn accounts_ls(&self, slug: &str, publishes: bool) -> Result<()> {
+        let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/connections")).await?;
+        let list: Vec<serde_json::Value> = v["connections"].as_array().cloned().unwrap_or_default().into_iter().filter(|c| !publishes || c["publishes"].as_bool() == Some(true)).collect();
+        if list.is_empty() {
+            println!("{}", if publishes { format!("Nothing publishes yet. Connect an account of something that publishes: kiqr accounts add {slug} <ability>") } else { format!("No accounts yet. Add one: kiqr accounts add {slug} <ability>") });
+        }
+        for c in list {
+            let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+            let missing = c["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let used_by = c["used_by"].as_array().map(|u| u.iter().filter_map(|x| x["id"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let places = c["places"].as_array().filter(|p| !p.is_empty()).map(|p| format!("  → {}", p.iter().map(|x| x["label"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join(", "))).unwrap_or_default();
+            println!("{:<24} {:<28} {:<16} {:<14} {}{}{places}{}", s("id"), s("label"), s("service"), if c["ready"].as_bool() == Some(true) { "connected".to_string() } else { format!("needs {missing}") }, allow_text(&c), if used_by.is_empty() { String::new() } else { format!("  used by {used_by}") }, if c["default"].as_bool() == Some(true) { "  (default)" } else { "" });
+        }
+        Ok(())
+    }
     async fn json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
         let status = resp.status();
         let text = resp.text().await?;
@@ -1301,6 +1431,28 @@ impl Client {
         }
         serde_json::from_str(&text).context("unexpected response from daemon")
     }
+}
+
+/// What an account allows, in a few words: "publish on its own, reply asks, learn".
+fn allow_text(c: &serde_json::Value) -> String {
+    let parts: Vec<String> = c["allow"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|p| p["role"] != "read")
+                .map(|p| {
+                    let role = p["role"].as_str().unwrap_or("");
+                    match (p["allow"].as_str().unwrap_or(""), p["acts"].as_bool().unwrap_or(false)) {
+                        ("auto", true) => format!("{role} on its own"),
+                        ("ask", _) => format!("{role} asks"),
+                        ("off", _) => format!("{role} off"),
+                        _ => role.to_string(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if parts.is_empty() { "reads".to_string() } else { parts.join(", ") }
 }
 
 /// `article/whitening-guide` → the URL path segment, checked.
@@ -1444,11 +1596,14 @@ fn print_event(ev: &Event) {
             (false, e) => format!("connect  {ability} failed: {}", e.clone().unwrap_or_default()),
         },
         EventKind::MediaCreated { ability, asset_type, id, file, provider } => format!("{ability:<8} {asset_type}/{id}/{file} via {provider}"),
-        EventKind::ConnectionSaved { connection, label, ability, kind } => format!("{:<8} {connection} \"{label}\" ({})", if kind.is_empty() { "account" } else { "channel" }, if kind.is_empty() { ability.as_str() } else { kind.as_str() }),
+        EventKind::ConnectionSaved { connection, label, ability, kind } => format!("account  {connection} \"{label}\" ({})", if kind.is_empty() { ability.as_str() } else { kind.as_str() }),
         EventKind::ConnectionDeleted { connection, .. } => format!("account  {connection} removed"),
+        EventKind::ListChanged { list, label, contacts } => format!("list     {list} \"{label}\" ({contacts} people)"),
+        EventKind::ListDeleted { list } => format!("list     {list} removed"),
+        EventKind::ListSending { list, subject, sent, failed, total, done } => format!("sending  \"{subject}\" to {list}: {sent}/{total}{}{}", if *failed > 0 { format!(", {failed} failed") } else { String::new() }, if *done { ", done" } else { "" }),
         EventKind::AccountActed { connection, ability, role, target, .. } => format!("{role:<8} {connection} by {ability}{}", if target.is_empty() { String::new() } else { format!(" on {target}") }),
         EventKind::ActionRefused { message, .. } => format!("refused  {message}"),
-        EventKind::AssetPublished { asset_type, id, channel, url } => format!("publish  {asset_type}/{id} → {channel}{}", url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
+        EventKind::AssetPublished { asset_type, id, channel, place, url } => format!("publish  {asset_type}/{id} → {channel}{}{}", place.as_ref().map(|p| format!(" ({p})")).unwrap_or_default(), url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
         EventKind::AssetApproved { asset_type, id, channel, at, .. } => match at {
             Some(at) => format!("schedule {asset_type}/{id} → {channel} at {}", at.with_timezone(&chrono::Local).format("%a %-d %b %H:%M")),
             None => format!("approve  {asset_type}/{id} for {channel}"),

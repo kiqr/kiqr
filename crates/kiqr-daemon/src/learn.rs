@@ -124,7 +124,7 @@ pub async fn read_source(app: &App, slug: &str, c: &Connection, ex: &Extractor) 
 /// writes the profile itself afterwards. Says nothing; returns what was read.
 pub async fn read_all(app: &App, slug: &str, only: Option<&str>, ex: &Extractor) -> Vec<(String, anyhow::Result<usize>)> {
     let mut out = Vec::new();
-    for c in Connection::list(&app.store, slug).unwrap_or_default().into_iter().filter(|c| c.learns && only.is_none_or(|o| o == c.id)) {
+    for c in Connection::list(&app.store, slug).unwrap_or_default().into_iter().filter(|c| c.learns() && only.is_none_or(|o| o == c.id)) {
         if learnable(app, slug, &c).await.is_none() {
             continue;
         }
@@ -175,7 +175,7 @@ pub async fn start(app: &App, slug: &str, only: Option<String>) -> Result<(), Ap
 pub async fn due(app: &App, slug: &str) {
     let now = chrono::Utc::now();
     let mut any = false;
-    for c in Connection::list(&app.store, slug).unwrap_or_default().into_iter().filter(|c| c.learns) {
+    for c in Connection::list(&app.store, slug).unwrap_or_default().into_iter().filter(Connection::learns) {
         let Some(m) = learnable(app, slug, &c).await else { continue };
         if !crate::accounts::ready(app, slug, &c, &m) {
             continue;

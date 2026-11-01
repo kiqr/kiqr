@@ -82,6 +82,10 @@ impl Home {
     pub fn connections_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("connections")
     }
+    /// A project's lists of people to email: `lists/<id>/list.yaml` (committed) and `contacts.csv` (not).
+    pub fn lists_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("lists")
+    }
     /// Where channels were kept before connections; read once, by the migration.
     pub fn channels_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("channels")

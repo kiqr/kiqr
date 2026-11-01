@@ -1,26 +1,368 @@
-// Accounts: a project's accounts of a service, each with its own keys (two
-// WordPress sites, two analytics properties), used by every ability of that
-// service. For an ability that publishes, an account is a channel; for one
-// that can teach the project (a GitHub repository), a source; one that can do
-// both has a switch for each. Used by the ability window and the Channels
-// page; installing an ability adds none, the project adds them here.
-import { useEffect, useState } from "react";
-import { BookOpen, Check, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Send, Star, Trash2, Users, X } from "lucide-react";
-import { api, useEvents, type Account, type AccountActivity, type ConnectInfo, type KindInfo, type LearnInfo } from "../api";
+// Accounts: everything Seemo signs in to for this project (an X account, a
+// mail account, a WordPress site, an analytics property). Each has its own
+// keys, what Seemo may do there (its permissions), and, where its service
+// has several places to publish, its places: a subreddit, a branch, a list of
+// people on a mail account. Every ability of the service shares the account.
+// The pieces here are used by the Accounts page, the connect wizard and the
+// ability window.
+import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { AnimatePresence, motion } from "motion/react";
+import { Check, ChevronDown, ChevronRight, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Users, X } from "lucide-react";
+import { api, useEvents, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type Allow, type MailList, type Permission, type PlaceField, type ServiceCard } from "../api";
 import { Switch } from "./Switch";
 import { ago } from "./Project";
 import { ConnectButton } from "./ConnectButton";
 import { Hint, SecretField } from "./SecretField";
 import { enumOf, FieldInput } from "./FieldInput";
+import { serviceIcon } from "./abilityBits";
+import { ConnectService } from "./Connect";
 import "../settings.css";
-
-/** What an add form needs to know about the ability. */
-export type AbilityInfo = { id: string; name: string; auth: { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string }[]; connect?: ConnectInfo | null; learn?: LearnInfo | null };
+import "../accounts.css";
 
 export const ACCOUNT_EVENTS = ["connection_saved", "connection_deleted", "secret_set", "connect_finished"];
+export const LIST_EVENTS = ["list_changed", "list_deleted", "list_sending"];
 
-const ROLE_WORDS: Record<string, string> = { publish: "publishes", read: "reads", reply: "replies", manage: "manages" };
+const ROLE_WORDS: Record<string, string> = { publish: "publishes", read: "reads", reply: "replies", manage: "manages", learn: "learns from it", measure: "reads its numbers" };
 const DONE_WORDS: Record<string, string> = { publish: "Published", reply: "Replied", manage: "Changed", read: "Read" };
+
+// ---- Services and groups
+
+/** The service an ability belongs to, as the grid of things to connect shows it. Uses the daemon's card when it sends one. */
+export function serviceOf(a: Ability): ServiceCard & { group: string; name: string } {
+  const c = a.service_card;
+  const group = c?.group || guessGroup(a);
+  return { id: c?.id || a.service || a.id, name: c?.name || a.name, icon: c?.icon || a.icon, group, profile_hosts: c?.profile_hosts };
+}
+
+/** Where an ability without a service card sits, from what it says it does. */
+function guessGroup(a: Ability): string {
+  if (a.provides.some((p) => p.ability === "email") || a.categories.includes("email")) return "email";
+  if (a.sources.length) return "numbers";
+  if (a.channels.length) return a.categories.includes("social") ? "social" : "website";
+  return "tools";
+}
+
+/** The service of an account: its card, else its ability's name. */
+export function accountService(a: Account): ServiceCard & { group: string; name: string } {
+  const c = a.service_card;
+  return { id: c?.id || a.service || a.ability, name: c?.name || a.ability_name, icon: c?.icon || a.icon, group: c?.group || "", profile_hosts: c?.profile_hosts };
+}
+
+/** Group things by service group in the order SERVICE_GROUPS gives; unknown groups last, under "Other". */
+export function byGroup<T>(items: T[], groupOf: (t: T) => string): { id: string; label: string; items: T[] }[] {
+  const known = SERVICE_GROUPS.map((g) => ({ ...g, items: items.filter((t) => groupOf(t) === g.id) }));
+  const rest = items.filter((t) => !SERVICE_GROUPS.some((g) => g.id === groupOf(t)));
+  return [...known, { id: "other", label: "Other", items: rest }].filter((g) => g.items.length > 0);
+}
+
+/** Where the connect wizard opens, narrowed to a service or a group when given. */
+export function connectPath(slug: string, at: { service?: string; group?: string } = {}) {
+  const q = new URLSearchParams();
+  if (at.service) q.set("service", at.service);
+  if (at.group) q.set("group", at.group);
+  const s = q.toString();
+  return `/p/${slug}/accounts/connect${s ? `?${s}` : ""}`;
+}
+
+// ---- Permissions
+
+const ROLE_LABEL: Record<string, string> = { read: "Read", reply: "Reply", publish: "Publish", manage: "Change settings and profile", learn: "Learn the business from it", measure: "Read its numbers into Performance" };
+const ROLE_HELP: Record<string, string> = {
+  read: "Look at what is there: posts, messages, pages, files.",
+  reply: "Answer comments and messages.",
+  publish: "Put new things out.",
+  manage: "Change the account itself: its profile, its settings.",
+  learn: "Read it now and then to keep the business profile current.",
+  measure: "Pull its numbers once a day.",
+};
+
+/** The verb for publishing on this account, by its service: post, send or publish. */
+function publishVerb(a: Account): { now: string; s: string } {
+  const g = accountService(a).group;
+  if (g === "email" || a.takes_lists) return { now: "send", s: "sends" };
+  if (g === "social") return { now: "post", s: "posts" };
+  return { now: "publish", s: "publishes" };
+}
+function roleVerb(a: Account, role: string): string {
+  if (role === "publish") return publishVerb(a).now;
+  if (role === "reply") return "reply";
+  if (role === "manage") return "change things";
+  return role;
+}
+function roleLabel(a: Account, role: string): string {
+  if (role === "publish") return publishVerb(a).now === "send" ? "Send" : publishVerb(a).now === "post" ? "Post" : "Publish";
+  return ROLE_LABEL[role] ?? role;
+}
+function joinOr(words: string[], and = "or") {
+  return words.length < 2 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} ${and} ${words[words.length - 1]}`;
+}
+function third(v: string) {
+  return v === "reply" ? "replies" : v === "change things" ? "changes things" : `${v}s`;
+}
+
+/** The acting roles that are not off. */
+function acting(a: Account): Permission[] {
+  return (a.allow ?? []).filter((p) => p.acts && p.allow !== "off");
+}
+
+/** One plain line for what Seemo may do here. */
+export function permissionSummary(a: Account): string {
+  const on = acting(a);
+  if (!on.length) return (a.allow ?? []).some((p) => p.role === "read" && p.allow === "off") ? "Seemo does nothing here" : "Seemo only reads here";
+  const own = on.filter((p) => p.allow === "auto").map((p) => roleVerb(a, p.role));
+  const asks = on.filter((p) => p.allow === "ask").map((p) => roleVerb(a, p.role));
+  if (!asks.length) return `Seemo ${joinOr(own.map(third), "and")} here on its own`;
+  if (!own.length) return `Seemo asks before it ${joinOr(asks.map(third))} here`;
+  return `Seemo ${joinOr(own.map(third), "and")} here on its own and asks before it ${joinOr(asks.map(third))}`;
+}
+
+/** The one switch: every acting role that is not off goes on its own, or back to asking. */
+function ActOnOwn({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
+  const on = acting(a);
+  const own = on.length > 0 && on.every((p) => p.allow === "auto");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!on.length) return null;
+  const flip = async (want: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setAllow(slug, a.id, Object.fromEntries(on.map((p) => [p.role, want ? "auto" : "ask"])) as Record<string, Allow>);
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <label className="acx-own" title={own ? "Seemo acts when it decides to; each card stays in the chat as the record" : "Every action Seemo proposes waits for your yes"}>
+        <Switch on={own} disabled={busy} onChange={(v) => void flip(v)} />
+        <span>Let Seemo act here on its own</span>
+      </label>
+      {error && <p className="err sm">{error}</p>}
+    </>
+  );
+}
+
+/** Every role, with a segmented choice: On its own / Ask me first / Off, or On / Off for one that never acts. */
+export function PermissionMatrix({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const set = async (role: string, v: Allow) => {
+    setBusy(role);
+    setError(null);
+    try {
+      await api.setAllow(slug, a.id, { [role]: v });
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const perms = a.allow ?? [];
+  if (!perms.length) return <p className="muted sm">Nothing to choose here: Seemo only reads through it.</p>;
+  return (
+    <div className="acx-perms">
+      {perms.map((p) => {
+        const choices: { v: Allow; label: string }[] = p.acts
+          ? [
+              { v: "auto", label: "On its own" },
+              { v: "ask", label: "Ask me first" },
+              { v: "off", label: "Off" },
+            ]
+          : [
+              { v: "auto", label: "On" },
+              { v: "off", label: "Off" },
+            ];
+        return (
+          <div key={p.role} className="acx-perm">
+            <div className="min0">
+              <b>{roleLabel(a, p.role)}</b>
+              <span className="muted sm">{p.role === "learn" && a.learn?.label ? a.learn.label : ROLE_HELP[p.role] ?? ""}</span>
+            </div>
+            <div className="seg" role="radiogroup" aria-label={roleLabel(a, p.role)}>
+              {choices.map((c) => (
+                <button key={c.v} role="radio" aria-checked={p.allow === c.v} className={p.allow === c.v ? `on ${c.v}` : ""} disabled={busy === p.role} onClick={() => p.allow !== c.v && void set(p.role, c.v)}>
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {error && <p className="err sm">{error}</p>}
+    </div>
+  );
+}
+
+/** Choose permissions before anything is saved (the connect wizard): the same choices, kept in a map. */
+export function PermissionChoices({ perms, value, verb, onChange }: { perms: { role: string; acts: boolean }[]; value: Record<string, Allow>; verb?: (role: string) => string; onChange: (v: Record<string, Allow>) => void }) {
+  return (
+    <div className="acx-perms">
+      {perms.map((p) => {
+        const cur = value[p.role] ?? (p.acts ? "ask" : "auto");
+        const choices: { v: Allow; label: string }[] = p.acts
+          ? [
+              { v: "auto", label: "On its own" },
+              { v: "ask", label: "Ask me first" },
+              { v: "off", label: "Off" },
+            ]
+          : [
+              { v: "auto", label: "On" },
+              { v: "off", label: "Off" },
+            ];
+        return (
+          <div key={p.role} className="acx-perm">
+            <div className="min0">
+              <b>{verb?.(p.role) ?? ROLE_LABEL[p.role] ?? p.role}</b>
+              <span className="muted sm">{ROLE_HELP[p.role] ?? ""}</span>
+            </div>
+            <div className="seg" role="radiogroup">
+              {choices.map((c) => (
+                <button key={c.v} role="radio" aria-checked={cur === c.v} className={cur === c.v ? `on ${c.v}` : ""} onClick={() => onChange({ ...value, [p.role]: c.v })}>
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---- Places
+
+export type Field = { key: string; label: string; help?: string; placeholder?: string; optional?: boolean; options?: string[]; secret?: boolean };
+
+/** A kind's place fields as form fields, labels from the manifest. */
+export function placeFields(spec: Record<string, PlaceField> | undefined): Field[] {
+  return Object.entries(spec ?? {}).map(([k, s]) => ({ key: k, label: s.label || k, help: s.help, placeholder: s.placeholder, optional: s.optional, options: enumOf(s) }));
+}
+
+export function Fields({ fields, values, onChange }: { fields: Field[]; values: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  return (
+    <>
+      {fields.map((f) => (
+        <label key={f.key} className="acc-field">
+          <span className="nm">
+            {f.label}
+            {f.optional && <small className="dim"> optional</small>}
+          </span>
+          <FieldInput mono={f.secret} secret={f.secret} options={f.options} optional={f.optional} value={values[f.key] ?? ""} onChange={(v) => onChange(f.key, v)} placeholder={f.placeholder ?? ""} ariaLabel={f.label} />
+          {f.help && (
+            <span className="ds">
+              <Hint text={f.help} />
+            </span>
+          )}
+        </label>
+      ))}
+    </>
+  );
+}
+
+/** Whether an account's places are lists of people: the daemon says so, or a place already is one. */
+export function takesLists(a: Account): boolean {
+  return !!a.takes_lists || (a.places ?? []).some((p) => p.kind === "list");
+}
+
+/** "Newsletter (412)": a place's label, with the list's count when it is a list. */
+export function placeText(p: { kind: string; label: string; fields?: Record<string, unknown> }, lists: MailList[]) {
+  if (p.kind !== "list") return p.label;
+  const l = lists.find((x) => x.id === p.fields?.list);
+  return l ? `${p.label} (${l.contacts - l.unsubscribed})` : p.label;
+}
+
+/** The places inside an account, with add and remove: "Publishes to: r/rust, r/selfhosted", or for a mail account "Sends to: Newsletter (412)". */
+function Places({ slug, a, lists, onChange }: { slug: string; a: Account; lists: MailList[]; onChange: () => void }) {
+  const isMail = takesLists(a);
+  const fields = placeFields(a.place_fields);
+  const [adding, setAdding] = useState(false);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [list, setList] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const places = a.places ?? [];
+  // Only a service with somewhere inside it to choose has places.
+  if (!a.channel || (!isMail && fields.length === 0 && places.length === 0)) return null;
+  const run = async (what: string, f: () => Promise<unknown>) => {
+    setBusy(what);
+    setError(null);
+    try {
+      await f();
+      setAdding(false);
+      setValues({});
+      setList("");
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const free = lists.filter((l) => !places.some((p) => p.fields?.list === l.id));
+  const ok = isMail ? !!list : fields.every((f) => f.optional || (values[f.key] ?? "").trim()) && fields.some((f) => (values[f.key] ?? "").trim());
+  const verb = isMail ? "Sends to" : "Publishes to";
+  return (
+    <div className="acx-places">
+      <span className="lb">{verb}:</span>
+      {places.length === 0 && <span className="muted sm">{a.needs_place ? "nowhere yet; add a place before anything goes out" : isMail ? "the people named on each send" : "the account itself"}</span>}
+      {places.map((p) => (
+        <span key={p.id} className={`acx-place ${p.default ? "def" : ""}`} title={p.default ? "Used when nothing names another" : undefined}>
+          {placeText(p, lists)}
+          {!p.default && places.length > 1 && (
+            <button className="x" title="Make it the default" aria-label="Make it the default" disabled={!!busy} onClick={() => void run(`def-${p.id}`, () => api.updatePlace(slug, a.id, p.id, { default: true }))}>
+              <Star size={10} />
+            </button>
+          )}
+          <button className="x" title="Remove" aria-label={`Remove ${p.label}`} disabled={!!busy} onClick={() => void run(`rm-${p.id}`, () => api.removePlace(slug, a.id, p.id))}>
+            {busy === `rm-${p.id}` ? <Loader2 size={10} className="spin" /> : <X size={10} />}
+          </button>
+        </span>
+      ))}
+      {!adding && (isMail ? free.length > 0 || lists.length === 0 : fields.length > 0) && (
+        <button className="lnk-btn" onClick={() => setAdding(true)}>
+          <Plus size={11} /> {isMail ? "Add a list" : "Add a place"}
+        </button>
+      )}
+      <AnimatePresence>
+        {adding && (
+          <motion.div className="acx-add" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
+            {isMail ? (
+              free.length ? (
+                <label className="acc-field">
+                  <span className="nm">List</span>
+                  <FieldInput options={free.map((l) => l.id)} labels={Object.fromEntries(free.map((l) => [l.id, `${l.label} (${l.contacts - l.unsubscribed})`]))} value={list} onChange={setList} ariaLabel="List" />
+                </label>
+              ) : (
+                <p className="muted sm">
+                  No list to add yet. <Link to={`/p/${slug}/audience`}>Make one under Audience</Link>.
+                </p>
+              )
+            ) : (
+              <Fields fields={fields} values={values} onChange={(k, v) => setValues({ ...values, [k]: v })} />
+            )}
+            <div className="acts">
+              <button className="btn p sm" disabled={!ok || !!busy} onClick={() => void run("add", () => api.addPlace(slug, a.id, isMail ? { list } : { fields: values }))}>
+                {busy === "add" ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Add
+              </button>
+              <button className="btn t sm" onClick={() => setAdding(false)}>
+                Cancel
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {error && <p className="err sm">{error}</p>}
+    </div>
+  );
+}
+
+// ---- Smaller parts
 
 /** "Used by Read posts · Reply (reads, replies)": the abilities sharing it, when more than one does. */
 export function UsedBy({ a }: { a: Account }) {
@@ -84,7 +426,7 @@ export function ActivityLog({ slug, a }: { slug: string; a: Account }) {
 /**
  * The account's keys. With a sign-in button: the button, and the keys only
  * behind "Enter the keys yourself". `only` narrows them to what is still
- * missing (pasting what the service showed).
+ * missing (pasting what the service showed, or choosing the property).
  */
 export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Account; onChange: () => void; only?: "missing" }) {
   // Signed in (a token is kept) but something is still to choose (the property): open on that.
@@ -122,126 +464,66 @@ export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Acco
   );
 }
 
-/** One switch with what it means: "Channel · publish to it". */
-function RoleSwitch({ icon, name, says, on, disabled, onChange }: { icon: React.ReactNode; name: string; says: string; on: boolean; disabled?: boolean; onChange: (on: boolean) => void }) {
+/** Connected, not connected, or signed in with something still to do. */
+export function accountStatus(a: Account): { text: string; tone: "ok" | "warn" | "bad" } {
+  if (a.error) return { text: "Needs a hand", tone: "bad" };
+  if (a.ready) return { text: "Connected", tone: "ok" };
+  if (a.signed_in) return { text: "Needs a hand", tone: "warn" };
+  return { text: "Not connected", tone: "warn" };
+}
+
+/** Learning from it: when it last read, and Learn now. */
+function Learning({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
+  const [learning, setLearning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEvents(slug, (e) => e.type === "job_finished" && (e as { job?: string }).job === "learn" && (setLearning(false), onChange()), { demo: false });
+  if (!a.can_learn && !a.learn) return null;
+  if (!a.source) return null;
   return (
-    <label className="acc-role">
-      <Switch on={on} disabled={disabled} onChange={onChange} />
-      <span>
-        <b>
-          {icon} {name}
-        </b>
-        <span className="muted sm"> {says}</span>
-      </span>
-    </label>
+    <p className="muted sm acc-learned">
+      {learning ? (
+        <>
+          <Loader2 size={12} className="spin" /> Learning from it…
+        </>
+      ) : a.last_learned ? (
+        `Learned from ${a.learned ?? 0} document${a.learned === 1 ? "" : "s"} ${ago(a.last_learned)}; read again every week.`
+      ) : a.ready ? (
+        "Not read yet."
+      ) : (
+        "Read once it is connected."
+      )}
+      {a.ready && !learning && (
+        <button className="lnk-btn" onClick={() => api.learnAccount(slug, a.id).then(() => setLearning(true), (e) => setError((e as Error).message))}>
+          <RefreshCw size={11} /> Learn now
+        </button>
+      )}
+      {error && <span className="err"> {error}</span>}
+    </p>
   );
 }
+
+// ---- The card
 
 /**
- * What an account is for, when it can be more than one thing: a channel
- * (publish to it) and a source (learn from it into the profile). Turning the
- * channel on asks for its destination first; the source can be read again now.
+ * One account: the service and its identity, whether it works, one line for
+ * what Seemo may do with one switch, its places, and Details (the full
+ * permissions, how it connects, activity, rename, default, disconnect).
  */
-function AccountRoles({ slug, a, kinds, onChange }: { slug: string; a: Account; kinds: KindInfo[]; onChange: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [making, setMaking] = useState<KindInfo | null>(null);
-  const [dest, setDest] = useState<Record<string, string>>({});
-  const [learning, setLearning] = useState(false);
-  useEvents(slug, (e) => e.type === "job_finished" && (e as { job?: string }).job === "learn" && (setLearning(false), onChange()), { demo: false });
-  const canChannel = kinds.length > 0;
-  // Only abilities that can teach have something to choose; a channel-only one stays as it was.
-  if (!a.learn) return null;
-  const run = async (f: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await f();
-      onChange();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const fields: Field[] = Object.entries(making?.destination ?? {}).map(([k, spec]) => {
-    const s = spec as { label?: string; help?: string; placeholder?: string; optional?: boolean };
-    return { key: k, label: s.label ?? k, help: s.help, placeholder: s.placeholder, optional: s.optional, options: enumOf(spec) };
-  });
-  const destOk = fields.every((f) => f.optional || (dest[f.key] ?? "").trim());
-  return (
-    <div className="acc-roles">
-      {canChannel && (
-        <RoleSwitch
-          icon={<Send size={12} />}
-          name="Channel"
-          says={a.channel ? `publishes to it${a.destination_text ? ` (${a.destination_text})` : ""}` : "publish to it"}
-          on={a.channel || !!making}
-          disabled={busy}
-          onChange={(on) => (on ? (setMaking(kinds[0]), setDest({})) : making ? setMaking(null) : void run(() => api.updateAccount(slug, a.id, { kind: "" })))}
-        />
-      )}
-      {making && !a.channel && (
-        <div className="acc-make">
-          {kinds.length > 1 && (
-            <div className="scope">
-              {kinds.map((k) => (
-                <button key={k.kind} className={`chip ${making.kind === k.kind ? "acc" : ""}`} onClick={() => (setMaking(k), setDest({}))}>
-                  {k.label}
-                </button>
-              ))}
-            </div>
-          )}
-          <Fields fields={fields} values={dest} onChange={(k, v) => setDest({ ...dest, [k]: v })} />
-          <div className="acts">
-            <button className="btn p sm" disabled={busy || !destOk} onClick={() => void run(() => api.updateAccount(slug, a.id, { kind: making.kind, destination: dest })).then(() => setMaking(null))}>
-              <Check size={13} /> Make it a channel
-            </button>
-          </div>
-        </div>
-      )}
-      <RoleSwitch
-        icon={<BookOpen size={12} />}
-        name="Source"
-        says={a.learn?.label ?? "learn from it into the profile"}
-        on={!!a.source}
-        disabled={busy}
-        onChange={(on) => void run(() => api.updateAccount(slug, a.id, { learns: on })).then(() => on && a.ready && setLearning(true))}
-      />
-      {a.source && (
-        <p className="muted sm acc-learned">
-          {learning ? (
-            <>
-              <Loader2 size={12} className="spin" /> Learning from it…
-            </>
-          ) : a.last_learned ? (
-            `Learned from ${a.learned ?? 0} document${a.learned === 1 ? "" : "s"} ${ago(a.last_learned)}; read again every week.`
-          ) : a.ready ? (
-            "Not read yet."
-          ) : (
-            "Read once it is connected."
-          )}
-          {a.ready && !learning && (
-            <button className="lnk-btn" disabled={busy} onClick={() => void run(() => api.learnAccount(slug, a.id)).then(() => setLearning(true))}>
-              <RefreshCw size={11} /> Learn now
-            </button>
-          )}
-        </p>
-      )}
-      {error && <p className="err sm">{error}</p>}
-    </div>
-  );
-}
-
-/** One account in a list: its name, whether it works, the default, its keys, what it is for, remove. */
-export function AccountCard({ slug, a, several, kinds = [], onChange }: { slug: string; a: Account; several: boolean; kinds?: KindInfo[]; onChange: () => void }) {
-  const [open, setOpen] = useState(!a.ready);
-  const [log, setLog] = useState(false);
+export function AccountCard({ slug, a, lists, several, highlight, onChange }: { slug: string; a: Account; lists: MailList[]; several: boolean; highlight?: boolean; onChange: () => void }) {
+  const svc = accountService(a);
+  const Icon = serviceIcon(svc.icon, svc.group);
+  const status = accountStatus(a);
+  const [details, setDetails] = useState(false);
+  const [keys, setKeys] = useState(!a.ready);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState(a.label);
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (highlight) ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [highlight]);
   const run = async (f: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -254,329 +536,160 @@ export function AccountCard({ slug, a, several, kinds = [], onChange }: { slug: 
       setBusy(false);
     }
   };
+  const rename = () => name.trim() && void run(() => api.updateAccount(slug, a.id, { label: name.trim() })).then(() => setNaming(false));
   return (
-    <div className={`acc ${a.ready ? "" : "off"}`}>
-      <div className="acc-head">
-        {naming ? (
-          <span className="acc-name">
-            <input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && name.trim() && void run(() => api.updateAccount(slug, a.id, { label: name.trim() })).then(() => setNaming(false))} />
-            <button className="btn t sm" disabled={busy || !name.trim()} onClick={() => void run(() => api.updateAccount(slug, a.id, { label: name.trim() })).then(() => setNaming(false))} aria-label="Save the name">
-              <Check size={13} />
-            </button>
-            <button className="btn t sm" onClick={() => (setNaming(false), setName(a.label))} aria-label="Keep the name">
-              <X size={13} />
-            </button>
-          </span>
-        ) : (
-          <button className="acc-name lnk-plain" onClick={() => setOpen((o) => !o)}>
-            <b>{a.label}</b>
-            {a.destination_text && <span className="mono dim">{a.destination_text}</span>}
-          </button>
-        )}
-        <span className={`chip sm ${a.ready ? "ok" : "warn"}`}>
-          <b /> {a.ready ? "connected" : "not connected"}
+    <motion.div ref={ref} layout className={`pcard acx ${a.ready ? "" : "off"} ${highlight ? "hi" : ""}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+      <div className="acx-head">
+        <span className="ic">
+          <Icon size={17} />
         </span>
-        {a.learn && a.channel && <span className="chip sm">channel</span>}
-        {a.source && <span className="chip sm" title={a.learn?.label}>source</span>}
-        {several &&
-          (a.default ? (
-            <span className="chip sm acc-def" title="Seemo uses this one when it does not name another">
-              <Star size={11} /> default
+        <div className="min0">
+          <p className="svc">{svc.name}</p>
+          {naming ? (
+            <span className="acc-name">
+              <input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && rename()} />
+              <button className="btn t sm" disabled={busy || !name.trim()} onClick={rename} aria-label="Save the name">
+                <Check size={13} />
+              </button>
+              <button className="btn t sm" onClick={() => (setNaming(false), setName(a.label))} aria-label="Keep the name">
+                <X size={13} />
+              </button>
             </span>
           ) : (
-            <button className="btn t sm" disabled={busy} title="Use this one when nothing names another" onClick={() => void run(() => api.defaultAccount(slug, a.id))}>
-              <Star size={12} /> Make default
-            </button>
-          ))}
-        <span className="grow" />
-        {!naming && (
-          <button className="btn t sm" onClick={() => setNaming(true)} aria-label="Rename" title="Rename">
-            <Pencil size={13} />
-          </button>
-        )}
-        {confirm ? (
-          <span className="acc-confirm">
-            <span className="muted sm">Remove it and its keys?</span>
-            <button className="btn t sm bad" disabled={busy} onClick={() => void run(() => api.deleteAccount(slug, a.id))}>
-              {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Yes
-            </button>
-            <button className="btn t sm" onClick={() => setConfirm(false)}>
-              Keep
-            </button>
-          </span>
-        ) : (
-          <button className="btn t sm" onClick={() => setConfirm(true)} aria-label="Remove" title="Remove">
-            <Trash2 size={13} />
-          </button>
-        )}
-      </div>
-      <UsedBy a={a} />
-      <AccountRoles slug={slug} a={a} kinds={kinds} onChange={onChange} />
-      {open && <AccountKeys slug={slug} a={a} onChange={onChange} />}
-      <span className="acc-links">
-        {!open && (
-          <button className="lnk sm acc-more" onClick={() => setOpen(true)}>
-            {a.ready ? "Keys and sign-in" : "Connect it"}
-          </button>
-        )}
-        {a.ready && (
-          <button className="lnk sm acc-more" onClick={() => setLog((o) => !o)}>
-            {log ? "Hide activity" : "Activity"}
-          </button>
-        )}
-      </span>
-      {log && <ActivityLog slug={slug} a={a} />}
-      {error && <p className="err sm">{error}</p>}
-    </div>
-  );
-}
-
-/** A short name from the first web address among the values: "whitening.se". */
-function hostOf(values: string[]): string {
-  for (const v of values) {
-    try {
-      const u = new URL(v.trim());
-      if (u.hostname) return u.hostname.replace(/^www\./, "");
-    } catch {
-      /* not a URL */
-    }
-  }
-  return "";
-}
-
-type Field = { key: string; label: string; help?: string; placeholder?: string; optional?: boolean; options?: string[]; secret?: boolean };
-
-function Fields({ fields, values, onChange }: { fields: Field[]; values: Record<string, string>; onChange: (k: string, v: string) => void }) {
-  return (
-    <>
-      {fields.map((f) => (
-        <label key={f.key} className="acc-field">
-          <span className="nm">
-            {f.label}
-            {f.optional && <small className="dim"> optional</small>}
-          </span>
-          <FieldInput mono={f.secret} secret={f.secret} options={f.options} optional={f.optional} value={values[f.key] ?? ""} onChange={(v) => onChange(f.key, v)} placeholder={f.placeholder ?? ""} ariaLabel={f.label} />
-          {f.help && (
-            <span className="ds">
-              <Hint text={f.help} />
-            </span>
+            <h3>{a.label}</h3>
           )}
-        </label>
-      ))}
-    </>
-  );
-}
+        </div>
+        <span className={`chip sm ${status.tone}`}>
+          <b /> {status.text}
+        </span>
+        {several && a.default && (
+          <span className="chip sm acc-def" title="Seemo uses this one when it does not name another">
+            <Star size={11} /> default
+          </span>
+        )}
+      </div>
 
-/**
- * Add an account, or a channel when `kinds` is given (it publishes). Only
- * what is needed shows: with a sign-in button, what it asks first (the site)
- * and the button; otherwise the required keys. Sharing another account, typing
- * the keys by hand, and everything optional (the name too) wait behind links.
- */
-export function AccountForm({ slug, ability, kinds, shareable, onDone, onCancel }: { slug: string; ability: AbilityInfo; kinds?: KindInfo[]; shareable?: { id: string; label: string }[]; onDone: () => void; onCancel: () => void }) {
-  const [picked, setKind] = useState<KindInfo | undefined>(kinds?.[0]);
-  // An ability that publishes and can teach: a channel, a source, or both (both to start).
-  const [asChannel, setAsChannel] = useState(true);
-  const [learns, setLearns] = useState(!!ability.learn);
-  const kind = asChannel ? picked : undefined;
-  const [label, setLabel] = useState("");
-  const [dest, setDest] = useState<Record<string, string>>({});
-  const [keys, setKeys] = useState<Record<string, string>>({});
-  const [mode, setMode] = useState<"connect" | "keys" | "share">(ability.connect ? "connect" : "keys");
-  const [share, setShare] = useState<string>(shareable?.[0]?.id ?? "");
-  const [more, setMore] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // A sign-in adds the account as it starts; from then on the form shows that account.
-  const [created, setCreated] = useState<Account | null>(null);
-  const [paste, setPaste] = useState(false);
-  const reloadCreated = async (id: string) => {
-    const r = await api.accounts(slug, ability.id);
-    const a = r.connections.find((c) => c.id === id) ?? null;
-    setCreated(a);
-    if (a?.ready) onDone();
-  };
-  useEvents(slug, (e) => created && ACCOUNT_EVENTS.includes(e.type) && void reloadCreated(created.id), { demo: false });
+      <div className="acx-say">
+        <p>{permissionSummary(a)}.</p>
+        <ActOnOwn slug={slug} a={a} onChange={onChange} />
+      </div>
 
-  const destFields: Field[] = Object.entries(kind?.destination ?? {}).map(([k, spec]) => {
-    const s = spec as { label?: string; help?: string; placeholder?: string; optional?: boolean };
-    return { key: k, label: s.label ?? k, help: s.help, placeholder: s.placeholder, optional: s.optional, options: enumOf(spec) };
-  });
-  const keyField = (a: AbilityInfo["auth"][number]): Field => ({ key: a.env, label: a.label || a.env, help: a.help, placeholder: a.placeholder, optional: a.optional, options: a.options, secret: /PASSWORD|KEY|TOKEN|SECRET/.test(a.env) });
-  const asked = mode === "connect" ? ability.auth.filter((a) => ability.connect?.needs.includes(a.env)) : mode === "keys" ? ability.auth.filter((a) => !a.optional) : [];
-  const optionalKeys = mode === "keys" ? ability.auth.filter((a) => a.optional) : [];
-  const required = [...destFields.filter((f) => !f.optional), ...asked.map(keyField)];
-  const optional = [...destFields.filter((f) => f.optional), ...optionalKeys.map(keyField)];
-  const values = { ...dest, ...keys };
-  const set = (k: string, v: string) => (destFields.some((f) => f.key === k) ? setDest({ ...dest, [k]: v }) : setKeys({ ...keys, [k]: v }));
-  const ok = required.every((f) => (values[f.key] ?? "").trim()) && (mode !== "share" || !!share);
-  const name = label.trim() || hostOf(Object.values(values));
-  const noun = kind ? "channel" : "account";
+      <Places slug={slug} a={a} lists={lists} onChange={onChange} />
+      <Learning slug={slug} a={a} onChange={onChange} />
 
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const secrets = mode === "keys" ? Object.fromEntries(Object.entries(keys).filter(([, v]) => v.trim())) : undefined;
-      const same_as = mode === "share" ? share : undefined;
-      if (kind) await api.createChannel(slug, { label: name, kind: kind.kind, connection: ability.id, destination: dest, secrets, same_as, learns: !!ability.learn && learns });
-      else await api.createAccount(slug, { ability: ability.id, label: name, secrets, same_as, learns: !!ability.learn && learns });
-      onDone();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  };
+      {!a.ready && (
+        <div className="acx-fix">
+          <p className="muted sm">{a.error ? `It cannot be used: ${a.error}.` : a.signed_in ? "Signed in. One more step:" : "Not connected yet. Sign in, or enter its keys:"}</p>
+          {!a.error && <AccountKeys slug={slug} a={a} only={a.signed_in ? "missing" : undefined} onChange={onChange} />}
+        </div>
+      )}
 
-  if (created)
-    return (
-      <div className="pcard acc-form">
-        <p className="cap">
-          {created.label}: {created.ready ? "connected" : "finish connecting"}
-        </p>
-        {!created.ready && (
-          <p className="muted sm">
-            {(created.signed_in ?? created.auth.some((k) => k.written && k.set)) ? (
-              "Signed in. One more step: choose below."
-            ) : paste ? (
-              "Approve in the tab that opened. It shows what KIQR needs once, because it only sends it back over https: paste it below."
-            ) : (
-              <>
-                <Loader2 size={12} className="spin" /> Waiting for you to approve in the tab that opened.
-              </>
+      <button className="acx-more" onClick={() => setDetails((d) => !d)} aria-expanded={details}>
+        {details ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Details
+      </button>
+      <AnimatePresence initial={false}>
+        {details && (
+          <motion.div className="acx-details" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }}>
+            <section>
+              <p className="cap">What Seemo may do here</p>
+              <PermissionMatrix slug={slug} a={a} onChange={onChange} />
+            </section>
+            {(a.publishers?.length ?? 0) > 1 && (
+              <section>
+                <p className="cap">Who publishes</p>
+                <label className="acx-pub">
+                  <span className="muted sm">Several abilities can publish here; this one does:</span>
+                  <FieldInput options={a.publishers!.map((p) => p.id)} labels={Object.fromEntries(a.publishers!.map((p) => [p.id, p.name]))} value={a.publisher ?? ""} onChange={(v) => void run(() => api.updateAccount(slug, a.id, { publisher: v }))} ariaLabel="The ability that publishes here" />
+                </label>
+              </section>
             )}
-          </p>
+            <section>
+              <p className="cap">How it connects</p>
+              <UsedBy a={a} />
+              {a.ready && !keys ? (
+                <button className="lnk-btn" onClick={() => setKeys(true)}>
+                  Keys and sign-in
+                </button>
+              ) : a.ready ? (
+                <AccountKeys slug={slug} a={a} onChange={onChange} />
+              ) : (
+                <p className="muted sm">See above.</p>
+              )}
+            </section>
+            {a.ready && (
+              <section>
+                <p className="cap">Activity</p>
+                <p className="muted sm">
+                  {a.publications} published{a.last_published ? `, last ${ago(a.last_published)}` : ""}.
+                </p>
+                <ActivityLog slug={slug} a={a} />
+              </section>
+            )}
+            <div className="acx-acts">
+              {!naming && (
+                <button className="btn t sm" onClick={() => setNaming(true)}>
+                  <Pencil size={13} /> Rename
+                </button>
+              )}
+              {several && !a.default && (
+                <button className="btn t sm" disabled={busy} title="Seemo uses this one when nothing names another" onClick={() => void run(() => api.defaultAccount(slug, a.id))}>
+                  <Star size={13} /> Make default
+                </button>
+              )}
+              <span className="grow" />
+              {confirm ? (
+                <span className="acc-confirm">
+                  <span className="muted sm">Disconnect it and forget its keys?</span>
+                  <button className="btn t sm bad" disabled={busy} onClick={() => void run(() => api.deleteAccount(slug, a.id))}>
+                    {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Disconnect
+                  </button>
+                  <button className="btn t sm" onClick={() => setConfirm(false)}>
+                    Keep
+                  </button>
+                </span>
+              ) : (
+                <button className="btn t sm bad" onClick={() => setConfirm(true)}>
+                  <Trash2 size={13} /> Disconnect
+                </button>
+              )}
+            </div>
+          </motion.div>
         )}
-        <AccountKeys slug={slug} a={created} only={paste ? "missing" : undefined} onChange={() => void reloadCreated(created.id)} />
-        <div className="acts">
-          <button className="btn p sm" onClick={onDone}>
-            <Check size={13} /> Done
-          </button>
-        </div>
-      </div>
-    );
-
-  const others: { id: string; label: string }[] = shareable ?? [];
-  return (
-    <div className="pcard acc-form">
-      <p className="cap">
-        New {noun} · {kind?.label ?? ability.name}
-      </p>
-      {ability.learn && (
-        <div className="acc-roles">
-          {kinds && kinds.length > 0 && <RoleSwitch icon={<Send size={12} />} name="Channel" says="publish to it" on={asChannel} onChange={(on) => (setAsChannel(on), setDest({}))} />}
-          <RoleSwitch icon={<BookOpen size={12} />} name="Source" says={ability.learn.label} on={learns} onChange={setLearns} />
-        </div>
-      )}
-      {kind && kinds && kinds.length > 1 && (
-        <div className="scope">
-          {kinds.map((k) => (
-            <button key={k.kind} className={`chip ${kind?.kind === k.kind ? "acc" : ""}`} onClick={() => (setKind(k), setDest({}))}>
-              {k.label}
-            </button>
-          ))}
-        </div>
-      )}
-      {mode === "share" && (
-        <label className="acc-field">
-          <span className="nm">Same account as</span>
-          <FieldInput options={others.map((o) => o.label)} value={others.find((o) => o.id === share)?.label ?? ""} onChange={(v) => setShare(others.find((o) => o.label === v)?.id ?? "")} ariaLabel="Same account as" />
-        </label>
-      )}
-      <Fields fields={required} values={values} onChange={set} />
-      {more && (
-        <>
-          <label className="acc-field">
-            <span className="nm">
-              Name<small className="dim"> optional</small>
-            </span>
-            <FieldInput value={label} placeholder={hostOf(Object.values(values)) || kind?.label || ability.name} onChange={setLabel} ariaLabel="Name" />
-          </label>
-          <Fields fields={optional} values={values} onChange={set} />
-        </>
-      )}
+      </AnimatePresence>
       {error && <p className="err sm">{error}</p>}
-      <div className="acts">
-        {mode === "connect" && ability.connect ? (
-          <ConnectButton slug={slug} ability={ability.id} connect={ability.connect} auth={ability.auth.map((k) => ({ ...k, set: null }))} values={keys} disabled={!ok} fresh={{ label: name, kind: kind?.kind, destination: dest, learns: !!ability.learn && learns }} onStarted={(id, p) => (setPaste(p), void reloadCreated(id))} onDone={onDone} />
-        ) : (
-          <button className="btn p sm" disabled={!ok || saving} onClick={() => void save()}>
-            {saving ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Add the {noun}
-          </button>
-        )}
-        <button className="btn t sm" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-      <p className="acc-links">
-        {mode !== "share" && others.length > 0 && (
-          <button className="lnk-btn" onClick={() => setMode("share")}>
-            Same account as {others.length === 1 ? others[0].label : "another"}
-          </button>
-        )}
-        {mode !== "keys" && ability.auth.length > 0 && (
-          <button className="lnk-btn" onClick={() => setMode("keys")}>
-            Enter the keys yourself
-          </button>
-        )}
-        {mode !== "connect" && ability.connect && (
-          <button className="lnk-btn" onClick={() => setMode("connect")}>
-            {ability.connect.label} instead
-          </button>
-        )}
-        {!more && (
-          <button className="lnk-btn" onClick={() => setMore(true)}>
-            More
-          </button>
-        )}
-      </p>
-    </div>
+    </motion.div>
   );
 }
 
-/** An ability's accounts in this project, and adding one. Channels when it publishes. */
-export function AccountList({ slug, ability, kinds, onChange }: { slug: string; ability: AbilityInfo; kinds: KindInfo[]; onChange: () => void }) {
-  const [list, setList] = useState<Account[] | null>(null);
+/** This project's accounts of one service, for the ability window: the cards, and Connect, the wizard's steps in place for that service. */
+export function ServiceAccounts({ slug, ability, onChange }: { slug: string; ability: Ability; onChange: () => void }) {
+  const svc = serviceOf(ability);
   const [adding, setAdding] = useState(false);
+  const [list, setList] = useState<Account[] | null>(null);
+  const [lists, setLists] = useState<MailList[]>([]);
   const load = () =>
     api
-      .accounts(slug, ability.id)
-      .then((r) => setList(r.connections))
+      .accounts(slug)
+      .then((r) => setList(r.connections.filter((c) => accountService(c).id === svc.id || c.ability === ability.id)))
       .catch(() => setList([]));
   useEffect(() => {
     void load();
-  }, [slug, ability.id]);
+    api.lists(slug).then((r) => setLists(r.lists), () => setLists([]));
+  }, [slug, svc.id]);
   useEvents(slug, (e) => ACCOUNT_EVENTS.includes(e.type) && void load(), { demo: false });
-  const changed = () => (void load(), onChange());
-  const publishes = kinds.length > 0;
-  // One that can also be a source is an account first; the switches say what for.
-  const noun = publishes && !ability.learn ? "channel" : "account";
-  const shareable = (list ?? []).filter((a) => a.ready).map((a) => ({ id: a.id, label: a.label }));
-  // Other abilities of the same service use these accounts too: one sign-in for all of them.
-  const others = [...new Map((list ?? []).flatMap((a) => a.used_by ?? []).filter((u) => u.id !== ability.id).map((u) => [u.id, u.name])).values()];
   return (
     <div className="ab-con">
       <p className="muted sm">
-        {ability.learn
-          ? `Each account has its own keys and belongs to this project: ${publishes ? "a channel to publish to, a source Seemo learns the business from, or both" : "a source Seemo learns the business from"}.`
-          : publishes
-          ? `Each channel has its own account: add one per ${kinds.map((k) => k.label.toLowerCase()).join(" or ")}. They belong to this project.`
-          : "Each account has its own keys and belongs to this project. With more than one, Seemo uses the default unless it names another."}
+        {ability.name} works through your {svc.name} account. Every ability of {svc.name} shares it: sign in once, and choose there what Seemo may do.
       </p>
-      {others.length > 0 && (
-        <p className="acc-used">
-          <Users size={12} /> Shared with {others.length === 1 ? others[0] : `${others.slice(0, -1).join(", ")} and ${others[others.length - 1]}`}: {list && list.length === 1 ? "this account is" : "these accounts are"} theirs too, signed in once.
-        </p>
-      )}
       {list === null && <Loader2 size={14} className="spin" />}
-      {list?.map((a) => <AccountCard key={a.id} slug={slug} a={a} several={list.length > 1} kinds={kinds} onChange={changed} />)}
-      {list && list.length === 0 && !adding && <p className="muted sm">No {noun} yet.</p>}
+      {list?.map((a) => <AccountCard key={a.id} slug={slug} a={a} lists={lists} several={list.length > 1} onChange={load} />)}
+      {list && list.length === 0 && !adding && <p className="muted sm">No {svc.name} account in this project yet.</p>}
       {adding ? (
-        <AccountForm slug={slug} ability={ability} kinds={publishes ? kinds : undefined} shareable={shareable} onDone={() => (setAdding(false), changed())} onCancel={() => setAdding(false)} />
+        <ConnectService slug={slug} ability={ability} onInstalled={onChange} onCancel={() => setAdding(false)} onDone={() => (setAdding(false), void load(), onChange())} />
       ) : (
-        <button className="btn g sm acc-add" onClick={() => setAdding(true)}>
-          <Plus size={13} /> Add {list && list.length ? "another" : "a"} {noun}
+        <button className={`btn ${list && list.length ? "g" : "p"} sm acc-add`} onClick={() => setAdding(true)}>
+          <Plus size={13} /> Connect {list && list.length ? "another" : "your"} {svc.name} account
         </button>
       )}
     </div>

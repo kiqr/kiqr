@@ -97,6 +97,12 @@ pub struct IndexItem {
     /// Metrics sources it reads.
     #[serde(default)]
     pub sources: Vec<String>,
+    /// The service it connects, as the grid of things to connect shows it (the manifest's `service` block).
+    #[serde(default)]
+    pub service: Option<kiqr_core::extensions::Service>,
+    /// What an account of it allows Seemo at first (the manifest's `allow`).
+    #[serde(default)]
+    pub allow: std::collections::BTreeMap<String, kiqr_core::connections::Allow>,
     /// When to suggest it to a new project (the manifest's `fits`).
     pub fits: kiqr_core::extensions::Fits,
     pub auth: Vec<AuthKey>,
@@ -254,6 +260,8 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         provides: m.provides.keys().cloned().collect(),
         channels: m.channels.iter().map(|c| IndexChannel { kind: c.kind.clone(), name: c.display_name().to_string(), icon: c.icon.clone(), profile_hosts: c.profile_hosts.clone() }).collect(),
         sources: m.sources.keys().cloned().collect(),
+        service: Some(m.service_card()),
+        allow: m.allow.clone(),
         fits: m.fits.clone(),
         auth: m.auth.clone(),
         connect: m.connect.iter().find(|c| c.has_button()).or(m.connect.first()).cloned(),
@@ -304,6 +312,8 @@ fn core_item(c: &extensions::CoreAbility) -> IndexItem {
         provides: vec![],
         channels: vec![],
         sources: vec![],
+        service: None,
+        allow: Default::default(),
         fits: Default::default(),
         auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false, options: vec![], placeholder: String::new(), choices: None, typed: false }).collect(),
         connect: None,
@@ -473,6 +483,8 @@ fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
         provides: vec![],
         channels: vec![],
         sources: vec![],
+        service: None,
+        allow: Default::default(),
         fits: Default::default(),
         auth: vec![],
         connect: None,
@@ -519,8 +531,10 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
                     "label": c.label,
                     "default": c.default,
                     "channel": c.is_channel(),
+                    "publishes": c.publishes(),
                     "kind": c.kind,
                     "destination_text": c.destination_text(),
+                    "places": c.places,
                     "missing": c.missing(home, slug, m),
                     "set": m.auth.iter().filter(|a| keys.contains_key(&a.env)).map(|a| a.env.clone()).collect::<Vec<_>>(),
                 })
@@ -625,8 +639,11 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         // A core ability KIQR signs in to (UnblockingAPI): this project's own sign-in, the machine's, or none.
         "signed_in": core.and_then(|c| crate::signins::signin_scope(home, ctx.slug, c.id)),
         "accounts": accounts,
-        "kinds": m.map(|m| m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "name": c.display_name(), "destination": c.destination, "does": c.roles() })).collect::<Vec<_>>()).unwrap_or_default(),
-        "service": m.map(|m| m.service().to_string()),
+        "kinds": m.map(|m| m.channels.iter().map(|c| json!({ "kind": c.kind, "label": c.label, "name": c.display_name(), "place": c.place, "does": c.roles() })).collect::<Vec<_>>()).unwrap_or_default(),
+        "service": m.map(|m| m.service().to_string()).or_else(|| item.service.as_ref().map(|s| s.id.clone())),
+        // How the grid of things to connect shows it, and what an account of it allows at first.
+        "service_card": m.map(|m| json!(m.service_card())).unwrap_or_else(|| json!(item.service)),
+        "allow": m.map(|m| json!(m.allow)).unwrap_or_else(|| json!(item.allow)),
         // An account of it can be a source: what the Source switch says.
         "learn": m.map(crate::accounts::learn_view),
         "active_for": ctx.active.iter().filter(|(_, id)| *id == item.id).map(|(a, _)| a.clone()).collect::<Vec<_>>(),

@@ -3,13 +3,14 @@
 // approved but not sent, publishes coming up, and scheduled publishes that
 // failed. The sidebar count is the approvals, drafts and failures.
 import { Link, useParams } from "react-router-dom";
-import { CalendarClock, CheckCircle2, Download, ExternalLink, MessagesSquare, Send, Sparkles } from "lucide-react";
+import { CalendarClock, CheckCircle2, ExternalLink, MessagesSquare, Plug, Send, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card, type Suggestion } from "../api";
 import { Guide } from "./Guide";
 import { ApprovalCard } from "../chat/Conversation";
 import { AssetEmbed } from "./AssetEmbed";
 import { AssetActions, StatusChip, whenAt } from "./AssetActions";
+import { connectPath } from "./Accounts";
 import { assetIcon } from "../assetIcons";
 import "../profile.css";
 import "../chat.css";
@@ -35,7 +36,7 @@ export function TodoPage() {
         <div>
           <p className="cap">For you</p>
           <h1 className="d2">{starting ? "Getting started" : "To do"}</h1>
-          <p className="muted">{starting ? "A few steps from your website to marketing that runs itself. Once they are done, this page is what waits for you: Seemo's questions, drafts to approve, and what is set to go out." : "What waits for you. Seemo's questions from every chat, drafts to approve, and what is set to go out. Approve a draft for a channel; publish it now or pick a time."}</p>
+          <p className="muted">{starting ? "A few steps from your website to marketing that runs itself. Once they are done, this page is what waits for you: Seemo's questions, drafts to approve, and what is set to go out." : "What waits for you. Seemo's questions from every chat, drafts to approve, and what is set to go out. Approve a draft for where it goes; publish it now or pick a time."}</p>
         </div>
         {d && d.count > 0 && (
           <div className="cm-acts">
@@ -168,8 +169,8 @@ function SuggestionRow({ slug, s, onChange }: { slug: string; s: Suggestion; onC
           <small>The marketplace has “{s.ability_name}”. With it I can write and publish there.</small>
         </span>
       </span>
-      <Link className="btn p sm" to={`/p/${slug}/abilities#ability=${encodeURIComponent(s.ability)}`}>
-        <Download size={13} /> Install
+      <Link className="btn p sm" to={connectPath(slug, { service: s.ability })}>
+        <Plug size={13} /> Connect
       </Link>
       <button className="btn t sm" disabled={busy} onClick={() => (setBusy(true), api.dismissSuggestion(slug, s.kind).then(onChange, () => setBusy(false)))}>
         Not now

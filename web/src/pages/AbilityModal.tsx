@@ -1,27 +1,29 @@
 // One ability, in full: what it is and what it includes, its instructions
-// (read, edit, edit a copy, restore), this project's accounts of it (its
-// channels, when it publishes), and its switch for this project. Opened from
-// any row or card on the Abilities page.
+// (read, edit, edit a copy, restore), this project's accounts of its service,
+// and its switch for this project. Opened from any row or card on the
+// Abilities page. A service ability is plumbing behind an account: its
+// Accounts tab sends the user to the connect wizard rather than installing.
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertTriangle, Check, Download, FolderOpen, Globe, Loader2, Pencil, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Download, FolderOpen, Globe, Loader2, Pencil, Plug, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { api, type Ability, type Contract } from "../api";
 import { Markdown } from "../markdown";
-import { AccountList } from "./Accounts";
+import { serviceOf, ServiceAccounts } from "./Accounts";
 import { SecretField } from "./SecretField";
 import { SignInById } from "./SignIns";
 import { Switch } from "./Switch";
 import { InstallPanel } from "./Marketplace";
 import { parseInstructions, TeachForm, type TeachDraft } from "./TeachForm";
-import { AbilityIcon, Author, hasNewer, needsOf, OneClick, oneClick, partsOf, stateOf } from "./abilityBits";
+import { AbilityIcon, advancedOf, Author, hasNewer, isService, needsOf, OneClick, oneClick, partsOf, stateOf, type Part } from "./abilityBits";
 
 type Tab = "overview" | "instructions" | "connect";
 
 export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange, onPrefer }: { slug: string; a: Ability; contracts: Contract[]; initialTab?: Tab; onClose: () => void; onChange: () => void; onPrefer: (contract: string, id: string) => void }) {
   const state = stateOf(a);
-  const canConnect = a.installed && a.auth.length > 0;
+  const service = isService(a);
+  const canConnect = service || (a.installed && a.auth.length > 0);
   const [tab, setTab] = useState<Tab>(initialTab ?? "overview");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
     }
   };
   const rivals = contracts.filter((c) => a.provides.some((p) => p.ability === c.id) && c.candidates.length > 1);
-  const connectLabel = a.core ? "Connect" : a.kinds?.length ? "Channels" : "Accounts";
+  const connectLabel = "Accounts";
   const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, ...(a.instructions.length ? [{ id: "instructions" as Tab, label: "Instructions" }] : []), ...(canConnect ? [{ id: "connect" as Tab, label: connectLabel }] : [])];
 
   return createPortal(
@@ -118,13 +120,17 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
           )}
         </div>
         <footer className="ab-foot">
-          {!a.installed ? (
+          {!a.installed && service ? (
+            <button className="btn p sm" onClick={() => setTab("connect")}>
+              <Plug size={13} /> Connect your {serviceOf(a).name} account
+            </button>
+          ) : !a.installed ? (
             <button className="mk-install-btn" onClick={() => setInstalling((v) => !v)}>
               <Download size={14} /> {a.repo ? "Download and install" : "Install"}
             </button>
           ) : (
             <>
-              <label className="ab-sw" title={!a.ready ? (a.kinds?.length ? "Add a channel first" : "Connect it first") : undefined}>
+              <label className="ab-sw" title={!a.ready ? (service ? `Connect your ${serviceOf(a).name} account first` : "Connect it first") : undefined}>
                 <Switch on={!a.paused && !a.machine_off && a.ready} disabled={!!busy || !a.ready} onChange={(on) => run("project", async () => {
                   // A core ability switched off in Settings for every project comes back on with this project.
                   if (on && a.machine_off) await api.resumeAbility(a.id);
@@ -174,14 +180,13 @@ function ToolList({ a }: { a: Ability }) {
   return (
     <>
       <p className="cap">
-        Tools Seemo can use <span className="n">{tools.length}</span>
+        What Seemo can do with it <span className="n">{tools.length}</span>
       </p>
       <ul className="ab-tools">
         {shown.map((t) => (
           <li key={t.name}>
             <div className="hd">
-              <b>{t.label || t.name}</b>
-              <code>{t.name}</code>
+              <b>{t.label || t.name.replace(/_/g, " ")}</b>
               {ROLE_CHIP[t.role] && <span className="chip warn sm">{ROLE_CHIP[t.role]}</span>}
             </div>
             {t.description && <p>{t.description}</p>}
@@ -197,9 +202,42 @@ function ToolList({ a }: { a: Ability }) {
   );
 }
 
+/** A list of parts: icon, label, a detail line. */
+function PartList({ parts }: { parts: Part[] }) {
+  return (
+    <ul className="ab-incl">
+      {parts.map((p) => (
+        <li key={p.label} className={p.tone ?? ""}>
+          <p.icon size={15} />
+          <div>
+            <span>{p.label}</span>
+            {p.detail && <small>{p.detail}</small>}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** How it runs, folded away: the server or program, the hosts, the tools by name. */
+function AdvancedParts({ a }: { a: Ability }) {
+  const [open, setOpen] = useState(false);
+  const parts = advancedOf(a);
+  if (!parts.length) return null;
+  return (
+    <div className="mk-adv">
+      <button className="adv-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Advanced: how it runs
+      </button>
+      {open && <PartList parts={parts} />}
+    </div>
+  );
+}
+
 function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?: () => void }) {
   const parts = partsOf(a, true);
   const needs = needsOf(a);
+  const service = isService(a);
   return (
     <div className="ab-ov">
       <p className="ab-sum">{a.summary}</p>
@@ -219,40 +257,24 @@ function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?
           {a.trust === "community" && <span className="chip">community</span>}
         </p>
       )}
-      <p className="cap">What's included</p>
-      <ul className="ab-incl">
-        {parts.map((p) => (
-          <li key={p.label} className={p.tone ?? ""}>
-            <p.icon size={15} />
-            <div>
-              <span>{p.label}</span>
-              {p.detail && <small>{p.detail}</small>}
-            </div>
-          </li>
-        ))}
-      </ul>
+      {parts.length > 0 && (
+        <>
+          <p className="cap">What's included</p>
+          <PartList parts={parts} />
+        </>
+      )}
       <ToolList a={a} />
       {needs.length > 0 && (
         <>
           <p className="cap">
             What it needs
-            {a.auth.length > 0 && onConnect && (
+            {onConnect && (a.auth.length > 0 || service) && (
               <button className="lnk ab-cap-act" onClick={onConnect}>
-                {a.core ? "Set up under Connect" : a.kinds?.length ? "Add a channel" : "Add an account"}
+                {service ? "See the account" : "Set it up"}
               </button>
             )}
           </p>
-          <ul className="ab-incl">
-            {needs.map((p) => (
-              <li key={p.label} className={p.tone ?? ""}>
-                <p.icon size={15} />
-                <div>
-                  <span>{p.label}</span>
-                  {p.detail && <small>{p.detail}</small>}
-                </div>
-              </li>
-            ))}
-          </ul>
+          <PartList parts={needs} />
         </>
       )}
       <dl className="ab-meta">
@@ -295,11 +317,12 @@ function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?
           </div>
         )}
       </dl>
-      {a.channels.length > 0 && (
+      {service && (
         <p className="muted sm">
-          Each channel brings its own account; add them here or under <Link to={`/p/${slug}/channels`}>Channels</Link>.
+          It works through your {serviceOf(a).name} account, shared by every ability of {serviceOf(a).name}. Connect it, and choose what Seemo may do there, under <Link to={`/p/${slug}/accounts`}>Accounts</Link>.
         </p>
       )}
+      <AdvancedParts a={a} />
     </div>
   );
 }
@@ -473,7 +496,7 @@ function CoreSignIn({ slug, a, onChange }: { slug: string; a: Ability; onChange:
   );
 }
 
-/** An installed ability: this project's accounts of it (channels, when it publishes). A core one: KIQR's own key, on this machine. Then which ability serves a contract. */
+/** A service ability: this project's accounts of its service, connected in place. A core one: KIQR's own key, on this machine. Then which ability serves a contract. */
 function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Ability; rivals: Contract[]; onChange: () => void; onPrefer: (contract: string, id: string) => void }) {
   return (
     <div className="ab-con">
@@ -489,7 +512,7 @@ function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Abi
           <p className="muted sm">KIQR's own key, on this machine; every project uses it.</p>
         </>
       ) : (
-        <AccountList slug={slug} ability={{ id: a.id, name: a.name, auth: a.auth, connect: a.connect, learn: a.learn }} kinds={a.kinds ?? []} onChange={onChange} />
+        <ServiceAccounts slug={slug} ability={a} onChange={onChange} />
       )}
       {rivals.map((c) => (
         <div key={c.id} className="ab-prefer">
