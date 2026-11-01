@@ -565,7 +565,7 @@ export type MailList = { id: string; label: string; description: string; contact
 export type Contact = { email: string; name?: string; consent?: string; added?: string | null; unsubscribed?: string | null };
 /** One send to a list: so many sent, so many failed, still running or not. */
 export type ListSend = { key: string; sent: number; failed: number; at: string | null; running: boolean };
-export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; place: Record<string, PlaceField>; needs_place?: boolean; takes_lists?: boolean; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }>; learn?: LearnInfo | null };
+export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; place: Record<string, PlaceField>; needs_place?: boolean; takes_lists?: boolean; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }>; /** Inputs the publish needs that Seemo prepares (a site's source files): a plain Publish cannot send there. */ prepared?: string[]; learn?: LearnInfo | null };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);

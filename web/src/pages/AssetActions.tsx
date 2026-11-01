@@ -13,6 +13,7 @@ import { networkOf, useNetworks } from "../networks";
 import type { Network } from "../api";
 import { ago } from "./Project";
 import { connectPath, placeText } from "./Accounts";
+import { openSeemo } from "../SeemoWidget";
 
 export const STATUSES: AssetStatus[] = ["draft", "ready", "scheduled", "published", "archived"];
 export const STATUS_TONE: Record<AssetStatus, string> = { draft: "", ready: "acc", scheduled: "ai", published: "ok", archived: "" };
@@ -85,7 +86,15 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   const chosenLabel = chosen?.text ?? chosenKey;
   // Choices the account's kind offers per publish (a blog: draft or published), the first value by default.
   const target = all.find((c) => c.id === (a.channel || chosenAccount));
-  const offered = Object.entries(kinds.data?.find((k) => k.kind === target?.kind && k.connection === target?.ability)?.options ?? {}).filter(([, s]) => s.enum?.length);
+  const kindInfo = kinds.data?.find((k) => k.kind === target?.kind && k.connection === target?.ability);
+  const offered = Object.entries(kindInfo?.options ?? {}).filter(([, s]) => s.enum?.length);
+  // A kind whose publish needs what only Seemo writes (a site's source files, as a pull request): the button asks Seemo instead.
+  const prepared = kindInfo?.prepared ?? [];
+  const askSeemo = async () => {
+    const c = await api.createChat(slug, `Publish ${a.title}`);
+    openSeemo(c.id);
+    await api.sendMessage(slug, c.id, `Publish "${a.title}" to ${ownText || chosenLabel}: prepare what it needs (${prepared.join(", ")}) the way the site is built and propose the publish.`);
+  };
   const [opts, setOpts] = useState<Record<string, string>>({});
 
   const run = async (what: string, fn: () => Promise<unknown>) => {
@@ -187,9 +196,15 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
                   <FieldInput options={spec.enum} value={opts[name] ?? spec.enum?.[0] ?? ""} onChange={(v) => setOpts({ ...opts, [name]: v })} ariaLabel={name} />
                 </span>
               ))}
-              <button className="btn p sm" disabled={!!busy} onClick={() => void run("publish", () => api.publishAsset(slug, a, "", "", opts))}>
-                {spin("publish", Send)} Publish now
-              </button>
+              {prepared.length ? (
+                <button className="btn p sm" disabled={!!busy} title={`Publishing here means ${prepared.join(" and ")} written the way the site is built, which Seemo does`} onClick={() => void run("ask", askSeemo)}>
+                  {spin("ask", Send)} Ask Seemo to publish
+                </button>
+              ) : (
+                <button className="btn p sm" disabled={!!busy} onClick={() => void run("publish", () => api.publishAsset(slug, a, "", "", opts))}>
+                  {spin("publish", Send)} Publish now
+                </button>
+              )}
               {a.status === "scheduled" ? (
                 <button className="btn t sm" disabled={!!busy} onClick={() => void run("unschedule", () => api.unscheduleAsset(slug, a))}>
                   {spin("unschedule", Undo2)} Unschedule

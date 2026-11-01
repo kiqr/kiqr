@@ -1309,12 +1309,14 @@ fn call_files(app: &App, slug: &str, provide: &Provide, args: &mut Value) -> Res
     Ok(files)
 }
 
-fn no_leftover(s: &str, what: &str) -> Result<()> {
-    if let Some(i) = s.find("${") {
-        let end = s[i..].find('}').map(|e| i + e + 1).unwrap_or(s.len());
-        bail!("{what} needs {} which is not set; add it under Setup → Abilities, or in the project's Channels for a mail account", &s[i..end]);
-    }
-    Ok(())
+/// A template filled, or the refusal that names the variable it needs. Only the template is read
+/// for variables: what an argument holds (a file whose code says `${price}`) is never looked at.
+fn filled(template: &str, args: &Value, env: &(impl Fn(&str) -> Option<String> + Clone), what: &str) -> Result<String> {
+    extensions::fill_checked(template, args, env.clone()).map_err(|name| anyhow!("{what} needs ${{{name}}} which is not set; add it under Setup → Accounts on the account, or under Setup → Abilities for KIQR's own keys"))
+}
+
+fn filled_value(template: &Value, args: &Value, env: &(impl Fn(&str) -> Option<String> + Clone), what: &str) -> Result<Value> {
+    extensions::fill_value_checked(template, args, env).map_err(|name| anyhow!("{what} needs ${{{name}}} which is not set; add it under Setup → Accounts on the account, or under Setup → Abilities for KIQR's own keys"))
 }
 
 /// The asset's files a call may send: (name, bytes, type).
@@ -1343,8 +1345,7 @@ fn file_ref<'a>(template: &str, args: &Value, env: &(impl Fn(&str) -> Option<Str
 /// Make one request: URL and hosts, query, headers, auth, and the body
 /// (`json`, `form`, `multipart` or `body_file`). A failure status is an error.
 async fn send(m: &Manifest, req: &HttpRequest, args: &Value, env: &(impl Fn(&str) -> Option<String> + Clone), files: &Files) -> Result<Answer> {
-    let url_s = extensions::fill(&req.url, args, env.clone());
-    no_leftover(&url_s, "the request URL")?;
+    let url_s = filled(&req.url, args, env, "the request URL")?;
     let mut url = url::Url::parse(url_s.trim()).with_context(|| format!("{url_s} is not a URL"))?;
     if !extensions::host_allowed(&url, &extensions::hosts_for(m, env)) {
         bail!("{} may not call {}", m.name, url.host_str().unwrap_or(""));
@@ -1360,31 +1361,24 @@ async fn send(m: &Manifest, req: &HttpRequest, args: &Value, env: &(impl Fn(&str
     let mut r = client.request(method, url.clone());
     let mut has_ctype = false;
     for (k, v) in &req.headers {
-        let v = extensions::fill(v, args, env.clone());
-        no_leftover(&v, &format!("the header {k}"))?;
+        let v = filled(v, args, env, &format!("the header {k}"))?;
         has_ctype |= k.eq_ignore_ascii_case("content-type");
         r = r.header(k, v);
     }
     // Added after the manifest's own headers, so no manifest can leave it out: the daemon refuses its few human-only routes (the factory reset) to anything carrying it.
     r = r.header(crate::reset::AGENT_HEADER, m.id.as_str());
     if let Some(pair) = &req.basic_auth {
-        let user = extensions::fill(pair.first().map(String::as_str).unwrap_or(""), args, env.clone());
-        let pass = pair.get(1).map(|p| extensions::fill(p, args, env.clone()));
-        no_leftover(&user, "the user name")?;
-        if let Some(p) = &pass {
-            no_leftover(p, "the password")?;
-        }
+        let user = filled(pair.first().map(String::as_str).unwrap_or(""), args, env, "the user name")?;
+        let pass = pair.get(1).map(|p| filled(p, args, env, "the password")).transpose()?;
         r = r.basic_auth(user, pass);
     }
     if let Some(body) = &req.json {
-        let b = extensions::fill_value(body, args, env);
-        no_leftover(&b.to_string(), "the request body")?;
+        let b = filled_value(body, args, env, "the request body")?;
         r = r.json(&b);
     } else if !req.form.is_empty() {
         let mut pairs = Vec::new();
         for (k, v) in &req.form {
-            let v = extensions::fill(v, args, env.clone());
-            no_leftover(&v, &format!("the form field {k}"))?;
+            let v = filled(v, args, env, &format!("the form field {k}"))?;
             pairs.push((k.clone(), v));
         }
         r = r.form(&pairs);
@@ -1392,8 +1386,7 @@ async fn send(m: &Manifest, req: &HttpRequest, args: &Value, env: &(impl Fn(&str
         let mut form = reqwest::multipart::Form::new();
         for part in &req.multipart {
             if let Some(v) = &part.value {
-                let v = extensions::fill(v, args, env.clone());
-                no_leftover(&v, &format!("the part {}", part.name))?;
+                let v = filled(v, args, env, &format!("the part {}", part.name))?;
                 form = form.text(part.name.clone(), v);
             } else if let Some(f) = &part.file {
                 let (name, bytes, mime) = file_ref(f, args, env, files)?;

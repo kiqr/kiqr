@@ -173,8 +173,16 @@ fn kind_view(app: &App, slug: &str, m: &Manifest, k: &ChannelKind) -> Value {
         "connect": kiqr_core::connect::view(m.connect.as_ref()),
         "accounts": accounts,
         "options": publish_options(m, k),
+        // Inputs the publish tool requires that no one picks from a list (the files a site is built from): Seemo prepares them, so a plain Publish cannot.
+        "prepared": prepared_inputs(m, k),
         "learn": crate::accounts::learn_view(m),
     })
+}
+
+/// The publish tool's required inputs that are offered per publish but have no fixed values: what Seemo writes for each publish (a site's source files).
+pub(crate) fn prepared_inputs(m: &Manifest, k: &ChannelKind) -> Vec<String> {
+    let offered = publish_options(m, k);
+    m.tools.iter().find(|t| t.name == k.publish).and_then(|t| t.input["required"].as_array()).into_iter().flatten().filter_map(Value::as_str).filter(|n| offered.get(*n).is_some_and(|s| s["enum"].as_array().is_none_or(Vec::is_empty))).map(str::to_string).collect()
 }
 
 async fn channel_view(app: &App, slug: &str, c: &Channel) -> Value {

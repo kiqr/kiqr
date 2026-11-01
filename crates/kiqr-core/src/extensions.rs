@@ -1391,10 +1391,32 @@ fn closing(s: &str) -> Option<usize> {
 /// `env`. A missing argument with no default becomes empty; a missing
 /// variable stays as written so the caller can refuse.
 pub fn fill(template: &str, args: &Value, env: impl Fn(&str) -> Option<String>) -> String {
-    fill_with(template, args, &env)
+    fill_with(template, args, &env, &mut Vec::new())
 }
 
-fn fill_with(template: &str, args: &Value, env: &dyn Fn(&str) -> Option<String>) -> String {
+/// `fill`, refusing when the template names a variable (`${NAME}`, no default) that is not set:
+/// the error is that name. Only the template is read for variables, never what an argument holds
+/// (a file whose code says `${price}` goes through as written).
+pub fn fill_checked(template: &str, args: &Value, env: impl Fn(&str) -> Option<String>) -> std::result::Result<String, String> {
+    let mut missing = Vec::new();
+    let out = fill_with(template, args, &env, &mut missing);
+    match missing.into_iter().next() {
+        Some(name) => Err(name),
+        None => Ok(out),
+    }
+}
+
+/// `fill_value` with `fill_checked`'s refusal.
+pub fn fill_value_checked(v: &Value, args: &Value, env: &impl Fn(&str) -> Option<String>) -> std::result::Result<Value, String> {
+    let mut missing = Vec::new();
+    let out = fill_value_with(v, args, env, &mut missing);
+    match missing.into_iter().next() {
+        Some(name) => Err(name),
+        None => Ok(out),
+    }
+}
+
+fn fill_with(template: &str, args: &Value, env: &dyn Fn(&str) -> Option<String>, missing: &mut Vec<String>) -> String {
     let mut out = String::new();
     let mut rest = template;
     loop {
@@ -1436,7 +1458,7 @@ fn fill_with(template: &str, args: &Value, env: &dyn Fn(&str) -> Option<String>)
                 Some(Value::String(s)) if default == Some("urlencode") => out.extend(url::form_urlencoded::byte_serialize(s.trim().as_bytes())),
                 Some(Value::String(s)) if !s.is_empty() => out.push_str(s),
                 // The default may hold placeholders of its own: `{{repo|${GITHUB_REPO}}}`, `{{title|{{tag}}}}`.
-                Some(Value::String(_)) | None => out.push_str(&fill_with(default.unwrap_or(""), args, env)),
+                Some(Value::String(_)) | None => out.push_str(&fill_with(default.unwrap_or(""), args, env, missing)),
                 Some(other) => out.push_str(&other.to_string()),
             }
             rest = &rest[end + 2..];
@@ -1452,7 +1474,12 @@ fn fill_with(template: &str, args: &Value, env: &dyn Fn(&str) -> Option<String>)
                 (Some(v), Some("urlencode")) => out.extend(url::form_urlencoded::byte_serialize(v.trim().as_bytes())),
                 (Some(v), _) => out.push_str(&v),
                 (None, Some(default)) if default != "urlencode" && valid_env_name(name) => out.push_str(default),
-                _ => out.push_str(&rest[..=end]),
+                _ => {
+                    if valid_env_name(name) {
+                        missing.push(name.to_string());
+                    }
+                    out.push_str(&rest[..=end]);
+                }
             }
             rest = &rest[end + 1..];
         }
@@ -1462,6 +1489,10 @@ fn fill_with(template: &str, args: &Value, env: &dyn Fn(&str) -> Option<String>)
 /// Fill every string inside a JSON value. A string that is exactly one
 /// `{{arg}}` takes the argument's own JSON value (numbers stay numbers).
 pub fn fill_value(v: &Value, args: &Value, env: &impl Fn(&str) -> Option<String>) -> Value {
+    fill_value_with(v, args, env, &mut Vec::new())
+}
+
+fn fill_value_with(v: &Value, args: &Value, env: &dyn Fn(&str) -> Option<String>, missing: &mut Vec<String>) -> Value {
     match v {
         Value::String(s) => {
             let t = s.trim();
@@ -1473,10 +1504,10 @@ pub fn fill_value(v: &Value, args: &Value, env: &impl Fn(&str) -> Option<String>
                     _ => default.map(|d| d.parse::<i64>().map(Value::from).or_else(|_| d.parse::<f64>().map(Value::from)).unwrap_or_else(|_| Value::String(d.to_string()))).unwrap_or(Value::Null),
                 };
             }
-            Value::String(fill(s, args, env))
+            Value::String(fill_with(s, args, env, missing))
         }
-        Value::Array(a) => Value::Array(a.iter().map(|x| fill_value(x, args, env)).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), fill_value(x, args, env))).filter(|(_, x)| !x.is_null()).collect()),
+        Value::Array(a) => Value::Array(a.iter().map(|x| fill_value_with(x, args, env, missing)).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), fill_value_with(x, args, env, missing))).filter(|(_, x)| !x.is_null()).collect()),
         other => other.clone(),
     }
 }
@@ -1637,6 +1668,20 @@ pub fn install_builtin_text(store: &crate::Store, path: &std::path::Path, body: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fill_checked_reads_the_template_not_the_arguments() {
+        let env = |n: &str| (n == "SET").then(|| "v".to_string());
+        let args = serde_json::json!({ "code": "const x = `${growth.monthly} and ${SET} and ${UNSET}`;", "changes": [{ "path": "a.tsx", "content": "<p>${price}</p>" }] });
+        // What an argument holds goes through as written, variables included; only the template's own are filled or refused.
+        let out = fill_checked("{{code}} ${SET}", &args, env).unwrap();
+        assert_eq!(out, "const x = `${growth.monthly} and ${SET} and ${UNSET}`; v");
+        assert_eq!(fill_checked("${UNSET}", &args, env), Err("UNSET".to_string()));
+        assert_eq!(fill_checked("${UNSET|dflt} ${growth.monthly}", &args, env).unwrap(), "dflt ${growth.monthly}");
+        let body = fill_value_checked(&serde_json::json!({ "tree": "{{changes}}", "ref": "${SET}" }), &args, &env).unwrap();
+        assert_eq!(body["tree"][0]["content"], "<p>${price}</p>");
+        assert_eq!(fill_value_checked(&serde_json::json!({ "ref": "${UNSET}" }), &args, &env), Err("UNSET".to_string()));
+    }
+
     #[test]
     fn fill_defaults_hold_placeholders() {
         let env = |k: &str| (k == "REPO").then(|| "acme/app".to_string());
