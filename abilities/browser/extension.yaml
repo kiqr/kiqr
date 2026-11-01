@@ -1,0 +1,74 @@
+# A real browser KIQR hosts, for sites that have no API or sit behind a
+# login: invisible_playwright_mcp (MIT; a Firefox patched below page scripts,
+# the engine UnblockingAPI's browser pool runs on), one copy per account with
+# its own profile in the account's folder, so a login survives. Headless. Seemo
+# gets the reading tools only: opening a page, reading it, a snapshot of what
+# is on it, a screenshot. Anything that clicks or types is a step in a site
+# ability's manifest, behind a card, or a person's hand in the live view.
+# Linux and Windows (the engine has no macOS build yet).
+id: browser
+name: Browse with a real browser
+version: 0.1.0
+summary: "A real browser of Seemo's own, headless, one per account with its login kept. Reads pages behind a login or paywall; site abilities (X, Reddit) post and reply through it, each asking first."
+categories: [browser, tools]
+icon: globe
+transport: mcp
+service: { id: browser, name: A site behind a login, icon: globe, group: sites }
+allow: { read: "on" }
+exclusive: true
+# uv runs the Python program; both are pinned and checked before anything is unpacked.
+requires:
+  - program: uv
+    version: "0.13.6"
+    install:
+      - { os: linux, arch: x86_64, url: "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz", sha256: f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645, archive: tar.gz, bin: uv }
+      - { os: linux, arch: aarch64, url: "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-unknown-linux-gnu.tar.gz", sha256: 229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d, archive: tar.gz, bin: uv }
+      - { os: macos, arch: x86_64, url: "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-apple-darwin.tar.gz", sha256: 63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02, archive: tar.gz, bin: uv }
+      - { os: macos, arch: aarch64, url: "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-apple-darwin.tar.gz", sha256: 60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472, archive: tar.gz, bin: uv }
+      - { os: windows, arch: x86_64, url: "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip", sha256: a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f, archive: zip, bin: uv.exe }
+      - { os: windows, arch: aarch64, url: "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-pc-windows-msvc.zip", sha256: c2426c0c8e28b53d8c440e47a18d96ad4db51e159866c0e81435b196d7f0081c, archive: zip, bin: uv.exe }
+  - program: invisible-playwright-mcp
+    version: "0.73.0"
+    uv_tool: "invisible-playwright-mcp==0.73.0"
+  # Headless on Linux draws to a virtual display: Xvfb from the system's own packages, the right
+  # build for the OS. KIQR's installer offers it (install.sh, -y says yes); afterwards the app shows
+  # the one command for the machine, or installs it through the desktop's password dialog. The
+  # engine needs xorg-server 21.1 or later (-terminate with a delay). KIQR never runs sudo itself.
+  - program: Xvfb
+    version: ""
+    check: [Xvfb, -help]
+    system: { apt: xvfb, dnf: xorg-x11-server-Xvfb, pacman: xorg-server-xvfb, zypper: xorg-x11-server-Xvfb, apk: xvfb }
+command: invisible-playwright-mcp
+args: []
+# The browser is opened once the program is up; the profile makes it the account's own.
+warmup:
+  - { name: open, call: browser_open }
+# The profile (its logins) and everything the program keeps live in the account's own folder.
+env_set:
+  STEALTHFOX_PROFILE_DIR: "${KIQR_ACCOUNT_DIR}/profile"
+  INVISIBLE_MCP_HOME: "${KIQR_ACCOUNT_DIR}/program"
+  INVISIBLE_MCP_UPLOAD_DIRS: "${KIQR_PROJECT_DIR}/assets"
+  STEALTHFOX_HEADLESS: "1"
+# Reading only, for Seemo; the URL it opens stays on the account's site.
+expose: [browser_navigate, browser_read_text, browser_snapshot, browser_take_screenshot]
+url_args: [url]
+# An account here is one site: where it lives, and its login. Signing in is a
+# person's job once (the live view); the profile keeps it.
+auth:
+  - { env: SITE_URL, label: The site, placeholder: "https://www.example.com", help: "The page Seemo starts from; it stays on this site" }
+hosts: ["${SITE_URL}"]
+session:
+  check:
+    - { name: open, call: browser_navigate, args: { url: "${SITE_URL}", wait_until: domcontentloaded } }
+    - { name: look, call: browser_snapshot }
+  # Generic: a password field on the start page means signed out; a person signs in once in the live view.
+  signed_out_when: ['"type":"password"', '"type": "password"']
+  login: []
+  blocked_when: [captcha, "verify you are human", "unusual traffic"]
+  every: 12h
+live_view:
+  frame: { name: frame, call: browser_watch }
+  click: { name: click, call: browser_click_at, args: { x: "{{px}}", y: "{{py}}" } }
+  key: { name: key, call: browser_press_key, args: { key: "{{key}}" } }
+  type: { name: type, call: browser_evaluate, args: { expression: "document.execCommand('insertText', false, {{text|json}})" } }
+  navigate: { name: navigate, call: browser_navigate, args: { url: "{{url}}", wait_until: domcontentloaded } }

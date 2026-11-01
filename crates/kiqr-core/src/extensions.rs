@@ -794,12 +794,15 @@ pub struct Registry {
 /// marketplace and is installed from there. A user's copy of a SKILL.md wins.
 pub const BUILTIN_EXTENSIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("make-images", Some(include_str!("../../../abilities/make-images/SKILL.md")), Some(include_str!("../../../abilities/make-images/extension.yaml"))),
+    ("browser", Some(include_str!("../../../abilities/browser/SKILL.md")), Some(include_str!("../../../abilities/browser/extension.yaml"))),
 ];
 
 /// On without installing: the built-in renderer (folder `make-images`, id
-/// `kiqr-render`). Web reading is a built-in tool, not a folder.
-pub const CORE_FOLDERS: &[&str] = &["make-images"];
-pub const CORE_IDS: &[&str] = &["kiqr-render"];
+/// `kiqr-render`) and the real browser (folder and id `browser`, the service
+/// "A site behind a login"; the programs it runs install when its first
+/// account is connected, not on start). Web reading is a built-in tool, not a folder.
+pub const CORE_FOLDERS: &[&str] = &["make-images", "browser"];
+pub const CORE_IDS: &[&str] = &["kiqr-render", "browser"];
 
 /// What KIQR can do out of the box that is code rather than a folder, named
 /// as the user sees it in the marketplace. Always installed, never removed,
@@ -1587,6 +1590,10 @@ pub fn install_builtin(store: &crate::Store) -> Result<bool> {
                 wrote = true;
             }
         }
+        // A core folder that an older KIQR installed from the marketplace keeps nothing of that origin.
+        if CORE_FOLDERS.contains(name) && std::fs::remove_file(dir.join(".source")).is_ok() {
+            wrote = true;
+        }
     }
     Ok(wrote)
 }
@@ -1871,6 +1878,7 @@ channels:
             assert!(a.contains(&f), "{f}");
         }
         assert_eq!(core_of_folder("business-brief").map(|c| c.id), Some("business-profile"));
-        assert!(is_core_id("kiqr-render") && is_core_id("make-images") && is_core_id("tasks") && !is_core_id("fal-image"));
+        assert!(is_core_id("kiqr-render") && is_core_id("make-images") && is_core_id("browser") && is_core_id("tasks") && !is_core_id("fal-image"));
+        assert!(shipped("browser").is_some_and(|(folder, _, _, m)| folder == "browser" && m.service().eq("browser") && m.service_card().group == "sites"));
     }
 }

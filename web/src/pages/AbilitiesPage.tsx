@@ -39,9 +39,10 @@ export function AbilitiesPage() {
   const yours = useMemo(() => abilities.filter((a) => (a.source === "yours" || a.source === "local") && !isService(a)).sort(byName), [abilities]);
   const fromMarket = useMemo(() => abilities.filter((a) => !a.core && (a.source === "marketplace" || a.source === "shipped") && !isService(a)).sort(byName), [abilities]);
   const builtin = useMemo(() => abilities.filter((a) => a.core), [abilities]);
-  // What this page lists: a service's abilities come with its account under Accounts, and its window opens from there.
+  // What this page lists as installed: a service's abilities come with its account under Accounts, and its window opens from there.
+  // The marketplace shelf shows everything not installed yet, a service's abilities with Connect instead of Install.
   const listed = useMemo(() => abilities.filter((a) => a.core || !isService(a)), [abilities]);
-  const shelf = useMemo(() => market.filter((a) => !isService(a)), [market]);
+  const shelf = market;
   const on = listed.filter(isOn).length;
   const opened = useMemo(() => (openId ? [...abilities, ...market, ...(guide ? [guide] : [])].find((a) => a.id === openId) ?? null : null), [openId, abilities, market, guide]);
 

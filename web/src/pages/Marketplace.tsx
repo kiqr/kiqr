@@ -1,9 +1,9 @@
 // The marketplace: what Seemo could do, from the index kiqr.cloud hosts plus
-// what ships with KIQR and is not installed yet: abilities that need no
-// account. Installing is for the machine. A service's abilities (one that
-// signs in to an account) are not listed here: the connect wizard under
-// Accounts installs them with the account. Advanced: a folder or git URL,
-// broken folders.
+// what ships with KIQR and is not installed yet. Installing is for the
+// machine. A service's abilities (one that signs in to an account) are listed
+// too, with Connect in place of Install: the connect wizard under Accounts
+// installs them with the account. Advanced: a folder or git URL, broken
+// folders.
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Link } from "react-router-dom";
