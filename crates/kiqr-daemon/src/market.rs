@@ -562,7 +562,10 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
     };
     let program_found = m.filter(|m| m.transport == Transport::Mcp).map(|m| crate::ext::program_found(ctx.app, ctx.slug, m));
     let installed = core.is_some() || e.is_some();
-    let ready = installed && missing.is_empty() && program_found.unwrap_or(true);
+    // An ability that works through accounts of its service (keys, a kind to publish as, numbers to read, places)
+    // is not ready in a project until the project has one, keys of its own or not (X runs on the browser, no keys).
+    let needs_account = core.is_none() && !core_service && ctx.slug.is_some() && accounts.is_empty() && m.is_some_and(|m| !m.auth.is_empty() || !m.channels.is_empty() || !m.sources.is_empty() || !m.places.is_empty());
+    let ready = installed && missing.is_empty() && program_found.unwrap_or(true) && !needs_account;
     let provides: Vec<Value> = m.map(|m| m.provides.keys().cloned().collect::<Vec<_>>()).unwrap_or_else(|| item.provides.clone()).iter().map(|id| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or("") })).collect();
     let mut item = item.clone();
     if item.repo.is_none() {

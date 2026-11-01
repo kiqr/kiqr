@@ -233,7 +233,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
                   <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? `${a.accounts!.length} ${a.accounts!.length === 1 ? "account" : "accounts"}` : "no accounts yet"}
                 </button>
               ) : service ? (
-                <button className={`part ${a.missing.length ? "warn" : ""}`} title={`Every ability of ${serviceName(a)} shares this project's ${serviceName(a)} account`} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
+                <button className={`part ${!a.ready && !(a.accounts?.length ?? 0) ? "warn" : ""}`} title={`Every ability of ${serviceName(a)} shares this project's ${serviceName(a)} account`} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
                   <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? `via your ${serviceName(a)} account` : "needs an account"}
                 </button>
               ) : a.auth.length > 0 ? (
