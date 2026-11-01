@@ -16,6 +16,40 @@ use kiqr_core::paths::Home;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncBufReadExt;
+
+/// How many lines the install log keeps.
+const LOG_LINES: usize = 400;
+
+/// One line of the install log: kept for whoever opens the page later, and sent to whoever watches now.
+fn log(app: &App, r: &Requirement, line: impl Into<String>) {
+    let line = line.into();
+    if let Ok(mut l) = app.program_log.lock() {
+        l.push_back((r.program.clone(), line.clone()));
+        while l.len() > LOG_LINES {
+            l.pop_front();
+        }
+    }
+    app.bus.emit(None, EventKind::ProgramLog { program: r.program.clone(), version: r.version.clone(), line });
+}
+
+/// `GET /api/programs/log`: the install log so far, the abilities whose
+/// programs are installing right now, and those programs by name.
+pub async fn log_route(axum::extract::State(app): axum::extract::State<App>) -> crate::api::ApiResult<Value> {
+    let lines: Vec<Value> = app.program_log.lock().map(|l| l.iter().map(|(p, line)| json!({ "program": p, "line": line })).collect()).unwrap_or_default();
+    let installing: Vec<String> = app.jobs.read().await.iter().filter_map(|j| j.strip_prefix("programs:").map(str::to_string)).collect();
+    let programs: Vec<String> = {
+        let reg = app.registry.read().await;
+        installing.iter().filter_map(|id| reg.installed(id).into_iter().find_map(|e| e.manifest.clone())).flat_map(|m| m.requires.into_iter().filter(|r| !satisfied(r)).map(|r| r.program)).collect()
+    };
+    Ok(axum::Json(json!({ "lines": lines, "installing": installing, "programs": programs })))
+}
+
+/// The manifest whose programs an ability needs: its own, or the one it runs on (`program: browser`).
+async fn program_manifest(app: &App, id: &str) -> Result<Manifest, ApiError> {
+    let m = { let reg = app.registry.read().await; reg.installed(id).into_iter().find_map(|e| e.manifest.clone()) }.ok_or_else(|| ApiError(axum::http::StatusCode::NOT_FOUND, format!("'{id}' is not installed")))?;
+    crate::ext::program_of(app, None, &m).await.map_err(|e| ApiError(axum::http::StatusCode::NOT_FOUND, e.to_string()))
+}
 
 /// Put `~/.kiqr/bin` first on PATH, once, at start.
 pub fn prepend_path(home: &Home) {
@@ -140,10 +174,15 @@ pub async fn ensure(app: &App, slug: Option<&str>, m: &Manifest) -> Result<(), A
                 continue;
             }
             app.bus.emit(None, EventKind::ProgramInstalling { program: r.program.clone(), version: r.version.clone(), note: String::new() });
+            log(&app, r, format!("installing {} {}", r.program, r.version));
             match install_one(&app, &home, r).await {
-                Ok(()) => app.bus.emit(None, EventKind::ProgramInstalled { program: r.program.clone(), version: r.version.clone() }),
+                Ok(()) => {
+                    log(&app, r, format!("{} {} is installed", r.program, r.version));
+                    app.bus.emit(None, EventKind::ProgramInstalled { program: r.program.clone(), version: r.version.clone() });
+                }
                 Err(e) => {
                     tracing::warn!(program = %r.program, "could not install: {e:#}");
+                    log(&app, r, format!("{} failed: {e:#}", r.program));
                     app.bus.emit(None, EventKind::ProgramFailed { program: r.program.clone(), version: r.version.clone(), message: format!("{e:#}") });
                     break;
                 }
@@ -163,16 +202,23 @@ async fn install_one(app: &App, home: &Home, r: &Requirement) -> Result<()> {
     if let Some(d) = r.install.iter().find(|d| d.os == os && d.arch == arch) {
         match download(app, home, r, d).await {
             Ok(()) => return Ok(()),
-            Err(e) => why.push(format!("{e:#}")),
+            Err(e) => {
+                log(app, r, format!("the download did not work: {e:#}"));
+                why.push(format!("{e:#}"));
+            }
         }
     }
     if !r.uv_tool.trim().is_empty() {
-        match uv_tool(home, r).await {
+        match uv_tool(app, home, r).await {
             Ok(()) => return Ok(()),
-            Err(e) => why.push(format!("{e:#}")),
+            Err(e) => {
+                log(app, r, format!("uv did not work: {e:#}"));
+                why.push(format!("{e:#}"));
+            }
         }
     }
     if let Some(cmd) = system_command_here(r) {
+        log(app, r, format!("{} comes from the system's package manager: {cmd}", r.program));
         why.push(format!("install it with the system's package manager: {cmd}"));
         bail!("{}", why.join("; "));
     }
@@ -235,7 +281,7 @@ pub fn can_pkexec() -> bool {
 /// the daemon never sees it). A person in the web UI only.
 pub async fn system_route(axum::extract::State(app): axum::extract::State<App>, axum::extract::Path(id): axum::extract::Path<String>, headers: axum::http::HeaderMap) -> crate::api::ApiResult<Value> {
     crate::hands::from_browser(&headers)?;
-    let m = { let reg = app.registry.read().await; reg.installed(&id).into_iter().find_map(|e| e.manifest.clone()) }.ok_or_else(|| ApiError(axum::http::StatusCode::NOT_FOUND, format!("'{id}' is not installed")))?;
+    let m = program_manifest(&app, &id).await?;
     if !official(&app, None, &m.id).await {
         return Err(ApiError(axum::http::StatusCode::FORBIDDEN, "only an ability from KIQR's own marketplace may ask for system packages".into()));
     }
@@ -272,20 +318,24 @@ pub async fn system_route(axum::extract::State(app): axum::extract::State<App>, 
 /// Fetch, check the sha256, unpack the one binary into `bin/<program>-<version>/`, and put it on `bin/` as the program.
 async fn download(app: &App, home: &Home, r: &Requirement, d: &kiqr_core::extensions::Download) -> Result<()> {
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(600)).build()?;
+    log(app, r, format!("fetching {}", d.url));
     let resp = client.get(&d.url).send().await.with_context(|| format!("fetching {}", d.url))?.error_for_status()?;
     if let Some(t) = resp.content_length() {
         app.bus.emit(None, EventKind::ProgramInstalling { program: r.program.clone(), version: r.version.clone(), note: format!("downloading {} MB", t / 1_048_576) });
+        log(app, r, format!("downloading {} MB", t / 1_048_576));
     }
     let bytes = resp.bytes().await.context("downloading")?.to_vec();
     let sum = format!("{:x}", Sha256::digest(&bytes));
     if !sum.eq_ignore_ascii_case(d.sha256.trim()) {
         bail!("the download of {} does not match its checksum ({sum}); nothing was installed", r.program);
     }
+    log(app, r, format!("downloaded {} MB, checksum matches", bytes.len() / 1_048_576));
     let bin_name = if d.bin.is_empty() { r.program.clone() } else { d.bin.clone() };
     let dir = home.bin_dir().join(format!("{}-{}", r.program, r.version));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     let exe_name = if cfg!(windows) { format!("{}.exe", r.program) } else { r.program.clone() };
+    log(app, r, format!("unpacking into {}", dir.display()));
     let staged = if d.unpack {
         // The whole archive: a program with its libraries and data; `bin` is the program inside it.
         unpack_all(&bytes, &d.archive, &dir)?;
@@ -310,6 +360,7 @@ async fn download(app: &App, home: &Home, r: &Requirement, d: &kiqr_core::extens
     let link = home.bin_dir().join(&exe_name);
     let _ = std::fs::remove_file(&link);
     place(&staged, &link)?;
+    log(app, r, format!("placed as {}", link.display()));
     if !satisfied(r) {
         bail!("{} was installed but does not report version {}", r.program, r.version);
     }
@@ -415,20 +466,59 @@ fn extract_zip(_archive: &[u8], _bin: &str) -> Result<Vec<u8>> {
 }
 
 /// `uv tool install <spec>` into `bin/`, through the `uv` KIQR installed (its own `requires` entry).
-async fn uv_tool(home: &Home, r: &Requirement) -> Result<()> {
+/// `uv tool install`, its output streamed into the install log line by line as it runs.
+async fn uv_tool(app: &App, home: &Home, r: &Requirement) -> Result<()> {
     if !crate::ext::on_path("uv") {
         bail!("{} is installed with uv, which is not there yet", r.program);
     }
-    let out = kiqr_core::process::command("uv")
+    log(app, r, format!("uv tool install --force {}", r.uv_tool.trim()));
+    let mut child = kiqr_core::process::command("uv")
         .args(["tool", "install", "--force", r.uv_tool.trim()])
         .env("UV_TOOL_BIN_DIR", home.bin_dir())
         .env("UV_TOOL_DIR", tools_dir())
         .stdin(std::process::Stdio::null())
-        .output()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .context("running uv")?;
-    if !out.status.success() {
-        bail!("uv could not install {}: {}", r.uv_tool, kiqr_core::profile::truncate_chars(String::from_utf8_lossy(&out.stderr).trim(), 300));
+    let stream = |out: Option<tokio::process::ChildStdout>, err: Option<tokio::process::ChildStderr>| {
+        let (app, r) = (app.clone(), r.clone());
+        tokio::spawn(async move {
+            let mut tail: Vec<String> = Vec::new();
+            let mut push = |line: String| {
+                let line = line.trim_end().to_string();
+                if line.trim().is_empty() {
+                    return;
+                }
+                log(&app, &r, line.clone());
+                tail.push(line);
+                if tail.len() > 12 {
+                    tail.remove(0);
+                }
+            };
+            if let Some(o) = out {
+                let mut lines = tokio::io::BufReader::new(o).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    push(l);
+                }
+            }
+            if let Some(e) = err {
+                let mut lines = tokio::io::BufReader::new(e).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    push(l);
+                }
+            }
+            tail
+        })
+    };
+    // uv talks on stderr; stdout is read too so neither pipe fills up.
+    let out_task = stream(child.stdout.take(), None);
+    let err_task = stream(None, child.stderr.take());
+    let status = child.wait().await.context("running uv")?;
+    let _ = out_task.await;
+    let tail = err_task.await.unwrap_or_default();
+    if !status.success() {
+        bail!("uv could not install {}: {}", r.uv_tool, kiqr_core::profile::truncate_chars(tail.join(" ").trim(), 300));
     }
     if !satisfied(r) {
         bail!("{} was installed but does not report version {}", r.program, r.version);
@@ -438,7 +528,7 @@ async fn uv_tool(home: &Home, r: &Requirement) -> Result<()> {
 
 /// `POST /api/abilities/{id}/programs`: install what the ability needs (again).
 pub async fn install_route(axum::extract::State(app): axum::extract::State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> crate::api::ApiResult<Value> {
-    let m = { let reg = app.registry.read().await; reg.installed(&id).into_iter().find_map(|e| e.manifest.clone()) }.ok_or_else(|| ApiError(axum::http::StatusCode::NOT_FOUND, format!("'{id}' is not installed")))?;
+    let m = program_manifest(&app, &id).await?;
     ensure(&app, None, &m).await?;
     Ok(axum::Json(json!({ "id": id, "programs": status(&m) })))
 }

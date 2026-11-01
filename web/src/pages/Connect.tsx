@@ -13,12 +13,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertCircle, ArrowLeft, Check, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, Download, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal } from "lucide-react";
 import { api, useAsync, useEvents, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability, type Account, type KindInfo, type PlaceKind, type ProgramStatus } from "../api";
 import { ConnectButton } from "./ConnectButton";
 import { AccountKeys, ACCOUNT_EVENTS, accountIdentity, accountService, byGroup, chosenLabel, Fields, LoginEditor, ownLabel, permissionSummary, PermissionMatrix, placeFields, PlaceFieldsForm, placeKinds, placeNoun, placeReady, placesOf, sentence, serviceOf, sessionChip, signsInByHand, useSession, type Field } from "./Accounts";
 import { Hands, startUrlOf } from "./Hands";
-import { SystemProgram, useMachine } from "./Programs";
+import { LogPane, SystemProgram, useMachine, useProgramLog } from "./Programs";
 import { isService, serviceIcon } from "./abilityBits";
 import "../profile.css";
 import "../settings.css";
@@ -299,7 +299,7 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
       </div>
     );
   if (needPrograms.length && !programsReady)
-    return <ProgramsStep abilities={needPrograms} onReady={() => (setProgramsReady(true), onPrograms?.())} onBack={onBack} backLabel={backLabel} />;
+    return <ProgramsStep service={service.name} abilities={needPrograms} onReady={() => (setProgramsReady(true), onPrograms?.())} onBack={onBack} backLabel={backLabel} />;
   const keyField = (k: Ability["auth"][number]): Field => ({ key: k.env, label: k.label || "Key", help: k.help, placeholder: k.placeholder, optional: k.optional, options: k.options, secret: /PASSWORD|KEY|TOKEN|SECRET/.test(k.env) });
   // With a button: only what it asks first. With keys: the required ones, the rest behind More.
   const asked = mode === "connect" ? ab.auth.filter((k) => ab.connect?.needs.includes(k.env)) : ab.auth.filter((k) => !k.optional);
@@ -553,21 +553,38 @@ type ProgramLine = { program: string; version: string; ability: string; p: Progr
 
 /**
  * "Getting the browser ready": the programs the service runs, which KIQR
- * installs on this machine as its abilities are installed. Progress comes
- * from `program_*` events; Try again asks for the install once more. A
- * system package (the fallback) shows its command, and "Install it for me"
- * when the desktop can ask for the password.
+ * installs on this machine once the user says so. Nothing downloads before
+ * "Install now": the step names what would be installed and where. Then the
+ * progress comes from `program_*` events, with the installer's own output in
+ * a log; Try again asks once more. A system package (Xvfb) shows its command,
+ * and "Install it for me" when the desktop can ask for the password. Coming
+ * back to the page while an install runs picks it up where it is.
  */
-function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ability[]; onReady: () => void; onBack: () => void; backLabel: string }) {
+function ProgramsStep({ service, abilities, onReady, onBack, backLabel }: { service: string; abilities: Ability[]; onReady: () => void; onBack: () => void; backLabel: string }) {
   const line = (ability: string, p: ProgramStatus): ProgramLine => ({ program: p.program, version: p.version, ability, p, state: p.found ? "installed" : "waiting", note: "" });
   const [lines, setLines] = useState<ProgramLine[]>(() => {
     const seen = new Map<string, ProgramLine>();
     for (const a of abilities) for (const p of a.programs ?? []) if (!seen.has(p.program) || !p.found) seen.set(p.program, line(a.id, p));
     return [...seen.values()];
   });
+  const [started, setStarted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (program: string, f: (l: ProgramLine) => ProgramLine) => setLines((cur) => cur.map((l) => (l.program === program ? f(l) : l)));
+  const system = (l: ProgramLine) => l.state !== "installed" && l.p.how === "system";
+  const log = useProgramLog(lines.map((l) => l.program), started);
+  // An install already running (the page was left and opened again) is shown as it is, not asked about again.
+  useEffect(() => {
+    let gone = false;
+    api.programLog().then((r) => {
+      if (gone || !lines.some((l) => r.programs.includes(l.program))) return;
+      setStarted(true);
+      setLines((cur) => cur.map((l) => (l.state === "waiting" && !system(l) ? { ...l, state: "installing" } : l)));
+    }, () => {});
+    return () => {
+      gone = true;
+    };
+  }, []);
   /** A fresh status from the daemon: what is found now, and the commands as it gives them. */
   const fresh = (list: ProgramStatus[]) => {
     for (const p of list) set(p.program, (l) => ({ ...l, p, ...(p.found ? { state: "installed" as const, note: "" } : {}) }));
@@ -575,9 +592,9 @@ function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ab
   useEvents(
     null,
     (e) => {
-      if (!PROGRAM_EVENTS.includes(e.type)) return;
+      if (!PROGRAM_EVENTS.includes(e.type) || e.type === "program_log") return;
       const program = String(e.program ?? "");
-      if (e.type === "program_installing") set(program, (l) => ({ ...l, state: "installing", note: String(e.note ?? "") }));
+      if (e.type === "program_installing") (setStarted(true), set(program, (l) => ({ ...l, state: "installing", note: String(e.note ?? "") })));
       if (e.type === "program_installed") set(program, (l) => ({ ...l, state: "installed", note: "" }));
       if (e.type === "program_failed") set(program, (l) => ({ ...l, state: "failed", note: String(e.message ?? "") }));
     },
@@ -587,8 +604,8 @@ function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ab
   useEffect(() => {
     if (done) onReady();
   }, [done]);
-  const system = (l: ProgramLine) => l.state !== "installed" && l.p.how === "system";
-  const retry = async () => {
+  const install = async () => {
+    setStarted(true);
     setBusy(true);
     setError(null);
     setLines((cur) => cur.map((l) => (l.state === "installed" || system(l) ? l : { ...l, state: "installing", note: "" })));
@@ -602,23 +619,30 @@ function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ab
     }
   };
   const failed = lines.some((l) => l.state === "failed" && !system(l));
-  const own = lines.some((l) => l.state !== "installed" && !system(l));
+  const own = lines.filter((l) => l.state !== "installed" && !system(l));
+  const installing = lines.some((l) => l.state === "installing");
   return (
     <div className="pcard cw-panel">
       <div className="cw-head">
         <div>
           <h2>Getting the browser ready</h2>
-          <p className="muted sm">KIQR installs what this service runs on this machine, once. It takes a minute or two; you can leave this page and come back.</p>
+          {!started ? (
+            <p className="muted sm">
+              {service} runs in a real browser on this machine. Before it can, KIQR has to install {own.length === 1 ? "one program" : `${own.length} programs`} into its own folder (<span className="mono">~/.kiqr/bin</span>), nothing elsewhere on your system. They are pinned to one version and checked before anything is unpacked. It takes a minute or two, and nothing is downloaded until you say so.
+            </p>
+          ) : (
+            <p className="muted sm">KIQR is installing what {service} runs on this machine, once. You can leave this page and come back.</p>
+          )}
         </div>
       </div>
       <ul className="cw-prog">
         {lines.map((l) => (
           <li key={l.program} className={l.state === "installed" ? "done" : l.state === "failed" && !system(l) ? "bad" : ""}>
-            {l.state === "installed" ? <Check size={12} /> : system(l) || l.state === "failed" ? <AlertCircle size={12} /> : <Loader2 size={12} className="spin" />}
+            {l.state === "installed" ? <Check size={12} /> : l.state === "installing" ? <Loader2 size={12} className="spin" /> : <AlertCircle size={12} />}
             <span>
               {l.program} <span className="mono dim">{l.version}</span>
               {system(l) ? <span className="note"> · from your system</span> : l.p.how === "none" && l.state !== "installed" ? <span className="note"> · no way to install it here</span> : null}
-              {!system(l) && l.state === "waiting" && <span className="note"> · waiting to start</span>}
+              {!system(l) && l.state === "waiting" && <span className="note"> · not installed yet</span>}
               {!system(l) && l.note && <span className="note"> · {l.note}</span>}
             </span>
           </li>
@@ -629,15 +653,16 @@ function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ab
       ))}
       {error && <p className="err sm">{error}</p>}
       <div className="acts">
-        {own && (
-          <button className={`btn ${failed ? "p" : "t"} sm`} disabled={busy} onClick={() => void retry()}>
-            {busy ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} {failed ? "Try again" : "Check again"}
+        {own.length > 0 && (
+          <button className={`btn ${!started || failed ? "p" : "t"} sm`} disabled={busy || installing} onClick={() => void install()}>
+            {busy || installing ? <Loader2 size={13} className="spin" /> : !started ? <Download size={13} /> : <RefreshCw size={13} />} {!started ? "Install now" : installing ? "Installing…" : failed ? "Try again" : "Check again"}
           </button>
         )}
         <button className="btn t sm" onClick={onBack}>
           <ArrowLeft size={13} /> {backLabel}
         </button>
       </div>
+      <LogPane lines={log} />
     </div>
   );
 }

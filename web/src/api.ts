@@ -170,7 +170,7 @@ export type ProgramInstalledEvent = { type: "program_installed"; program: string
 export type ProgramFailedEvent = { type: "program_failed"; program: string; version: string; message: string };
 export const SESSION_EVENTS = ["session_changed"];
 export const HANDS_EVENTS = ["hands_frame", "hands_started", "hands_ended"];
-export const PROGRAM_EVENTS = ["program_installing", "program_installed", "program_failed"];
+export const PROGRAM_EVENTS = ["program_installing", "program_installed", "program_failed", "program_log"];
 
 export type Health = {
   ok: boolean;
@@ -681,6 +681,8 @@ export const api = {
   installAbility: (id: string) => req<{ id: string; folder: string }>(`/api/abilities/${id}/install`, { method: "POST", body: "{}" }),
   /** Install the programs an installed ability needs (again); `program_*` events show the progress. Answers when done. */
   installPrograms: (id: string) => req<{ id: string; programs: ProgramStatus[] }>(`/api/abilities/${id}/programs`, { method: "POST", body: "{}" }),
+  /** The install log so far (program, line) and the abilities whose programs are installing right now. */
+  programLog: () => req<{ lines: { program: string; line: string }[]; installing: string[]; programs: string[] }>("/api/programs/log"),
   /** Install the system packages an ability still needs, through the desktop's password dialog (a person in the web UI only). */
   installSystemPrograms: (id: string) => req<{ installed: string[]; programs: ProgramStatus[] }>(`/api/abilities/${id}/programs/system`, { method: "POST", body: "{}" }),
   installAbilitySource: (b: { source: string; scope: "global" | "project"; project?: string; name?: string }) => req<Ability>("/api/abilities/install", { method: "POST", body: JSON.stringify(b) }),

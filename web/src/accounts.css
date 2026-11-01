@@ -134,6 +134,7 @@
 .cw-choice small { font-size: 12px; color: var(--muted); line-height: 1.45; }
 .cw-prog li.bad { color: var(--bad); }
 .cw-prog .note { color: var(--dim); }
+.cw-log { margin: 10px 0 0; max-height: 180px; overflow: auto; font: 11.5px/1.5 var(--mono); color: var(--muted); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 8px 10px; white-space: pre-wrap; word-break: break-all; }
 .cw-sys { font: 500 12px var(--mono); padding: 6px 8px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line); color: var(--fg); }
 .cw-tile.unsupported .ic { color: var(--muted); background: var(--panel-2); border-color: var(--line-2); }
 

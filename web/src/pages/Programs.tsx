@@ -3,7 +3,7 @@
 // is the fallback: shown as the one command for this machine's package
 // manager with Copy, and "Install it for me" when the desktop can ask for
 // the password (pkexec). Used by the connect wizard and the ability window.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Check, Copy, Loader2, RefreshCw, Terminal } from "lucide-react";
 import { api, PROGRAM_EVENTS, useEvents, type Ability, type Health, type ProgramStatus } from "../api";
 import "../accounts.css";
@@ -21,6 +21,45 @@ export function useMachine(): Health | null {
     };
   }, []);
   return h;
+}
+
+/** The install log: what the installer did and what the programs it ran printed, newest at the bottom, scrolled along. */
+export function LogPane({ lines }: { lines: string[] }) {
+  const ref = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [lines.length]);
+  if (!lines.length) return null;
+  return (
+    <pre className="cw-log" ref={ref}>
+      {lines.join("\n")}
+    </pre>
+  );
+}
+
+/** Keeps the install log for a set of programs: what the daemon has so far, then every `program_log` line as it comes. */
+export function useProgramLog(programs: string[], enabled = true): string[] {
+  const [lines, setLines] = useState<string[]>([]);
+  const key = programs.join("|");
+  useEffect(() => {
+    if (!enabled) return;
+    let gone = false;
+    api.programLog().then((r) => !gone && setLines(r.lines.filter((l) => programs.includes(l.program)).map((l) => `${l.program}: ${l.line}`)), () => {});
+    return () => {
+      gone = true;
+    };
+  }, [key, enabled]);
+  useEvents(
+    null,
+    (e) => {
+      if (e.type !== "program_log") return;
+      const program = String(e.program ?? "");
+      if (!programs.includes(program)) return;
+      setLines((cur) => [...cur.slice(-399), `${program}: ${String(e.line ?? "")}`]);
+    },
+    { demo: false },
+  );
+  return lines;
 }
 
 /** A system package that is still missing: what to run, Copy, and "Install it for me" when KIQR can. */
@@ -118,11 +157,12 @@ export function ProgramList({ a, onChange }: { a: Ability; onChange: () => void 
   const [notes, setNotes] = useState<Record<string, { state: "installing" | "failed"; note: string }>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const log = useProgramLog(programs.map((p) => p.program), programs.some((p) => !p.found));
   useEffect(() => setPrograms(a.programs ?? []), [a.programs]);
   useEvents(
     null,
     (e) => {
-      if (!PROGRAM_EVENTS.includes(e.type)) return;
+      if (!PROGRAM_EVENTS.includes(e.type) || e.type === "program_log") return;
       const program = String(e.program ?? "");
       if (!programs.some((p) => p.program === program)) return;
       if (e.type === "program_installed") {
@@ -171,11 +211,12 @@ export function ProgramList({ a, onChange }: { a: Ability; onChange: () => void 
       {ownMissing && (
         <div className="acts">
           <button className="btn t sm" disabled={busy} onClick={() => void retry()}>
-            {busy ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Install again
+            {busy ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} {log.length ? "Install again" : "Install"}
           </button>
         </div>
       )}
       {error && <p className="err sm">{error}</p>}
+      <LogPane lines={log} />
     </div>
   );
 }

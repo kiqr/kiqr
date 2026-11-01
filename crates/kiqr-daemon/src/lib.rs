@@ -43,6 +43,8 @@ pub struct App {
     pub bus: EventBus,
     pub config: Arc<RwLock<Config>>,
     pub jobs: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// The install log: the last lines of what the programs installer did and what it ran printed, (program, line).
+    pub program_log: Arc<std::sync::Mutex<std::collections::VecDeque<(String, String)>>>,
     /// Values a sign-in is typing right now: struck from every program answer, error and event while in use.
     pub redact: Arc<std::sync::RwLock<Vec<String>>>,
     /// Page-limit handles of the crawls running now, by project.
@@ -132,6 +134,7 @@ pub async fn run(home: Home) -> Result<()> {
         bus: EventBus::new(),
         config: Arc::new(RwLock::new(config.clone())),
         jobs: Default::default(),
+        program_log: Default::default(),
         redact: Default::default(),
         crawls: Default::default(),
         brand_backfill: Default::default(),

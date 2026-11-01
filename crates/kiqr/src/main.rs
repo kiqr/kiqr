@@ -1626,6 +1626,7 @@ fn print_event(ev: &Event) {
         EventKind::ProgramInstalling { program, version, note } => format!("program  installing {program} {version}{}", if note.is_empty() { String::new() } else { format!(": {note}") }),
         EventKind::ProgramInstalled { program, version } => format!("program  {program} {version} installed"),
         EventKind::ProgramFailed { program, version, message } => format!("program  {program} {version} failed: {message}"),
+        EventKind::ProgramLog { program, line, .. } => format!("program  {program}: {line}"),
         EventKind::SessionChanged { connection, state, message } => format!("session  {connection} {state}{}", if message.is_empty() { String::new() } else { format!(": {message}") }),
         EventKind::HandsFrame { .. } => return,
         EventKind::HandsStarted { connection, .. } => format!("hands    {connection}: someone is at the controls"),

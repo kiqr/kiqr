@@ -34,6 +34,7 @@ pub fn routes() -> Router<App> {
         .route("/api/abilities/{id}/install", post(install))
         .route("/api/abilities/{id}/programs", post(crate::programs::install_route))
         .route("/api/abilities/{id}/programs/system", post(crate::programs::system_route))
+        .route("/api/programs/log", get(crate::programs::log_route))
         .route("/api/abilities/{id}/update", post(update))
         .route("/api/abilities/{id}/pause", post(pause))
         .route("/api/abilities/{id}/resume", post(resume))
@@ -904,10 +905,7 @@ async fn adopt_keys(app: &App, id: &str) -> Result<(), ApiError> {
         reg.installed(id).into_iter().find_map(|e| e.manifest.clone())
     };
     let Some(m) = m else { return Ok(()) };
-    // Programs it needs are fetched in the background; the ability is ready once they are there.
-    if let Err(e) = crate::programs::ensure(app, None, &m).await {
-        tracing::warn!(id = %m.id, "programs: {}", e.1);
-    }
+    // The programs it needs are not fetched here: the connect wizard asks the user first (`POST /api/abilities/{id}/programs`).
     let moved = kiqr_core::connections::move_old(&app.store, &m)?;
     if !moved.is_empty() {
         app.store.commit(&format!("[auto] accounts: {} moved along with {}", moved.join(", "), m.name)).await?;

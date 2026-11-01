@@ -125,6 +125,8 @@ pub enum EventKind {
     ProgramInstalling { program: String, version: String, #[serde(default)] note: String },
     ProgramInstalled { program: String, version: String },
     ProgramFailed { program: String, version: String, message: String },
+    /// One line of an install's output (what the installer did, what the program it runs printed), for the install log.
+    ProgramLog { program: String, version: String, line: String },
     /// An account's sign-in on a hosted program changed state: `signed_in`, `signed_out`, `needs_hand`, `checking`.
     SessionChanged { connection: String, state: String, #[serde(default)] message: String },
     /// A live view of an account's program: one frame (a JPEG or PNG, base64) for whoever watches, never kept.
@@ -213,6 +215,7 @@ impl EventKind {
                 | EventKind::ProgramInstalling { .. }
                 | EventKind::ProgramInstalled { .. }
                 | EventKind::ProgramFailed { .. }
+                | EventKind::ProgramLog { .. }
                 | EventKind::SessionChanged { .. }
                 | EventKind::HandsFrame { .. }
                 | EventKind::HandsStarted { .. }
