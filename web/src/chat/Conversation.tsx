@@ -31,6 +31,25 @@ export function Conversation({ slug, messages, streaming, compact, notes = [], b
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages, streaming?.text, streaming?.steps.length, notes.length]);
 
+  // A card the daemon put in mid-turn comes after the words of that turn: below Seemo's message, or below the
+  // live bubble while it still works, never above what led to it.
+  const ordered: Message[] = [];
+  let pendingCards: Message[] = [];
+  for (const m of messages) {
+    if (m.role === "card") {
+      pendingCards.push(m);
+      continue;
+    }
+    if (m.role !== "user" && m.role !== "note") {
+      ordered.push(m, ...pendingCards);
+      pendingCards = [];
+      continue;
+    }
+    ordered.push(...pendingCards);
+    pendingCards = [];
+    ordered.push(m);
+  }
+  const trailing = pendingCards;
   // Messages and notes in time order; notes in a row share one box.
   const rows: ({ m: Message } | { notes: Note[] })[] = [];
   let ni = 0;
@@ -39,7 +58,7 @@ export function Conversation({ slug, messages, streaming, compact, notes = [], b
     while (ni < notes.length && notes[ni].at.getTime() <= until) run.push(notes[ni++]);
     if (run.length) rows.push({ notes: run });
   };
-  for (const m of messages) {
+  for (const m of ordered) {
     flush(new Date(m.at).getTime());
     rows.push({ m });
   }
@@ -65,7 +84,6 @@ export function Conversation({ slug, messages, streaming, compact, notes = [], b
         <div className="cm ai live">
           <span className="av" />
           <div className="body">
-            <Steps slug={slug} steps={streaming.steps} live />
             {streaming.text ? (
               <Markdown text={streaming.text} className="chat-md" />
             ) : (
@@ -75,9 +93,13 @@ export function Conversation({ slug, messages, streaming, compact, notes = [], b
                 <i />
               </p>
             )}
+            <Steps slug={slug} id={streaming.message} steps={streaming.steps} live />
           </div>
         </div>
       )}
+      {trailing.map((m) => (
+        <MessageView key={m.id} slug={slug} m={m} compact={compact} />
+      ))}
     </>
   );
   if (bare) return content;
@@ -110,22 +132,30 @@ function MessageView({ slug, m, compact }: { slug: string; m: Message; compact?:
     <div className="cm ai">
       <span className="av" />
       <div className="body">
-        <Steps slug={slug} steps={m.steps ?? []} />
         <Markdown text={m.text} className="chat-md" />
         {m.error && (
           <p className="err">
             <AlertCircle size={13} /> {m.error}
           </p>
         )}
+        <Steps slug={slug} id={m.id} steps={m.steps ?? []} />
         <span className="t">{time(m.at)}</span>
       </div>
     </div>
   );
 }
 
-/** The tools behind a message: one line while running, a folded list afterwards. */
-function Steps({ slug, steps, live }: { slug: string; steps: Step[]; live?: boolean }) {
-  const [open, setOpen] = useState(false);
+/** Which messages' steps the reader unfolded: kept across the live bubble becoming the message, so nothing folds or flickers under them. */
+const OPEN_STEPS = new Set<string>();
+
+/** The tools behind a message, folded under "n steps", last in the bubble; the same box while running (a spinner in place of the chevron) and afterwards. */
+function Steps({ slug, id, steps, live }: { slug: string; id: string; steps: Step[]; live?: boolean }) {
+  const [open, setOpenState] = useState(() => OPEN_STEPS.has(id));
+  const setOpen = (o: boolean) => {
+    if (o) OPEN_STEPS.add(id);
+    else OPEN_STEPS.delete(id);
+    setOpenState(o);
+  };
   if (!steps.length) return null;
   const running = steps.find((s) => s.ok === null);
   const failed = steps.filter((s) => s.ok === false).length;
@@ -149,35 +179,30 @@ function Steps({ slug, steps, live }: { slug: string; steps: Step[]; live?: bool
       )}
     </>
   );
-  if (live && running)
-    return (
-      <>
-        {gallery}
-        <p className="steps-live">
-          <Loader2 size={13} className="spin" /> {running.label}…
-        </p>
-      </>
-    );
-  const summary = steps.length === 1 ? steps[0].label : `${steps.length} steps${failed ? `, ${failed} failed` : ""}`;
+  const working = !!live && !!running;
+  // The count, not the running step's name: a label that changes under an unfolded list makes it jump.
+  const summary = steps.length === 1 && !working ? steps[0].label : `${steps.length} ${steps.length === 1 ? "step" : "steps"}${failed ? `, ${failed} failed` : ""}`;
   return (
-    <div className={`steps ${open ? "open" : ""}`}>
-      <button className="steps-sum" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        {summary}
-      </button>
-      {open && (
-        <ul>
-          {steps.map((s, i) => (
-            <li key={i} className={s.ok === false ? "bad" : ""}>
-              {s.ok === null ? <Loader2 size={12} className="spin" /> : s.ok ? <Check size={12} /> : <X size={12} />}
-              <span>{s.label}</span>
-              {s.note && <small>{s.note}</small>}
-            </li>
-          ))}
-        </ul>
-      )}
+    <>
       {gallery}
-    </div>
+      <div className={`steps ${open ? "open" : ""} ${working ? "working" : ""}`}>
+        <button className="steps-sum" onClick={() => setOpen(!open)} aria-expanded={open} title={working ? `${running.label}…` : undefined}>
+          {working ? <Loader2 size={13} className="spin" /> : open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          {summary}
+        </button>
+        {open && (
+          <ul>
+            {steps.map((s, i) => (
+              <li key={i} className={s.ok === false ? "bad" : ""}>
+                {s.ok === null ? <Loader2 size={12} className="spin" /> : s.ok ? <Check size={12} /> : <X size={12} />}
+                <span>{s.label}</span>
+                {s.note && <small>{s.note}</small>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
   );
 }
 

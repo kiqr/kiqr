@@ -160,12 +160,18 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
   const gap = b?.content_gaps[0]?.topic;
   const who = i?.customers.trim() || b?.audiences[0]?.name || "your customers";
   // The networks named that something here can publish to; the rest wait for an ability (the welcome chat said so).
-  const said = (i?.networks ?? []).flatMap((k) => networks.filter((n) => n.kind === k || n.name.toLowerCase() === k.toLowerCase()).map((n) => n.name).slice(0, 1));
+  // The networks the user named in their own words ("X account", "Reddit"), matched to the kinds accounts have.
+  const saidKinds = (i?.networks ?? []).flatMap((k) => {
+    const w = k.toLowerCase();
+    const words = w.split(/[^a-z0-9.]+/).filter(Boolean);
+    return networks.filter((n) => n.kind === w || n.name.toLowerCase() === w || words.includes(n.kind) || words.includes(n.name.toLowerCase())).map((n) => n.kind).slice(0, 1);
+  });
+  const said = saidKinds.map((k) => networks.find((n) => n.kind === k)?.name ?? k);
   const sugs = setup.data?.suggestions ?? [];
   const toSetUp = sugs.filter((s) => !s.ready);
   // The accounts content can be published to.
   const ch = (accounts.data?.connections ?? []).filter((c) => c.publishes ?? c.channel);
-  const connected = i?.networks.length ? ch.some((c) => i.networks.includes(c.kind)) : ch.length > 0;
+  const connected = saidKinds.length ? ch.some((c) => saidKinds.includes(c.kind)) : ch.length > 0;
   const measured = (perf.data?.sources ?? []).some((s) => s.provider && s.id !== "kiqr");
   const rhythm = RHYTHM[i?.time ?? ""] ?? RHYTHM[""];
   const goalSaid = i?.goal ? GOAL_SAID[i.goal] : i?.goal_note.trim() || undefined;
