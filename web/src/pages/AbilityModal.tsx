@@ -9,6 +9,7 @@ import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Download, FolderOpen, Globe, Loader2, Pencil, Plug, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { api, type Ability, type Contract } from "../api";
+import { ProgramList } from "./Programs";
 import { Markdown } from "../markdown";
 import { serviceOf, ServiceAccounts } from "./Accounts";
 import { SecretField } from "./SecretField";
@@ -93,7 +94,7 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
           </nav>
         )}
         <div className="ab-body">
-          {tab === "overview" && <Overview slug={slug} a={a} onConnect={canConnect ? () => setTab("connect") : undefined} />}
+          {tab === "overview" && <Overview slug={slug} a={a} onConnect={canConnect ? () => setTab("connect") : undefined} onChange={onChange} />}
           {tab === "instructions" && <Instructions slug={slug} a={a} onChange={onChange} />}
           {tab === "connect" && canConnect && <Connect slug={slug} a={a} rivals={rivals} onChange={onChange} onPrefer={onPrefer} />}
           <AnimatePresence>
@@ -234,7 +235,7 @@ function AdvancedParts({ a }: { a: Ability }) {
   );
 }
 
-function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?: () => void }) {
+function Overview({ slug, a, onConnect, onChange }: { slug: string; a: Ability; onConnect?: () => void; onChange: () => void }) {
   const parts = partsOf(a, true);
   const needs = needsOf(a);
   const service = isService(a);
@@ -264,6 +265,12 @@ function Overview({ slug, a, onConnect }: { slug: string; a: Ability; onConnect?
         </>
       )}
       <ToolList a={a} />
+      {a.installed && (a.programs?.length ?? 0) > 0 && (
+        <>
+          <p className="cap">Programs on this computer</p>
+          <ProgramList a={a} onChange={onChange} />
+        </>
+      )}
       {needs.length > 0 && (
         <>
           <p className="cap">

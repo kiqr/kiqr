@@ -111,6 +111,9 @@ struct Health {
     boot: &'static str,
     /// The machine the daemon runs on (`linux`, `macos`, `windows`): what an ability can run here depends on it, not on the page's device.
     os: &'static str,
+    /// Its package manager (`apt`, `dnf`, `pacman`, `zypper`, `apk`, `brew`, `winget`), when known, and whether pkexec can run it from the web UI.
+    package_manager: Option<&'static str>,
+    pkexec: bool,
     home: String,
     providers: Vec<ProviderStatus>,
     unblockingapi: bool,
@@ -173,6 +176,8 @@ async fn health(State(app): State<App>) -> Json<Health> {
         pid: std::process::id(),
         boot: boot_id(),
         os: if cfg!(target_os = "macos") { "macos" } else if cfg!(windows) { "windows" } else { "linux" },
+        package_manager: crate::programs::package_manager(),
+        pkexec: crate::programs::can_pkexec(),
         home: app.store.home().root().display().to_string(),
         providers,
         unblockingapi: std::env::var("UNBLOCKINGAPI_KEY").map(|k| !k.is_empty()).unwrap_or(false),

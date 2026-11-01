@@ -109,11 +109,27 @@ async fn run_check(app: &App, slug: &str, c: &Connection, m: &Manifest) -> Resul
     let env = kiqr_core::connections::env_for(app.store.home(), slug, Some(c), m);
     let launch = crate::ext::mcp_env(app, slug, m, Some(c), &env);
     let (last, text) = crate::ext::mcp_steps(app, &program, &launch, m, &sess.check, &json!({}), &Default::default(), &env).await?;
-    let text = text.unwrap_or_else(|| last.to_string());
+    // What the program said, as plain text: a program that answers with JSON (a snapshot) often
+    // puts it in a string, so every string in the answer counts, unescaped.
+    let text = match text {
+        Some(t) if !last.is_object() => t,
+        _ => flat_text(&last),
+    };
+    tracing::debug!(account = %c.id, steps = sess.check.len(), text = %kiqr_core::profile::truncate_chars(&text, 400), "session check read");
     let needle = sess.signed_in_when.trim();
     let lower = text.to_lowercase();
     let signed_in = if needle.is_empty() { !sess.signed_out_when.iter().any(|t| !t.trim().is_empty() && lower.contains(&t.trim().to_lowercase())) } else { text.contains(needle) };
     Ok((signed_in, text))
+}
+
+/// Every string in a JSON answer, joined; other values as JSON.
+fn flat_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(a) => a.iter().map(flat_text).collect::<Vec<_>>().join("\n"),
+        Value::Object(o) => o.values().map(flat_text).collect::<Vec<_>>().join("\n"),
+        other => other.to_string(),
+    }
 }
 
 fn blocked(sess: &kiqr_core::extensions::Session, text: &str) -> Option<String> {
@@ -173,8 +189,9 @@ async fn run_login(app: &App, slug: &str, c: &Connection, m: &Manifest, sess: &k
     let args = json!({ "credential": { "username": cred.username, "password": cred.password, "otp": cred.otp.clone().unwrap_or_default() } });
     for st in &sess.login {
         let one = std::slice::from_ref(st);
-        let (_, text) = crate::ext::mcp_steps(app, &program, &launch, m, one, &args, &Default::default(), &env).await?;
-        if let Some(b) = blocked(sess, text.as_deref().unwrap_or("")) {
+        let (last, text) = crate::ext::mcp_steps(app, &program, &launch, m, one, &args, &Default::default(), &env).await?;
+        let said = match text { Some(t) if !last.is_object() => t, _ => flat_text(&last) };
+        if let Some(b) = blocked(sess, &said) {
             return Ok(Some(b));
         }
     }

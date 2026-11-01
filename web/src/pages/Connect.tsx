@@ -18,6 +18,7 @@ import { api, useAsync, useEvents, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability,
 import { ConnectButton } from "./ConnectButton";
 import { AccountKeys, ACCOUNT_EVENTS, accountIdentity, accountService, byGroup, chosenLabel, Fields, LoginEditor, ownLabel, permissionSummary, PermissionMatrix, placeFields, PlaceFieldsForm, placeKinds, placeNoun, placeReady, placesOf, sentence, serviceOf, sessionChip, signsInByHand, useSession, type Field } from "./Accounts";
 import { Hands, startUrlOf } from "./Hands";
+import { SystemProgram, useMachine } from "./Programs";
 import { isService, serviceIcon } from "./abilityBits";
 import "../profile.css";
 import "../settings.css";
@@ -53,8 +54,8 @@ function hostOf(values: string[]): string {
   return "";
 }
 
-/** The computer's system, guessed from the browser: `macos`, `windows` or `linux`. */
-export function currentOS(): string {
+/** The system guessed from the browser, only for a daemon too old to say its own: `macos`, `windows` or `linux`. */
+function guessOS(): string {
   const p = `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`.toLowerCase();
   if (/mac|iphone|ipad/.test(p)) return "macos";
   if (/win/.test(p)) return "windows";
@@ -107,7 +108,9 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
   const shown = services.filter((s) => group === "all" || s.group === group);
   const groups = byGroup(shown, (s) => s.group);
   const present = SERVICE_GROUPS.filter((g) => services.some((s) => s.group === g.id));
-  const os = useMemo(currentOS, []);
+  // What runs here depends on the daemon's machine, not the device showing the page.
+  const machine = useMachine();
+  const os = machine ? machine.os || guessOS() : "";
 
   /** A tile: every ability of the service the marketplace has and this machine does not is installed first, then the sign-in. */
   const choose = async (s: Service) => {
@@ -242,7 +245,7 @@ function Tile({ s, count, os, onPick }: { s: Service; count: number; os: string;
   const [broken, setBroken] = useState(false);
   const ab = primary(s.installed.length ? s.installed : s.market);
   // A program it runs that is not on this computer: it can be installed, but not run until it is.
-  const here = runsHere(s, os);
+  const here = !os || runsHere(s, os);
   const note = !here ? `Not on ${OS_NAME[os] ?? os} yet` : ab?.program_found === false ? "Needs a program this computer does not have yet" : !s.installed.length && ab?.runs_program ? "Runs a program on this computer" : null;
   return (
     <button className={`cw-tile ${count ? "have" : ""} ${here ? "" : "unsupported"}`} onClick={onPick} disabled={!here} title={here ? undefined : `${s.name} does not run on ${OS_NAME[os] ?? os} yet`}>
@@ -548,23 +551,29 @@ function PlaceSteps({ slug, id, onDone }: { slug: string; id: string; onDone: ()
   );
 }
 
-type ProgramLine = { program: string; version: string; state: "waiting" | "installing" | "installed" | "failed"; note: string };
+type ProgramLine = { program: string; version: string; ability: string; p: ProgramStatus; state: "waiting" | "installing" | "installed" | "failed"; note: string };
 
 /**
  * "Getting the browser ready": the programs the service runs, which KIQR
  * installs on this machine as its abilities are installed. Progress comes
- * from `program_*` events; Try again asks for the install once more.
+ * from `program_*` events; Try again asks for the install once more. A
+ * system package (the fallback) shows its command, and "Install it for me"
+ * when the desktop can ask for the password.
  */
 function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ability[]; onReady: () => void; onBack: () => void; backLabel: string }) {
-  const start = (list: ProgramStatus[]): ProgramLine[] => list.map((p) => ({ program: p.program, version: p.version, state: p.found ? "installed" : "waiting", note: p.found ? "" : p.how === "system" && p.system && Object.keys(p.system).length ? `installed with the system's package manager (${Object.entries(p.system).map(([m, pkg]) => `${m}: ${pkg}`).join(", ")})` : "" }));
+  const line = (ability: string, p: ProgramStatus): ProgramLine => ({ program: p.program, version: p.version, ability, p, state: p.found ? "installed" : "waiting", note: "" });
   const [lines, setLines] = useState<ProgramLine[]>(() => {
     const seen = new Map<string, ProgramLine>();
-    for (const a of abilities) for (const l of start(a.programs ?? [])) if (!seen.has(l.program) || l.state !== "installed") seen.set(l.program, l);
+    for (const a of abilities) for (const p of a.programs ?? []) if (!seen.has(p.program) || !p.found) seen.set(p.program, line(a.id, p));
     return [...seen.values()];
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (program: string, f: (l: ProgramLine) => ProgramLine) => setLines((cur) => cur.map((l) => (l.program === program ? f(l) : l)));
+  /** A fresh status from the daemon: what is found now, and the commands as it gives them. */
+  const fresh = (list: ProgramStatus[]) => {
+    for (const p of list) set(p.program, (l) => ({ ...l, p, ...(p.found ? { state: "installed" as const, note: "" } : {}) }));
+  };
   useEvents(
     null,
     (e) => {
@@ -580,15 +589,13 @@ function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ab
   useEffect(() => {
     if (done) onReady();
   }, [done]);
+  const system = (l: ProgramLine) => l.state !== "installed" && l.p.how === "system";
   const retry = async () => {
     setBusy(true);
     setError(null);
-    setLines((cur) => cur.map((l) => (l.state === "installed" ? l : { ...l, state: "installing", note: "" })));
+    setLines((cur) => cur.map((l) => (l.state === "installed" || system(l) ? l : { ...l, state: "installing", note: "" })));
     try {
-      for (const a of abilities) {
-        const r = await api.installPrograms(a.id);
-        for (const p of r.programs ?? []) if (p.found) set(p.program, (l) => ({ ...l, state: "installed", note: "" }));
-      }
+      for (const a of abilities) fresh((await api.installPrograms(a.id)).programs ?? []);
     } catch (e) {
       setError((e as Error).message);
       setLines((cur) => cur.map((l) => (l.state === "installing" ? { ...l, state: "failed" } : l)));
@@ -596,7 +603,8 @@ function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ab
       setBusy(false);
     }
   };
-  const failed = lines.some((l) => l.state === "failed");
+  const failed = lines.some((l) => l.state === "failed" && !system(l));
+  const own = lines.some((l) => l.state !== "installed" && !system(l));
   return (
     <div className="pcard cw-panel">
       <div className="cw-head">
@@ -607,21 +615,27 @@ function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ab
       </div>
       <ul className="cw-prog">
         {lines.map((l) => (
-          <li key={l.program} className={l.state === "installed" ? "done" : l.state === "failed" ? "bad" : ""}>
-            {l.state === "installed" ? <Check size={12} /> : l.state === "failed" ? <AlertCircle size={12} /> : <Loader2 size={12} className="spin" />}
+          <li key={l.program} className={l.state === "installed" ? "done" : l.state === "failed" && !system(l) ? "bad" : ""}>
+            {l.state === "installed" ? <Check size={12} /> : system(l) || l.state === "failed" ? <AlertCircle size={12} /> : <Loader2 size={12} className="spin" />}
             <span>
               {l.program} <span className="mono dim">{l.version}</span>
-              {l.state === "waiting" && <span className="note"> · waiting to start</span>}
-              {l.note && <span className="note"> · {l.note}</span>}
+              {system(l) ? <span className="note"> · from your system</span> : l.p.how === "none" && l.state !== "installed" ? <span className="note"> · no way to install it here</span> : null}
+              {!system(l) && l.state === "waiting" && <span className="note"> · waiting to start</span>}
+              {!system(l) && l.note && <span className="note"> · {l.note}</span>}
             </span>
           </li>
         ))}
       </ul>
+      {lines.filter(system).map((l) => (
+        <SystemProgram key={l.program} ability={l.ability} p={l.p} onDone={fresh} />
+      ))}
       {error && <p className="err sm">{error}</p>}
       <div className="acts">
-        <button className={`btn ${failed ? "p" : "t"} sm`} disabled={busy} onClick={() => void retry()}>
-          {busy ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} {failed ? "Try again" : "Check again"}
-        </button>
+        {own && (
+          <button className={`btn ${failed ? "p" : "t"} sm`} disabled={busy} onClick={() => void retry()}>
+            {busy ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} {failed ? "Try again" : "Check again"}
+          </button>
+        )}
         <button className="btn t sm" onClick={onBack}>
           <ArrowLeft size={13} /> {backLabel}
         </button>

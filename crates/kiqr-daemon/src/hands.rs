@@ -59,7 +59,7 @@ fn bad(msg: impl Into<String>) -> ApiError {
 }
 
 /// Only a person in the web UI starts or drives a session: never Seemo, never another site.
-fn from_browser(h: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn from_browser(h: &HeaderMap) -> Result<(), ApiError> {
     let refuse = || ApiError(StatusCode::FORBIDDEN, "Only a person in KIQR's web UI can take the controls.".into());
     if h.contains_key(crate::reset::AGENT_HEADER) {
         return Err(refuse());

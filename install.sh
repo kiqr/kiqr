@@ -15,6 +15,9 @@
 #   KIQR_HOME=<dir>          where the daemon keeps its data (default ~/.kiqr)
 #   KIQR_AUTO_UPDATE=1       install new releases on their own (same as `kiqr update --auto on`)
 #   KIQR_RELEASES=<url>      a mirror of github.com/kiqr/kiqr/releases
+#   KIQR_YES=1  (or -y)      answer yes to the questions it asks (the system program Seemo's browser needs on Linux)
+#
+#   curl -fsSL https://kiqr.dev/install.sh | sh -s -- -y
 set -eu
 
 REPO="kiqr/kiqr"
@@ -214,7 +217,48 @@ wait_running() {
   say "note: the daemon did not answer yet; check it with: kiqr status"
 }
 
+# ----------------------------------------------------- system programs
+
+# Seemo's browser (sites behind a login, X, Reddit) draws to a virtual display
+# on Linux. KIQR installs its own Xvfb when the browser is first set up, so this
+# is only an offer: the system's package, for machines where that is preferred.
+# Asked once, here, where sudo is at hand; -y says yes; no terminal skips it.
+system_programs() {
+  [ "$(uname -s)" = Linux ] || return 0
+  have Xvfb && return 0
+  pkg=""; cmd=""
+  if have apt-get; then pkg=xvfb; cmd="sudo apt-get install -y xvfb"
+  elif have dnf; then pkg=xorg-x11-server-Xvfb; cmd="sudo dnf install -y xorg-x11-server-Xvfb"
+  elif have pacman; then pkg=xorg-server-xvfb; cmd="sudo pacman -S --noconfirm xorg-server-xvfb"
+  elif have zypper; then pkg=xorg-x11-server-Xvfb; cmd="sudo zypper install -y xorg-x11-server-Xvfb"
+  elif have apk; then pkg=xvfb; cmd="sudo apk add xvfb"
+  fi
+  [ -n "$pkg" ] || return 0
+  say ""
+  say "Seemo's browser (for sites behind a login, X and Reddit) needs one system program on Linux, Xvfb."
+  say "KIQR can install its own copy later without root; the system's package ($pkg) works too."
+  if [ "${KIQR_YES:-}" = 1 ]; then
+    answer=y
+  elif [ -t 0 ]; then
+    printf 'Install %s now with sudo? [y/N] ' "$pkg"
+    read -r answer </dev/tty 2>/dev/null || answer=n
+  else
+    say "Not asked (no terminal). Install it any time with:  $cmd"
+    return 0
+  fi
+  case "$answer" in
+    y|Y|yes|YES) sh -c "$cmd" || say "That did not go through; KIQR installs its own Xvfb when the browser is set up." ;;
+    *) say "Skipped. KIQR installs its own Xvfb when the browser is set up, or run:  $cmd" ;;
+  esac
+}
+
 # ---------------------------------------------------------------- main
+
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) KIQR_YES=1 ;;
+  esac
+done
 
 before=$(installed_version)
 if [ "${KIQR_FROM_SOURCE:-}" = 1 ]; then
@@ -231,6 +275,7 @@ after=$(installed_version)
 [ "$after" = "$before" ] && [ "${KIQR_FROM_SOURCE:-}" != 1 ] && exit 0
 register_daemon
 wait_running
+system_programs
 if [ "${KIQR_AUTO_UPDATE:-}" = 1 ]; then "$BIN_DIR/kiqr" update --auto on || true; fi
 
 have git || say "note: KIQR keeps your data in a git repository; install git before you start."

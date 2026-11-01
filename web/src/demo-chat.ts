@@ -99,6 +99,9 @@ for (const a of [...demoAbilities.abilities, ...demoAbilities.market]) {
   const programs = () => [
     { program: "chromium", version: "131.0", found: false, how: "download" },
     { program: "playwright-mcp", version: "0.0.41", found: false, how: "uv" },
+    { program: "Xvfb", version: "21.1", found: false, how: "download" },
+    // The fallback: a package from the system, which KIQR can install through the desktop's password dialog.
+    { program: "xauth", version: "1.1", found: false, how: "system", system: { apt: "xauth", dnf: "xorg-x11-xauth", pacman: "xorg-xauth" }, command: "sudo apt install xauth", pkexec: true },
   ];
   const browser: [string, string, string, string, string, string, string[]][] = [
     ["browser", "A site behind a login", "Seemo reads and works on a site you sign in to by hand, in KIQR's own browser.", "browser", "A site behind a login", "sites", []],
@@ -487,9 +490,18 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
   const progM = /^\/api\/abilities\/([^/]+)\/programs$/.exec(path);
   if (progM) {
     const a = demoAbilities.abilities.find((x) => x.id === progM[1]);
-    if (a?.programs) a.programs = a.programs.map((p) => ({ ...p, found: true }));
-    if (a) a.program_found = true;
+    // KIQR's own downloads arrive; a system package waits for the user.
+    if (a?.programs) a.programs = a.programs.map((p) => ({ ...p, found: p.found || p.how !== "system" }));
+    if (a) a.program_found = !!a.programs?.every((p) => p.found);
     return Promise.resolve({ id: progM[1], programs: a?.programs ?? [] } as T);
+  }
+  const sysM = /^\/api\/abilities\/([^/]+)\/programs\/system$/.exec(path);
+  if (sysM) {
+    const a = demoAbilities.abilities.find((x) => x.id === sysM[1]);
+    const pkgs = (a?.programs ?? []).filter((p) => !p.found && p.how === "system").map((p) => p.system?.apt ?? p.program);
+    if (a?.programs) a.programs = a.programs.map((p) => (p.how === "system" ? { ...p, found: true } : p));
+    if (a) a.program_found = !!a.programs?.every((p) => p.found);
+    return new Promise((ok) => setTimeout(() => ok({ installed: pkgs, programs: a?.programs ?? [] } as T), 1200));
   }
   const loginSecretM = /\/connections\/([^/]+)\/secrets\/(LOGIN_[A-Z_]+)$/.exec(path);
   if (loginSecretM) {

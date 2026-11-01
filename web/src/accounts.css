@@ -160,3 +160,13 @@
   .hd-stage img { width: 100%; max-height: none; }
   .hd-acts .dim { display: none; }
 }
+
+/* Programs KIQR installs: a system package's command, Copy, Install it for me. */
+.pg { display: flex; flex-direction: column; gap: 10px; }
+.pg .acts, .pg-sys .acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.pg-sys { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r); background: var(--panel-2); border: 1px solid color-mix(in oklab, var(--warn) 30%, var(--line)); }
+.pg-cmd { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pg-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 12.5px; padding: 7px 10px; border-radius: var(--r-sm); background: var(--bg); border: 1px solid var(--line); color: var(--fg); }
+.pg-list { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; padding: 0; }
+.pg-list li { list-style: none; }
+.pg-list code { font-size: 12px; }

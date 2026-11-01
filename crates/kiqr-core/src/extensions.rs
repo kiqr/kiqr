@@ -551,10 +551,13 @@ pub struct Download {
     pub arch: String,
     pub url: String,
     pub sha256: String,
-    /// `zip`, `tar.gz`, `tar.xz`, or empty for a bare binary.
+    /// `zip`, `tar.gz`, or empty for a bare binary.
     pub archive: String,
     /// The binary's path inside the archive (or its name); the program's name when empty.
+    /// With `unpack`, the path of the program inside the unpacked archive (`xvfb-21.1/bin/Xvfb`).
     pub bin: String,
+    /// Unpack the whole archive (a program with its libraries and data) instead of taking one binary out.
+    pub unpack: bool,
 }
 
 /// Signing an account in on a hosted program and knowing whether it is:

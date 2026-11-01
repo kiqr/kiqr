@@ -33,6 +33,7 @@ pub fn routes() -> Router<App> {
         .route("/api/abilities/{id}/avatar", get(avatar))
         .route("/api/abilities/{id}/install", post(install))
         .route("/api/abilities/{id}/programs", post(crate::programs::install_route))
+        .route("/api/abilities/{id}/programs/system", post(crate::programs::system_route))
         .route("/api/abilities/{id}/update", post(update))
         .route("/api/abilities/{id}/pause", post(pause))
         .route("/api/abilities/{id}/resume", post(resume))

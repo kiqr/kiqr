@@ -514,7 +514,8 @@ async fn check_secret(app: &App, name: &str, value: &str) -> Result<String, ApiE
     if !extensions::valid_env_name(name) {
         return Err(bad("a secret name is upper-case letters, digits and underscores"));
     }
-    if !known_secret(app, name).await {
+    // A login saved in KIQR (`LOGIN_*`) belongs to an account that signs in on a hosted program; its names are KIQR's.
+    if !kiqr_core::connections::Login::KEYS.contains(&name) && !known_secret(app, name).await {
         return Err(bad(format!("no ability or provider uses {name}")));
     }
     let mut value = value.trim().to_string();

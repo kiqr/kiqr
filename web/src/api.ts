@@ -189,6 +189,11 @@ export type Health = {
   address?: string;
   /** `KIQR_HOST` / `KIQR_PORT` when set: they override config.yaml. */
   address_env?: string[];
+  /** The machine the daemon runs on (`linux`, `macos`, `windows`): what an ability can run here depends on it, not on the page's device. */
+  os?: string;
+  /** Its package manager (`apt`, `dnf`, `pacman`…), when known, and whether KIQR can run it through the desktop's password dialog. */
+  package_manager?: string | null;
+  pkexec?: boolean;
   /** A newer KIQR, when the daemon's last check found one. */
   update?: { latest: string | null; available: boolean; can_self_update: boolean };
 };
@@ -531,7 +536,19 @@ export type LoginRef = { store: string; ref?: string };
 /** The values a login saved in KIQR has, by key name. */
 export const LOGIN_KEYS = ["LOGIN_USERNAME", "LOGIN_PASSWORD", "LOGIN_TOTP_SECRET"] as const;
 /** A program an ability needs: found here or not, and how KIQR gets it (`system`: a package the user installs; by package manager). */
-export type ProgramStatus = { program: string; version: string; found: boolean; how: "download" | "uv" | "system" | string; system?: Record<string, string> };
+export type ProgramStatus = {
+  program: string;
+  version: string;
+  found: boolean;
+  /** How KIQR gets it here: a download it makes itself, a `uv` tool, a system package, or no way at all. */
+  how: "download" | "uv" | "system" | "none" | string;
+  /** The package per package manager (`apt: chromium`). */
+  system?: Record<string, string>;
+  /** The one install command for this machine's package manager, when KIQR knows it. */
+  command?: string | null;
+  /** KIQR can run that command for the user through the desktop's password dialog. */
+  pkexec?: boolean;
+};
 /** What the live view can do on this account. */
 export type HandsCan = { click: boolean; key: boolean; type: boolean; navigate: boolean };
 /** One input from the person at the controls: x, y are fractions of the picture, width and height its pixel size. */
@@ -662,6 +679,8 @@ export const api = {
   installAbility: (id: string) => req<{ id: string; folder: string }>(`/api/abilities/${id}/install`, { method: "POST", body: "{}" }),
   /** Install the programs an installed ability needs (again); `program_*` events show the progress. Answers when done. */
   installPrograms: (id: string) => req<{ id: string; programs: ProgramStatus[] }>(`/api/abilities/${id}/programs`, { method: "POST", body: "{}" }),
+  /** Install the system packages an ability still needs, through the desktop's password dialog (a person in the web UI only). */
+  installSystemPrograms: (id: string) => req<{ installed: string[]; programs: ProgramStatus[] }>(`/api/abilities/${id}/programs/system`, { method: "POST", body: "{}" }),
   installAbilitySource: (b: { source: string; scope: "global" | "project"; project?: string; name?: string }) => req<Ability>("/api/abilities/install", { method: "POST", body: JSON.stringify(b) }),
   updateAbility: (id: string, slug?: string) => req<{ detail: string }>(`/api/abilities/${id}/update${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "POST", body: "{}" }),
   /** Off or on for every project: core abilities only (config.yaml). */
@@ -795,6 +814,9 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
     return Promise.resolve({
       ok: true,
       version: "demo",
+      os: "linux",
+      package_manager: "apt",
+      pkexec: true,
       home: "~/.kiqr",
       env_file: "~/.kiqr/.env",
       address: "127.0.0.1:4040",
