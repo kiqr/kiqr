@@ -132,6 +132,17 @@ pub fn all() -> Vec<Ability> {
     ]
 }
 
+/// Contracts the daemon alone calls: never in Seemo's catalogue. `credential`
+/// hands a login's values to the sign-in runner; the model never sees them.
+pub const INTERNAL: &[&str] = &["credential"];
+
+/// The `credential` contract: what a password manager ability provides.
+/// `list_logins {query}` answers `[{ref, title, url, username}]`, with no
+/// secrets; `get_login {ref}` answers `{username, password, otp}`. A manifest
+/// provides it with `provides.credential` (a command or program tool taking
+/// `{op: list|get, query, ref}`), and only the sign-in runner calls it.
+pub const CREDENTIAL: &str = "credential";
+
 pub fn find(id: &str) -> Option<Ability> {
     all().into_iter().find(|a| a.id == id)
 }

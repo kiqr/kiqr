@@ -57,7 +57,34 @@ pub async fn reload(app: &App) {
 /// or one of the project's connections of it has them all; program found.
 /// Without a project (the machine's view) only an ability that needs no keys is.
 pub fn ready_in(app: &App, slug: Option<&str>, m: &Manifest) -> bool {
-    missing_in(app, slug, m).is_empty() && (m.transport != Transport::Mcp || on_path(&m.command))
+    missing_in(app, slug, m).is_empty() && (m.transport != Transport::Mcp || program_found(app, slug, m))
+}
+
+/// The program an MCP ability runs on is there: its own command, or the
+/// command of the ability it names with `program:` (installed and on).
+pub fn program_found(app: &App, slug: Option<&str>, m: &Manifest) -> bool {
+    match program_of_sync(app, slug, m) {
+        Some(p) => on_path(&p.command),
+        None => false,
+    }
+}
+
+/// The manifest whose command an MCP ability runs: its own, or the one it
+/// names with `program:`. None when that one is not installed.
+pub fn program_of_sync(app: &App, slug: Option<&str>, m: &Manifest) -> Option<Manifest> {
+    if m.program.is_empty() {
+        return Some(m.clone());
+    }
+    let reg = app.registry.try_read().ok()?;
+    reg.entry(slug, &m.program).and_then(|e| e.manifest.clone()).filter(|p| p.transport == Transport::Mcp && !p.command.is_empty())
+}
+
+pub async fn program_of(app: &App, slug: Option<&str>, m: &Manifest) -> Result<Manifest> {
+    if m.program.is_empty() {
+        return Ok(m.clone());
+    }
+    let reg = app.registry.read().await;
+    reg.entry(slug, &m.program).and_then(|e| e.manifest.clone()).filter(|p| p.transport == Transport::Mcp && !p.command.is_empty()).ok_or_else(|| anyhow!("{} runs on '{}', which is not installed", m.name, m.program))
 }
 
 /// Keys an ability still needs for a project: none once a connection has
@@ -188,7 +215,8 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         }
         if m.transport == Transport::Mcp && !m.expose.is_empty() && ready_in(app, Some(slug), m) {
             // The server's own tools, raw, under the connection's group.
-            match app.mcp.tools(app.store.home().root(), m, &launch_for(app, slug, m)).await {
+            let program = program_of_sync(app, Some(slug), m).unwrap_or_else(|| m.clone());
+            match app.mcp.tools(app.store.home().root(), &program, &launch_for(app, slug, m)).await {
                 Ok(list) => {
                     for t in list {
                         let name = t["name"].as_str().unwrap_or("").to_string();
@@ -326,7 +354,7 @@ fn connection_view(app: &App, e: &Entry, m: &Manifest) -> Value {
         "hosts": m.hosts,
         "command": if m.transport == Transport::Mcp { Some(format!("{} {}", m.command, m.args.join(" ")).trim().to_string()) } else { None },
         "env": m.env,
-        "program_found": if m.transport == Transport::Mcp { Some(on_path(&m.command)) } else { None },
+        "program_found": if m.transport == Transport::Mcp { Some(program_found(app, None, m)) } else { None },
     })
 }
 
@@ -466,7 +494,9 @@ pub(crate) async fn set_connection_secret(app: &App, slug: &str, conn: &str, nam
         all.iter().find(|m| kiqr_core::connections::key_names(m).iter().any(|n| n == name)).or_else(|| all.first()).map(|m| (*m).clone())
     }
     .ok_or_else(|| bad(format!("the ability '{}' is not installed", c.ability)))?;
-    if !kiqr_core::connections::key_names(&m).iter().any(|n| n == name) {
+    // A login saved in KIQR (`LOGIN_*`) belongs to an account that signs in on a hosted program.
+    let login_key = kiqr_core::connections::Login::KEYS.contains(&name) && crate::session::session_manifest(app, slug, &c).await.is_some();
+    if !login_key && !kiqr_core::connections::key_names(&m).iter().any(|n| n == name) {
         return Err(bad(format!("{} does not use {name}", m.name)));
     }
     if let Some(k) = m.auth.iter().find(|a| a.env == name && !a.options.is_empty()) {
@@ -475,7 +505,7 @@ pub(crate) async fn set_connection_secret(app: &App, slug: &str, conn: &str, nam
         }
     }
     kiqr_core::secrets::write_env(&c.env_file(app.store.home(), slug), name, &value).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    app.mcp.stop_connection(&c.id).await;
+    app.mcp.stop_connection(&slug, &c.id).await;
     app.bus.emit(Some(slug), EventKind::SecretSet { name: name.to_string(), set: !value.is_empty(), project: Some(slug.to_string()) });
     Ok(!value.is_empty())
 }
@@ -859,11 +889,18 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
             o.remove("place");
         }
     }
-    // What the account allows: a role switched off is refused, whoever asks.
+    // What the account allows: a role switched off is refused, whoever asks; and an account whose
+    // sign-in needs a hand does nothing that acts until a person finished it.
     if let Some(c) = &conn {
         let role = tool.and_then(|n| m.tools.iter().find(|t| t.name == n)).map(|t| if t.role.is_empty() { "read".to_string() } else { t.role.clone() }).unwrap_or_else(|| if c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind && k.publishes() && Some(k.publish.as_str()) == tool) { "publish".into() } else { "read".into() });
         if c.allow(&role) == kiqr_core::connections::Allow::Off {
             bail!("Seemo may not {} on {}; the user can allow it on the account", if role == "read" { "read".to_string() } else { role.clone() }, c.label);
+        }
+        if m.transport == Transport::Mcp && role != "read" {
+            let st = c.session(app.store.home(), slug);
+            if st.needs_hand() {
+                bail!("{} needs a hand to sign in ({}); the user finishes it under Setup → Accounts before anything goes out there", c.label, st.message);
+            }
         }
     }
     let _turn = match (&conn, m.exclusive) {
@@ -977,7 +1014,7 @@ pub(crate) async fn do_action(app: &App, slug: &str, preview: &Value) -> Result<
 static TURNS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> = std::sync::LazyLock::new(Default::default);
 
 /// Wait until no other exclusive call is using the account.
-async fn account_turn(slug: &str, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+pub(crate) async fn account_turn(slug: &str, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
     let lock = TURNS.lock().unwrap_or_else(|e| e.into_inner()).entry(format!("{slug}/{id}")).or_default().clone();
     lock.lock_owned().await
 }
@@ -1054,18 +1091,32 @@ async fn run(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Op
             let cmd = provide.command.as_ref().ok_or_else(|| anyhow!("{} has no command for this", m.name))?;
             command_exec(cmd, &args, &provide.result, &env).await
         }
+        Transport::Mcp if !provide.steps.is_empty() => {
+            let program = program_of(app, Some(slug), m).await?;
+            let launch = mcp_env(app, slug, m, conn, &env);
+            let (json, text) = mcp_steps(app, &program, &launch, m, &provide.steps, &args, &provide.result, &env).await?;
+            Ok(ExecOut { json, text, file: None })
+        }
         Transport::Mcp => {
             let server_tool = provide.tool.clone().or_else(|| tool.map(str::to_string)).ok_or_else(|| anyhow!("{} does not say which of its tools to call", m.name))?;
             let call_args = match &provide.args {
                 Some(t) => extensions::fill_value(t, &args, &env),
                 None => args.clone(),
             };
-            let r = app.mcp.call(app.store.home().root(), m, &mcp_env(app, slug, m, conn, &env), &server_tool, &call_args).await?;
-            let out = crate::mcp_host::read_result(&r);
+            // A URL argument of an exposed tool stays on the ability's hosts.
+            for name in &m.url_args {
+                if let Some(u) = call_args.get(name).and_then(Value::as_str) {
+                    check_host(m, u, &env)?;
+                }
+            }
+            let program = program_of(app, Some(slug), m).await?;
+            let r = app.mcp.call(app.store.home().root(), &program, &mcp_env(app, slug, m, conn, &env), &server_tool, &call_args).await?;
+            let mut out = crate::mcp_host::read_result(&r);
+            out.text = crate::redact(app, &out.text);
             if out.is_error {
                 bail!("{}: {}", m.name, kiqr_core::profile::truncate_chars(out.text.trim(), 300));
             }
-            let mut json = out.structured.clone().unwrap_or_else(|| json!({ "text": out.text }));
+            let mut json = out.structured.clone().map(|v| crate::redact_value(app, v)).unwrap_or_else(|| json!({ "text": out.text }));
             let mut file = out.file;
             // The manifest may still point at a file inside the structured answer.
             if file.is_none() && (provide.result.file_url.is_some() || provide.result.file_b64.is_some()) {
@@ -1089,12 +1140,138 @@ pub fn launch_for(app: &App, slug: &str, m: &Manifest) -> crate::mcp_host::Launc
     mcp_env(app, slug, m, conn.as_ref(), &env)
 }
 
-/// What a hosted program is started with: its connection (the server runs
-/// once per connection) and the values of the names it asks for.
-/// With a connection, it works in the account's own folder (`data/`), shared by every ability of the service.
+/// What a hosted program is started with: the account (one server per account
+/// and program, shared by every ability of the service on that program), the
+/// values of the names the ability and the program ask for, the program's
+/// `env_set` filled, and the account's own folder (`data/`) to work in.
 pub fn mcp_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Connection>, env: &impl Fn(&str) -> Option<String>) -> crate::mcp_host::Launch {
-    let vars = kiqr_core::connections::key_names(m).into_iter().filter_map(|k| env(&k).map(|v| (k, v))).collect();
-    crate::mcp_host::Launch { key: conn.map(|c| format!("{}#{}", m.id, c.id)).unwrap_or_else(|| m.id.clone()), vars, dir: conn.map(|c| c.data_dir(app.store.home(), slug)) }
+    let program = program_of_sync(app, Some(slug), m).unwrap_or_else(|| m.clone());
+    let home = app.store.home();
+    let dir = conn.map(|c| c.data_dir(home, slug));
+    let project_dir = home.project_dir(slug);
+    let mut names = kiqr_core::connections::key_names(m);
+    names.extend(kiqr_core::connections::key_names(&program));
+    names.sort();
+    names.dedup();
+    let mut vars: Vec<(String, String)> = names.into_iter().filter_map(|k| env(&k).map(|v| (k, v))).collect();
+    let dir_text = dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+    let project_text = project_dir.display().to_string();
+    for (name, template) in program.env_set.iter().chain(m.env_set.iter()) {
+        let lookup = |k: &str| match k {
+            "KIQR_ACCOUNT_DIR" => Some(dir_text.clone()),
+            "KIQR_PROJECT_DIR" => Some(project_text.clone()),
+            _ => env(k),
+        };
+        let v = extensions::fill(template, &Value::Null, lookup);
+        if !v.contains("${") {
+            vars.retain(|(n, _)| n != name);
+            vars.push((name.clone(), v));
+        }
+    }
+    let lookup = |k: &str| match k {
+        "KIQR_ACCOUNT_DIR" => Some(dir_text.clone()),
+        "KIQR_PROJECT_DIR" => Some(project_text.clone()),
+        _ => env(k),
+    };
+    let warmup = program.warmup.iter().map(|st| (st.call.clone(), st.args.as_ref().map(|t| extensions::fill_value(t, &Value::Null, &lookup)).unwrap_or_else(|| json!({})))).collect();
+    crate::mcp_host::Launch { key: crate::mcp_host::Launch::key_for(slug, conn.map(|c| c.id.as_str()), &program.id), vars, dir, project_dir: Some(project_dir), warmup }
+}
+
+/// Steps on a hosted program, in order: each calls one of the program's
+/// tools with `args` filled from the arguments and what earlier steps saved
+/// (`{{name.var}}`); `when` skips one; `for_each` runs one per entry of an
+/// earlier step's list (or `files`). A step's answer is its structured
+/// content, else `{text}`; `save` points into it. The result is the last
+/// answer, or, for a `text` that is a template, anything saved.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn mcp_steps(app: &App, program: &Manifest, launch: &crate::mcp_host::Launch, m: &Manifest, steps: &[extensions::Step], args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone)) -> Result<(Value, Option<String>)> {
+    let mut ctx = if args.is_object() { args.clone() } else { json!({}) };
+    let mut last = Value::Null;
+    for st in steps {
+        if let Some(w) = &st.when {
+            if !extensions::truthy(&extensions::fill_value(&Value::String(w.clone()), &ctx, env)) {
+                let skipped = if st.for_each.is_some() { json!([]) } else { Value::Null };
+                ctx[&st.name] = skipped;
+                continue;
+            }
+        }
+        let runs: Vec<Option<(usize, Value)>> = match st.for_each.as_deref() {
+            Some(list) => {
+                let items = extensions::lookup(&ctx, list).and_then(|v| v.as_array().cloned()).unwrap_or_default();
+                if items.len() > extensions::MAX_EACH {
+                    bail!("step '{}': {} entries, at most {}", st.name, items.len(), extensions::MAX_EACH);
+                }
+                items.into_iter().enumerate().map(Some).collect()
+            }
+            None => vec![None],
+        };
+        let mut kept = Vec::new();
+        for run in runs {
+            let mut c = ctx.clone();
+            if let Some((i, item)) = run {
+                c["file"] = ctx["files"].get(i).cloned().unwrap_or(Value::Null);
+                c["item"] = item;
+                c["index"] = json!(i);
+            }
+            let call_args = match &st.args {
+                Some(t) => extensions::fill_value(t, &c, env),
+                None => json!({}),
+            };
+            // A URL argument stays on the ability's hosts.
+            for name in &m.url_args {
+                if let Some(u) = call_args.get(name).and_then(Value::as_str) {
+                    check_host(m, u, env)?;
+                }
+            }
+            let r = app.mcp.call(app.store.home().root(), program, launch, &st.call, &call_args).await.with_context(|| format!("step '{}'", st.name))?;
+            let out = crate::mcp_host::read_result(&r);
+            if out.is_error {
+                bail!("step '{}': {}", st.name, kiqr_core::profile::truncate_chars(out.text.trim(), 300));
+            }
+            let body = out.structured.clone().unwrap_or_else(|| json!({ "text": out.text }));
+            let value = if st.save.is_empty() {
+                body.clone()
+            } else {
+                let mut o = serde_json::Map::new();
+                for (var, p) in &st.save {
+                    let v = extensions::pointer(&body, p).cloned().ok_or_else(|| anyhow!("step '{}': the answer has nothing at {p}", st.name))?;
+                    o.insert(var.clone(), v);
+                }
+                Value::Object(o)
+            };
+            kept.push(value);
+            last = body;
+        }
+        let value = if st.for_each.is_some() { Value::Array(kept) } else { kept.pop().unwrap_or(Value::Null) };
+        ctx[&st.name] = value;
+    }
+    let text = match &map.text {
+        Some(t) if t.contains("{{") => Some(extensions::fill(t, &ctx, env.clone())).filter(|t| !t.trim().is_empty()),
+        Some(p) => extensions::pointer(&last, p).and_then(|v| v.as_str().map(str::to_string)),
+        None => last.get("text").and_then(Value::as_str).map(str::to_string),
+    };
+    Ok((last, text))
+}
+
+/// A URL an ability's call names has to be on one of its `hosts` (a `${VAR}`
+/// host is the account's own site, read from its keys); an ability with no
+/// hosts may go anywhere.
+pub(crate) fn check_host(m: &Manifest, url: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
+    if m.hosts.is_empty() {
+        return Ok(());
+    }
+    let u = url::Url::parse(url).map_err(|_| anyhow!("'{url}' is not a URL"))?;
+    let host = u.host_str().unwrap_or("").to_ascii_lowercase();
+    let ok = m.hosts.iter().any(|h| {
+        let h = extensions::fill(h.trim(), &Value::Null, env);
+        // A host, or the account's site as a URL.
+        let h = url::Url::parse(&h).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or(h).to_ascii_lowercase();
+        !h.is_empty() && !h.starts_with("${") && (host == h || host.ends_with(&format!(".{h}")))
+    });
+    if !ok {
+        bail!("{} may not open {host}; it stays on {}", m.name, m.hosts.join(", "));
+    }
+    Ok(())
 }
 
 /// The asset's files, when the call names any (`{{file…}}`): their bytes for

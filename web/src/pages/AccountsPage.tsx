@@ -2,18 +2,20 @@
 // by kind of service (Social, Website and blog, Email, Numbers…). Each card
 // says what Seemo may do there in one line with one switch, where inside it
 // content goes, and keeps the rest under Details. "Connect an account" opens
-// the wizard.
+// the wizard. `#hands=<id>` opens the live view of that account (from To do).
 import { useMemo } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Plug, Plus } from "lucide-react";
 import { api, useAsync, useEvents, type MailList } from "../api";
-import { AccountCard, accountService, ACCOUNT_EVENTS, byGroup, connectPath, LIST_EVENTS } from "./Accounts";
+import { AccountCard, accountIdentity, accountService, ACCOUNT_EVENTS, byGroup, connectPath, LIST_EVENTS } from "./Accounts";
+import { Hands, startUrlOf } from "./Hands";
 import "../profile.css";
 import "../accounts.css";
 
 export function AccountsPage() {
   const { slug = "" } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const data = useAsync(() => api.accounts(slug), [slug]);
   const lists = useAsync(() => api.lists(slug).catch(() => ({ lists: [] as MailList[] })), [slug]);
   useEvents(slug, (e) => {
@@ -24,6 +26,9 @@ export function AccountsPage() {
   // The wizard lands here with the new account: `#account=<id>` lights its card.
   const highlight = /#account=([^&]+)/.exec(location.hash)?.[1] ?? null;
   const all = data.data?.connections ?? [];
+  // `#hands=<id>`: the live view of that account; closing it lands on its card.
+  const handsId = decodeURIComponent(/#hands=([^&]+)/.exec(location.hash)?.[1] ?? "");
+  const handsFor = handsId && data.data ? all.find((a) => a.id === handsId) : undefined;
   const groups = useMemo(() => byGroup(all, (a) => accountService(a).group), [all]);
   const several = (id: string) => all.filter((x) => accountService(x).id === id).length > 1;
 
@@ -51,6 +56,17 @@ export function AccountsPage() {
             <Plus size={14} /> Connect an account
           </Link>
         </div>
+      )}
+
+      {handsId && data.data && !handsFor && <p className="err">There is no account “{handsId}” in this project any more.</p>}
+      {handsFor && (
+        <Hands
+          slug={slug}
+          account={handsFor.id}
+          name={accountIdentity(handsFor) || accountService(handsFor).name}
+          startUrl={startUrlOf(handsFor.identity, handsFor.destination_text)}
+          onClose={() => (navigate({ hash: `account=${encodeURIComponent(handsFor.id)}` }, { replace: true }), data.reload())}
+        />
       )}
 
       <div className="acx-groups">

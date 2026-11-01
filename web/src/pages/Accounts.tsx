@@ -8,8 +8,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertCircle, Check, ChevronDown, ChevronRight, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Users, X } from "lucide-react";
-import { api, useEvents, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type Allow, type MailList, type Permission, type PlaceField, type PlaceKind, type ServiceCard } from "../api";
+import { AlertCircle, Check, ChevronDown, ChevronRight, ExternalLink, Hand, KeyRound, LogIn, LogOut, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Users, X } from "lucide-react";
+import { api, useEvents, LOGIN_KEYS, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type Allow, type MailList, type Permission, type PlaceField, type PlaceKind, type ServiceCard, type SessionStatus } from "../api";
+import { Hands, startUrlOf } from "./Hands";
 import { Switch } from "./Switch";
 import { ago } from "./Project";
 import { ConnectButton } from "./ConnectButton";
@@ -20,7 +21,7 @@ import { ConnectService } from "./Connect";
 import "../settings.css";
 import "../accounts.css";
 
-export const ACCOUNT_EVENTS = ["connection_saved", "connection_deleted", "secret_set", "connect_finished"];
+export const ACCOUNT_EVENTS = ["connection_saved", "connection_deleted", "secret_set", "connect_finished", "session_changed"];
 export const LIST_EVENTS = ["list_changed", "list_deleted", "list_sending"];
 
 const ROLE_WORDS: Record<string, string> = { publish: "publishes", read: "reads", reply: "replies", manage: "manages", learn: "learns from it", measure: "reads its numbers" };
@@ -640,6 +641,286 @@ function Learning({ slug, a, onChange }: { slug: string; a: Account; onChange: (
   );
 }
 
+// ---- Signing in on a hosted program
+
+/** The service whose site is signed in to by hand only: it has no login steps, the browser keeps the sign-in. */
+export function signsInByHand(a: Account): boolean {
+  return accountService(a).id === "browser";
+}
+
+/** The chip for how the sign-in stands. */
+export function sessionChip(st: SessionStatus | undefined): { text: string; cls: string; spin?: boolean } {
+  switch (st?.state) {
+    case "signed_in":
+      return { text: "Signed in", cls: "acc" };
+    case "signed_out":
+      return { text: "Signed out", cls: "" };
+    case "needs_hand":
+      return { text: "Needs a hand", cls: "warn" };
+    case "checking":
+      return { text: "Checking…", cls: "", spin: true };
+    default:
+      return { text: "Not signed in yet", cls: "" };
+  }
+}
+
+/** "The site asks for a person: captcha" from the daemon's "the site asks for a person: captcha". */
+export function sentence(m: string): string {
+  const t = m.trim().replace(/[.\s]+$/, "");
+  return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}` : "";
+}
+
+/** How the sign-in stands as it changes: the account's, then each `session_changed` for it. */
+export function useSession(slug: string, a: Pick<Account, "id" | "session">): [SessionStatus | undefined, (s: SessionStatus) => void] {
+  const [live, setLive] = useState<SessionStatus | undefined>(undefined);
+  useEffect(() => setLive(undefined), [a.session?.state, a.session?.checked_at]);
+  useEvents(
+    slug,
+    (e) => {
+      if (e.type !== "session_changed" || e.connection !== a.id) return;
+      setLive((cur) => ({ ...(cur ?? a.session ?? { checked_at: null, signed_in_at: null }), state: e.state as SessionStatus["state"], message: String(e.message ?? "") }));
+    },
+    { demo: false },
+  );
+  return [live ?? a.session, setLive];
+}
+
+/**
+ * Sign in, sign out, and when a person is needed the line that says why with
+ * "Take the controls", which opens the live view.
+ */
+export function SessionBar({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
+  const [st, setSt] = useSession(slug, a);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const [hands, setHands] = useState(false);
+  const state = st?.state ?? "unknown";
+  const signIn = async () => {
+    setBusy("in");
+    setError(null);
+    setNote(null);
+    try {
+      const r = await api.accountSignIn(slug, a.id);
+      if (r.started) setSt({ ...(st ?? { message: "", checked_at: null, signed_in_at: null }), state: "checking", message: "" });
+      else if (r.note) setNote(sentence(r.note) + ".");
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const signOut = async () => {
+    setBusy("out");
+    setError(null);
+    try {
+      const r = await api.accountSignOut(slug, a.id);
+      setSt(r.session);
+      setConfirm(false);
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  if (!a.has_session || !a.ready) return null;
+  return (
+    <>
+      {state === "needs_hand" && (
+        <div className="acx-hand">
+          <p>
+            {st?.message ? `${sentence(st.message)}. ` : ""}Finish the sign-in in the live view.
+          </p>
+          {a.live_view && (
+            <div className="acts">
+              <button className="btn p sm" onClick={() => setHands(true)}>
+                <Hand size={13} /> Take the controls
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="acx-session">
+        {state !== "signed_in" && state !== "checking" && (
+          <button className={`btn ${state === "needs_hand" || signsInByHand(a) ? "t" : "g"} sm`} disabled={!!busy} onClick={() => void signIn()} title={signsInByHand(a) ? "See whether the browser is still signed in" : undefined}>
+            {busy === "in" ? <Loader2 size={13} className="spin" /> : <LogIn size={13} />} {signsInByHand(a) ? "Check the sign-in" : state === "needs_hand" ? "Try again" : "Sign in"}
+          </button>
+        )}
+        {state !== "signed_in" && state !== "needs_hand" && signsInByHand(a) && a.live_view && (
+          <button className="btn g sm" onClick={() => setHands(true)}>
+            <Hand size={13} /> Sign in in the live view
+          </button>
+        )}
+        {state === "signed_in" && st?.signed_in_at && <span className="muted sm">Signed in {ago(st.signed_in_at)}{st.checked_at ? `, checked ${ago(st.checked_at)}` : ""}.</span>}
+        {state === "checking" && (
+          <span className="muted sm">
+            <Loader2 size={12} className="spin" /> Checking the sign-in…
+          </span>
+        )}
+        <span className="grow" />
+        {state === "signed_in" && a.live_view && (
+          <button className="btn t sm" onClick={() => setHands(true)} title="See what the browser shows and drive it">
+            <Hand size={13} /> Live view
+          </button>
+        )}
+        {state !== "unknown" && state !== "checking" && state !== "signed_out" &&
+          (confirm ? (
+            <span className="acc-confirm">
+              <span className="muted sm">Sign out and forget what the browser kept?</span>
+              <button className="btn t sm bad" disabled={!!busy} onClick={() => void signOut()}>
+                {busy === "out" ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Sign out
+              </button>
+              <button className="btn t sm" onClick={() => setConfirm(false)}>
+                Keep
+              </button>
+            </span>
+          ) : (
+            <button className="btn t sm" onClick={() => setConfirm(true)}>
+              <LogOut size={13} /> Sign out
+            </button>
+          ))}
+      </div>
+      {note && <p className="muted sm">{note}</p>}
+      {error && <p className="err sm">{error}</p>}
+      {hands && <Hands slug={slug} account={a.id} name={accountIdentity(a) || accountService(a).name} startUrl={startUrlOf(a.identity, a.destination_text)} onClose={(signedIn) => (setHands(false), signedIn && setSt({ ...(st ?? { message: "", checked_at: null, signed_in_at: null }), state: "checking", message: "" }), onChange())} />}
+    </>
+  );
+}
+
+const LOGIN_FIELDS: { key: (typeof LOGIN_KEYS)[number]; label: string; help?: string; secret: boolean; optional?: boolean }[] = [
+  { key: "LOGIN_USERNAME", label: "User name", secret: false },
+  { key: "LOGIN_PASSWORD", label: "Password", secret: true },
+  { key: "LOGIN_TOTP_SECRET", label: "One-time code secret", help: "The secret your authenticator app was set up with. KIQR makes the six-digit codes from it.", secret: true, optional: true },
+];
+
+/**
+ * Where the account's password is. Now only "Saved in KIQR": a user name, a
+ * password and an optional one-time code secret, saved to the account's own
+ * keys and never shown again (dots say which are there).
+ */
+export function LoginEditor({ slug, a, onSaved, onChange, ask = true }: { slug: string; a: Account; onSaved?: () => void; onChange: () => void; /** Ask "Where's your password?" (the wizard asks it in its title). */ ask?: boolean }) {
+  const set = new Set(a.login_set ?? []);
+  const saved = a.login?.store === "kiqr";
+  const [editing, setEditing] = useState(!saved);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  useEffect(() => setEditing(a.login?.store !== "kiqr"), [a.login?.store]);
+  if (signsInByHand(a)) return <p className="muted sm">This site is signed in by hand in the live view; the browser keeps it.</p>;
+  const has = (k: string) => set.has(k) || !!(values[k] ?? "").trim();
+  const ok = has("LOGIN_USERNAME") && has("LOGIN_PASSWORD") && LOGIN_FIELDS.some((f) => (values[f.key] ?? "").trim());
+  const save = async () => {
+    setBusy("save");
+    setError(null);
+    try {
+      for (const f of LOGIN_FIELDS) {
+        const v = values[f.key] ?? "";
+        // A password is kept as typed; the rest without stray spaces.
+        if (v.trim()) await api.setAccountSecret(slug, a.id, f.key, f.key === "LOGIN_PASSWORD" ? v : v.trim());
+      }
+      await api.updateAccount(slug, a.id, { login: { store: "kiqr" } });
+      setValues({});
+      setEditing(false);
+      onChange();
+      onSaved?.();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const forget = async () => {
+    setBusy("forget");
+    setError(null);
+    try {
+      for (const k of LOGIN_KEYS) await api.setAccountSecret(slug, a.id, k, "");
+      await api.updateAccount(slug, a.id, { login: { store: "" } });
+      setValues({});
+      setConfirm(false);
+      setEditing(true);
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="acx-login">
+      {ask && (
+        <>
+          <p className="q">Where's your password?</p>
+          <div className="seg" role="radiogroup" aria-label="Where the password is">
+            <button role="radio" aria-checked className="on auto">
+              <KeyRound size={12} /> Saved in KIQR
+            </button>
+          </div>
+        </>
+      )}
+      {saved && !editing ? (
+        <>
+          {LOGIN_FIELDS.map((f) => (
+            <span key={f.key} className="saved">
+              {f.label}: {set.has(f.key) ? <span className="dots">••••••</span> : <span className="dim">{f.optional ? "not set" : "missing"}</span>}
+            </span>
+          ))}
+          <div className="acts">
+            <button className="btn t sm" onClick={() => setEditing(true)}>
+              <Pencil size={13} /> Change
+            </button>
+            <span className="grow" />
+            {confirm ? (
+              <span className="acc-confirm">
+                <span className="muted sm">Forget the user name, password and code secret?</span>
+                <button className="btn t sm bad" disabled={!!busy} onClick={() => void forget()}>
+                  {busy === "forget" ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Forget
+                </button>
+                <button className="btn t sm" onClick={() => setConfirm(false)}>
+                  Keep
+                </button>
+              </span>
+            ) : (
+              <button className="btn t sm bad" onClick={() => setConfirm(true)}>
+                <Trash2 size={13} /> Forget the login
+              </button>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="muted sm">Seemo never sees them: KIQR types them into the site's sign-in page itself, and only then.</p>
+          {LOGIN_FIELDS.map((f) => (
+            <label key={f.key} className="acc-field">
+              <span className="nm">
+                {f.label}
+                {f.optional && <small className="dim"> optional</small>}
+                {set.has(f.key) && <small className="dim"> saved; type to replace</small>}
+              </span>
+              <FieldInput mono={f.secret} secret={f.secret} value={values[f.key] ?? ""} onChange={(v) => setValues((cur) => ({ ...cur, [f.key]: v }))} placeholder={set.has(f.key) ? "••••••" : ""} ariaLabel={f.label} />
+              {f.help && <span className="ds muted">{f.help}</span>}
+            </label>
+          ))}
+          <div className="acts">
+            <button className="btn p sm" disabled={!ok || !!busy} onClick={() => void save()}>
+              {busy === "save" ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Save it in KIQR
+            </button>
+            {saved && (
+              <button className="btn t sm" onClick={() => (setEditing(false), setValues({}))}>
+                Cancel
+              </button>
+            )}
+          </div>
+        </>
+      )}
+      {error && <p className="err sm">{error}</p>}
+    </div>
+  );
+}
+
 // ---- The card
 
 /**
@@ -651,6 +932,8 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
   const svc = accountService(a);
   const Icon = serviceIcon(svc.icon, svc.group);
   const status = accountStatus(a);
+  const [session] = useSession(slug, a);
+  const chip = a.has_session && a.ready ? sessionChip(session) : null;
   const identity = accountIdentity(a, lists);
   const [details, setDetails] = useState(false);
   const [keys, setKeys] = useState(!a.ready);
@@ -700,9 +983,15 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
             identity && <p className="who" title={identity}>{identity}</p>
           )}
         </div>
-        <span className={`chip sm ${status.tone}`}>
-          <b /> {status.text}
-        </span>
+        {chip ? (
+          <span className={`chip sm ${chip.cls}`} title={session?.state === "needs_hand" && session.message ? sentence(session.message) : undefined}>
+            {chip.spin ? <Loader2 size={11} className="spin" /> : <b />} {chip.text}
+          </span>
+        ) : (
+          <span className={`chip sm ${status.tone}`}>
+            <b /> {status.text}
+          </span>
+        )}
         {several && a.default && (
           <span className="chip sm acc-def" title="Seemo uses this one when it does not name another">
             <Star size={11} /> default
@@ -716,6 +1005,7 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
       </div>
 
       <Places slug={slug} a={a} lists={lists} onChange={onChange} />
+      <SessionBar slug={slug} a={a} onChange={onChange} />
       <Learning slug={slug} a={a} onChange={onChange} />
 
       {!a.ready && (
@@ -742,6 +1032,12 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
                   <span className="muted sm">Several abilities can publish here; this one does:</span>
                   <FieldInput options={a.publishers!.map((p) => p.id)} labels={Object.fromEntries(a.publishers!.map((p) => [p.id, p.name]))} value={a.publisher ?? ""} onChange={(v) => void run(() => api.updateAccount(slug, a.id, { publisher: v }))} ariaLabel="The ability that publishes here" />
                 </label>
+              </section>
+            )}
+            {a.has_session && (
+              <section>
+                <p className="cap">Login</p>
+                <LoginEditor slug={slug} a={a} onChange={onChange} />
               </section>
             )}
             <section>

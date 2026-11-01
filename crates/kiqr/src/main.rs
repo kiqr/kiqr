@@ -319,6 +319,12 @@ enum AccountsCmd {
     },
     /// What Seemo may do through an account: `kiqr accounts allow <slug> <account> publish auto|ask|off` (read, learn, measure: on|off)
     Allow { slug: String, account: String, role: String, value: String },
+    /// Sign an account in on its program now (check first; type the saved login when signed out); `kiqr accounts signin <slug> <account>`
+    Signin { slug: String, account: String },
+    /// Forget an account's sign-in: stop its program and wipe what it kept (the browser profile)
+    Signout { slug: String, account: String },
+    /// Save a login for an account that signs in on a program: user name, password and (optional) one-time code secret, typed, never shown
+    Login { slug: String, account: String },
     /// Places inside an account content goes to: `kiqr accounts places <slug> <account>` lists; `add <label> key=value…` or `add --list <list>`; `rm <place>`
     Places {
         slug: String,
@@ -751,6 +757,25 @@ impl Client {
                 AccountsCmd::Allow { slug, account, role, value } => {
                     let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/connections/{account}/allow"), &serde_json::json!({ role.clone(): value })).await?;
                     println!("{}: {}", v["label"].as_str().unwrap_or(&account), allow_text(&v));
+                }
+                AccountsCmd::Signin { slug, account } => {
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/connections/{account}/signin"), &serde_json::json!({})).await?;
+                    println!("{}", if v["started"].as_bool() == Some(true) { format!("Signing {account} in; `kiqr accounts ls {slug}` shows how it went.") } else { v["note"].as_str().unwrap_or("not started").to_string() });
+                }
+                AccountsCmd::Signout { slug, account } => {
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/connections/{account}/signout"), &serde_json::json!({})).await?;
+                    println!("Signed {account} out; its program's profile is gone, the login stays.");
+                }
+                AccountsCmd::Login { slug, account } => {
+                    for (name, label) in [("LOGIN_USERNAME", "User name"), ("LOGIN_PASSWORD", "Password"), ("LOGIN_TOTP_SECRET", "One-time code secret (Enter to skip)")] {
+                        eprint!("{label}: ");
+                        let value = read_secret()?;
+                        if !value.trim().is_empty() || name != "LOGIN_TOTP_SECRET" {
+                            let _: serde_json::Value = self.put(&format!("/api/projects/{slug}/connections/{account}/secrets/{name}"), &serde_json::json!({ "value": value })).await?;
+                        }
+                    }
+                    let _: serde_json::Value = self.put(&format!("/api/projects/{slug}/connections/{account}"), &serde_json::json!({ "login": { "store": "kiqr" } })).await?;
+                    println!("Login saved in KIQR for {account}. Sign in: kiqr accounts signin {slug} {account}");
                 }
                 AccountsCmd::Places { slug, account, cmd } => match cmd {
                     None => {
@@ -1598,6 +1623,13 @@ fn print_event(ev: &Event) {
         EventKind::MediaCreated { ability, asset_type, id, file, provider } => format!("{ability:<8} {asset_type}/{id}/{file} via {provider}"),
         EventKind::ConnectionSaved { connection, label, ability, kind } => format!("account  {connection} \"{label}\" ({})", if kind.is_empty() { ability.as_str() } else { kind.as_str() }),
         EventKind::ConnectionDeleted { connection, .. } => format!("account  {connection} removed"),
+        EventKind::ProgramInstalling { program, version, note } => format!("program  installing {program} {version}{}", if note.is_empty() { String::new() } else { format!(": {note}") }),
+        EventKind::ProgramInstalled { program, version } => format!("program  {program} {version} installed"),
+        EventKind::ProgramFailed { program, version, message } => format!("program  {program} {version} failed: {message}"),
+        EventKind::SessionChanged { connection, state, message } => format!("session  {connection} {state}{}", if message.is_empty() { String::new() } else { format!(": {message}") }),
+        EventKind::HandsFrame { .. } => return,
+        EventKind::HandsStarted { connection, .. } => format!("hands    {connection}: someone is at the controls"),
+        EventKind::HandsEnded { connection, message, .. } => format!("hands    {connection}: done{}", if message.is_empty() { String::new() } else { format!(" ({message})") }),
         EventKind::ListChanged { list, label, contacts } => format!("list     {list} \"{label}\" ({contacts} people)"),
         EventKind::ListDeleted { list } => format!("list     {list} removed"),
         EventKind::ListSending { list, subject, sent, failed, total, done } => format!("sending  \"{subject}\" to {list}: {sent}/{total}{}{}", if *failed > 0 { format!(", {failed} failed") } else { String::new() }, if *done { ", done" } else { "" }),

@@ -36,6 +36,10 @@ impl Home {
         self.root.join("config.yaml")
     }
     /// Abilities: `abilities/<id>/SKILL.md` (instructions) and/or `extension.yaml` (a connection).
+    /// Programs KIQR installed for abilities (`requires`): `bin/<program>` and `bin/<program>-<version>/`.
+    pub fn bin_dir(&self) -> PathBuf {
+        self.root.join("bin")
+    }
     pub fn abilities_dir(&self) -> PathBuf {
         self.root.join("abilities")
     }

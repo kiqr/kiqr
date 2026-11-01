@@ -32,6 +32,7 @@ pub fn routes() -> Router<App> {
         .route("/api/abilities/refresh-index", post(refresh_index))
         .route("/api/abilities/{id}/avatar", get(avatar))
         .route("/api/abilities/{id}/install", post(install))
+        .route("/api/abilities/{id}/programs", post(crate::programs::install_route))
         .route("/api/abilities/{id}/update", post(update))
         .route("/api/abilities/{id}/pause", post(pause))
         .route("/api/abilities/{id}/resume", post(resume))
@@ -110,6 +111,9 @@ pub struct IndexItem {
     pub connect: Option<kiqr_core::connect::Connect>,
     /// `official` (KIQR's own), `verified`, `community`.
     pub trust: String,
+    /// Where it runs (`linux`, `macos`, `windows`); empty means everywhere.
+    #[serde(default)]
+    pub platforms: Vec<String>,
     pub transport: String,
     /// The vendor: the GitHub user or organisation behind the repository (`kiqr` for KIQR's own).
     pub author: String,
@@ -266,6 +270,7 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         auth: m.auth.clone(),
         connect: m.connect.iter().find(|c| c.has_button()).or(m.connect.first()).cloned(),
         trust: "official".into(),
+        platforms: vec![],
         transport: serde_json::to_value(m.transport).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         author: String::new(),
         shipped: false,
@@ -318,6 +323,7 @@ fn core_item(c: &extensions::CoreAbility) -> IndexItem {
         auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false, options: vec![], placeholder: String::new(), choices: None, typed: false }).collect(),
         connect: None,
         trust: "official".into(),
+        platforms: vec![],
         transport: "builtin".into(),
         author: "KIQR".into(),
         shipped: true,
@@ -489,6 +495,7 @@ fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
         auth: vec![],
         connect: None,
         trust: if e.builtin { "official".into() } else { "local".into() },
+        platforms: vec![],
         transport: "instructions".into(),
         author: if !i.author.trim().is_empty() { i.author.clone() } else if e.builtin { "KIQR".into() } else { String::new() },
         shipped: e.builtin,
@@ -542,7 +549,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
             .collect(),
         _ => vec![],
     };
-    let program_found = m.filter(|m| m.transport == Transport::Mcp).map(|m| crate::ext::on_path(&m.command));
+    let program_found = m.filter(|m| m.transport == Transport::Mcp).map(|m| crate::ext::program_found(ctx.app, ctx.slug, m));
     let installed = core.is_some() || e.is_some();
     let ready = installed && missing.is_empty() && program_found.unwrap_or(true);
     let provides: Vec<Value> = m.map(|m| m.provides.keys().cloned().collect::<Vec<_>>()).unwrap_or_else(|| item.provides.clone()).iter().map(|id| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or("") })).collect();
@@ -644,6 +651,9 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         // How the grid of things to connect shows it, and what an account of it allows at first.
         "service_card": m.map(|m| json!(m.service_card())).unwrap_or_else(|| json!(item.service)),
         "places": m.map(|m| json!(m.places)).unwrap_or(Value::Null),
+        // The programs it needs: its own, or those of the ability it runs on (`program:`).
+        "programs": m.map(|m| crate::programs::status(&crate::ext::program_of_sync(ctx.app, ctx.slug, m).unwrap_or_else(|| m.clone()))).unwrap_or(Value::Null),
+        "platforms": item.platforms,
         "allow": m.map(|m| json!(m.allow)).unwrap_or_else(|| json!(item.allow)),
         // An account of it can be a source: what the Source switch says.
         "learn": m.map(crate::accounts::learn_view),
@@ -888,6 +898,10 @@ async fn adopt_keys(app: &App, id: &str) -> Result<(), ApiError> {
         reg.installed(id).into_iter().find_map(|e| e.manifest.clone())
     };
     let Some(m) = m else { return Ok(()) };
+    // Programs it needs are fetched in the background; the ability is ready once they are there.
+    if let Err(e) = crate::programs::ensure(app, None, &m).await {
+        tracing::warn!(id = %m.id, "programs: {}", e.1);
+    }
     let moved = kiqr_core::connections::move_old(&app.store, &m)?;
     if !moved.is_empty() {
         app.store.commit(&format!("[auto] accounts: {} moved along with {}", moved.join(", "), m.name)).await?;

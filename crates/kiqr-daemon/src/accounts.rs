@@ -52,7 +52,7 @@ pub fn learn_view(m: &Manifest) -> Value {
 
 /// Has every key it needs, and the program it runs is there.
 pub fn ready(app: &App, slug: &str, c: &Connection, m: &Manifest) -> bool {
-    c.missing(app.store.home(), slug, m).is_empty() && (m.transport != Transport::Mcp || crate::ext::on_path(&m.command))
+    c.missing(app.store.home(), slug, m).is_empty() && (m.transport != Transport::Mcp || crate::ext::program_found(app, Some(slug), m))
 }
 
 /// The manifest an account is read with: the ability it was made with, else
@@ -106,6 +106,14 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
         pv
     }).collect::<Vec<_>>());
     v["takes_lists"] = json!(c.is_channel() && crate::publish::takes_lists(app, slug, c).await);
+    // Signing in on a hosted program: whether this account does, how it stands, where its login lives.
+    if let Some(o) = crate::session::view(app, slug, c).await.as_object() {
+        for (k, val) in o {
+            v[k] = val.clone();
+        }
+    }
+    // A login saved in KIQR: which of its values are there, never the values.
+    v["login_set"] = json!(kiqr_core::connections::Login::KEYS.iter().filter(|k| keys.contains_key(**k)).collect::<Vec<_>>());
     // Who the account is, for the card: the first key that is an identity, not a secret (an
     // address, a site, a repository), a URL reduced to its host. Secrets never leave the daemon.
     v["identity"] = json!(m.as_ref().and_then(|m| {
@@ -320,6 +328,8 @@ pub struct Patch {
     pub kind: Option<String>,
     #[serde(alias = "destination")]
     pub place: Option<BTreeMap<String, Value>>,
+    /// Where the account's login lives (`{store: kiqr}` or a password manager account id with `ref`); `{}` forgets it.
+    pub login: Option<kiqr_core::connections::Login>,
 }
 
 fn parse_allow(role: &str, a: &str) -> Result<Allow, ApiError> {
@@ -383,6 +393,19 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connect
         let (_, _, checked) = crate::publish::place_check(app, slug, &c.kind, Some(&c.ability), &fields).await?;
         let (id, label) = c.place(None).map(|p| (p.id.clone(), p.label.clone())).unwrap_or_default();
         c.put_place(Place { id, kind: c.kind.clone(), label: if label.is_empty() { place_label(&checked, &c.label) } else { label }, fields: checked, default: true });
+    }
+    if let Some(l) = p.login {
+        if l.store.is_empty() {
+            c.login = None;
+        } else {
+            if l.store != kiqr_core::connections::Login::KIQR {
+                let store = Connection::load(&app.store, slug, &l.store).map_err(|_| bad(format!("no account '{}' to keep the login in", l.store)))?;
+                if l.ref_.trim().is_empty() {
+                    return Err(bad(format!("which login in {}? name the item", store.label)));
+                }
+            }
+            c.login = Some(l);
+        }
     }
     if let Some(id) = p.publisher.map(|s| s.trim().to_string()) {
         if !c.is_channel() {
@@ -545,7 +568,7 @@ async fn put_allow(State(app): State<App>, Path((slug, id)): Path<(String, Strin
 
 pub async fn delete(app: &App, slug: &str, id: &str) -> Result<(), ApiError> {
     let c = Connection::delete(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    app.mcp.stop_connection(&c.id).await;
+    app.mcp.stop_connection(slug, &c.id).await;
     app.store.commit(&format!("account({slug}): remove {}", c.label)).await?;
     app.bus.emit(Some(slug), EventKind::ConnectionDeleted { connection: c.id, ability: c.ability });
     Ok(())

@@ -158,6 +158,19 @@ export type TypeCount = { type: string; count: number };
 export type NewAsset = { type: string; title: string; tags?: string[]; summary?: string; source?: Record<string, unknown>; files?: { role: string; name: string; text: string }[] };
 
 export type KiqrEvent = { at: string; project: string | null; type: string } & Record<string, unknown>;
+/** How an account's sign-in on a hosted program changed (`session_changed`). */
+export type SessionChangedEvent = { type: "session_changed"; connection: string; state: SessionState; message: string };
+/** One picture of the live view (`hands_frame`), a few a second while someone watches. Never kept. */
+export type HandsFrameEvent = { type: "hands_frame"; connection: string; hands: string; mime: string; data: string; url?: string };
+export type HandsStartedEvent = { type: "hands_started"; connection: string; hands: string };
+export type HandsEndedEvent = { type: "hands_ended"; connection: string; hands: string; message: string };
+/** A program KIQR installs for an ability (machine-wide events, on the stream without a project). */
+export type ProgramInstallingEvent = { type: "program_installing"; program: string; version: string; note: string };
+export type ProgramInstalledEvent = { type: "program_installed"; program: string; version: string };
+export type ProgramFailedEvent = { type: "program_failed"; program: string; version: string; message: string };
+export const SESSION_EVENTS = ["session_changed"];
+export const HANDS_EVENTS = ["hands_frame", "hands_started", "hands_ended"];
+export const PROGRAM_EVENTS = ["program_installing", "program_installed", "program_failed"];
 
 export type Health = {
   ok: boolean;
@@ -314,8 +327,13 @@ export type Todo = {
   ready: Asset[];
   scheduled: Asset[];
   attention: Asset[];
+  /** Accounts whose sign-in needs a person (the daemon's `accounts_needing_hand`; `needs_hand` in older drafts). */
+  accounts_needing_hand?: NeedsHand[];
+  needs_hand?: NeedsHand[];
   count: number;
 };
+/** An account whose sign-in waits for a person in the live view. */
+export type NeedsHand = { connection: string; label: string; message: string; service?: string; since?: string | null };
 export type ToolGroup = { id: string; label: string; tools: string[] };
 
 // ---- Abilities
@@ -382,6 +400,10 @@ export type Ability = {
   runs_program: boolean;
   command: string | null;
   program_found: boolean | null;
+  /** The programs KIQR installs for it (a browser), and whether each is on this machine. Null in the marketplace. */
+  programs?: ProgramStatus[] | null;
+  /** Where it runs (`linux`, `macos`, `windows`); missing means everywhere. */
+  platforms?: string[] | null;
   hosts: string[];
   source: "core" | "shipped" | "marketplace" | "local" | "yours";
   repo: string | null;
@@ -489,8 +511,31 @@ export type Account = {
   last_learned?: string | null;
   /** Documents read the last time. */
   learned?: number;
+  /** It signs in on a hosted program (a browser), and how that stands. */
+  has_session?: boolean;
+  session?: SessionStatus;
+  /** Where its login lives; null when none is saved. */
+  login?: LoginRef | null;
+  /** Which values of a login saved in KIQR are there (names only). */
+  login_set?: string[];
+  /** A person can take the controls of its program. */
+  live_view?: boolean;
 };
 export type LearnInfo = { label: string };
+/** `unknown`, `checking`, `signed_in`, `signed_out`, `needs_hand`. */
+export type SessionState = "unknown" | "checking" | "signed_in" | "signed_out" | "needs_hand";
+/** How an account's sign-in on a hosted program stands. */
+export type SessionStatus = { state: SessionState | ""; message: string; checked_at: string | null; signed_in_at: string | null };
+/** Where an account's login lives: saved in KIQR (`store: "kiqr"`) or a password manager account and its item. */
+export type LoginRef = { store: string; ref?: string };
+/** The values a login saved in KIQR has, by key name. */
+export const LOGIN_KEYS = ["LOGIN_USERNAME", "LOGIN_PASSWORD", "LOGIN_TOTP_SECRET"] as const;
+/** A program an ability needs: found here or not, and how KIQR gets it (`system`: a package the user installs; by package manager). */
+export type ProgramStatus = { program: string; version: string; found: boolean; how: "download" | "uv" | "system" | string; system?: Record<string, string> };
+/** What the live view can do on this account. */
+export type HandsCan = { click: boolean; key: boolean; type: boolean; navigate: boolean };
+/** One input from the person at the controls: x, y are fractions of the picture, width and height its pixel size. */
+export type HandsInput = { kind: "click"; x: number; y: number; width: number; height: number } | { kind: "key"; key: string } | { kind: "type"; text: string } | { kind: "navigate"; url: string };
 export type Channel = Account;
 /** Where KIQR listens, when a factory reset could keep it (it isn't the default). `remote`: reachable from other machines. */
 export type ResetNetwork = { host: string; port: number; remote: boolean };
@@ -615,6 +660,8 @@ export const api = {
   deleteInstructions: (slug: string | null, id: string, file?: string) => req<void>(`${slug ? `/api/projects/${slug}` : "/api"}/abilities/${encodeURIComponent(id)}/instructions${file ? `?file=${encodeURIComponent(file)}` : ""}`, { method: "DELETE" }),
   /** Install for the machine: the code only. A project adds its accounts afterwards. */
   installAbility: (id: string) => req<{ id: string; folder: string }>(`/api/abilities/${id}/install`, { method: "POST", body: "{}" }),
+  /** Install the programs an installed ability needs (again); `program_*` events show the progress. Answers when done. */
+  installPrograms: (id: string) => req<{ id: string; programs: ProgramStatus[] }>(`/api/abilities/${id}/programs`, { method: "POST", body: "{}" }),
   installAbilitySource: (b: { source: string; scope: "global" | "project"; project?: string; name?: string }) => req<Ability>("/api/abilities/install", { method: "POST", body: JSON.stringify(b) }),
   updateAbility: (id: string, slug?: string) => req<{ detail: string }>(`/api/abilities/${id}/update${slug ? `?project=${encodeURIComponent(slug)}` : ""}`, { method: "POST", body: "{}" }),
   /** Off or on for every project: core abilities only (config.yaml). */
@@ -644,7 +691,7 @@ export const api = {
   account: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}`),
   /** A new account: its kind and first place when it publishes, its keys, what Seemo may do there (over the manifest's defaults). */
   createAccount: (slug: string, b: { ability: string; label?: string; kind?: string; place?: Record<string, string>; place_label?: string; secrets?: Record<string, string>; same_as?: string; allow?: Record<string, Allow> }) => req<Account>(`/api/projects/${slug}/connections`, { method: "POST", body: JSON.stringify(b) }),
-  updateAccount: (slug: string, id: string, p: { label?: string; allow?: Record<string, Allow>; publisher?: string; kind?: string; place?: Record<string, unknown> }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
+  updateAccount: (slug: string, id: string, p: { label?: string; allow?: Record<string, Allow>; publisher?: string; kind?: string; place?: Record<string, unknown>; login?: LoginRef }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
   /** What Seemo may do here: role → auto, ask or off (on/off for roles that never act). */
   setAllow: (slug: string, id: string, allow: Record<string, Allow>) => req<Account>(`/api/projects/${slug}/connections/${id}/allow`, { method: "PUT", body: JSON.stringify(allow) }),
   /** A place inside an account: the kind's fields, or a list of people (`list`, its id) on a mail account. */
@@ -655,6 +702,14 @@ export const api = {
   /** One key of an account; an empty value clears it. Never read back. */
   accountChoices: (slug: string, id: string, name: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/connections/${id}/choices/${name}`),
   setAccountSecret: (slug: string, id: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/connections/${id}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
+  /** Signing in on a hosted program: check and sign in now (in the background; `session_changed` says how it went), forget it, or read how it stands. */
+  accountSignIn: (slug: string, id: string) => req<{ started: boolean; note?: string; session?: SessionStatus }>(`/api/projects/${slug}/connections/${id}/signin`, { method: "POST", body: "{}" }),
+  accountSignOut: (slug: string, id: string) => req<{ session: SessionStatus }>(`/api/projects/${slug}/connections/${id}/signout`, { method: "POST", body: "{}" }),
+  accountSession: (slug: string, id: string) => req<{ has_session: boolean; session: SessionStatus; login: LoginRef | null; live_view: boolean }>(`/api/projects/${slug}/connections/${id}/session`),
+  /** Take the controls of the account's program (plain same-origin requests: the daemon checks where they come from). */
+  startHands: (slug: string, id: string, url?: string) => req<{ hands: string; token: string; can: HandsCan }>(`/api/projects/${slug}/connections/${id}/hands`, { method: "POST", body: JSON.stringify(url ? { url } : {}) }),
+  handsInput: (slug: string, hands: string, token: string, input: HandsInput) => req<{ ok: boolean }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/input`, { method: "POST", body: JSON.stringify({ token, ...input }) }),
+  endHands: (slug: string, hands: string, token: string, signedIn: boolean) => req<{ ended: boolean }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/end`, { method: "POST", body: JSON.stringify({ token, signed_in: signedIn }), keepalive: true }),
   /** The account its ability uses when nothing names one. */
   defaultAccount: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}/default`, { method: "POST", body: "{}" }),
 
@@ -702,7 +757,7 @@ let demoIntake: Intake = { goal: "", goal_note: "", customers: "", time: "", net
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith("/api/signins")) return Promise.resolve({ signins: [{ id: "kiqr-cloud", name: "kiqr.cloud", signed_in: false, account: null, waiting: null }, { id: "unblockingapi", name: "UnblockingAPI", signed_in: false, account: null, waiting: null }], cloud_url: "https://kiqr.cloud" } as T);
-  if (/\/(chats|approvals|tasks|calendar|channels|connections|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|lists)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|channels|connections|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|lists|hands)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

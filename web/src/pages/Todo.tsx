@@ -3,20 +3,20 @@
 // approved but not sent, publishes coming up, and scheduled publishes that
 // failed. The sidebar count is the approvals, drafts and failures.
 import { Link, useParams } from "react-router-dom";
-import { CalendarClock, CheckCircle2, ExternalLink, MessagesSquare, Plug, Send, Sparkles } from "lucide-react";
+import { CalendarClock, CheckCircle2, ExternalLink, Hand, MessagesSquare, Plug, Send, Sparkles } from "lucide-react";
 import { useState } from "react";
-import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card, type Suggestion } from "../api";
+import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card, type NeedsHand, type Suggestion } from "../api";
 import { Guide } from "./Guide";
 import { ApprovalCard } from "../chat/Conversation";
 import { AssetEmbed } from "./AssetEmbed";
 import { AssetActions, StatusChip, whenAt } from "./AssetActions";
-import { connectPath } from "./Accounts";
+import { connectPath, sentence } from "./Accounts";
 import { assetIcon } from "../assetIcons";
 import "../profile.css";
 import "../chat.css";
 import "../library.css";
 
-export const TODO_EVENTS = ["suggestions_changed", "brand_updated", "extension_installed", "extension_removed", "asset_saved", "asset_deleted", "asset_published", "asset_approved", "asset_unpublished", "approval_requested", "approval_resolved", "chat_deleted"];
+export const TODO_EVENTS = ["suggestions_changed", "brand_updated", "extension_installed", "extension_removed", "asset_saved", "asset_deleted", "asset_published", "asset_approved", "asset_unpublished", "approval_requested", "approval_resolved", "chat_deleted", "session_changed", "connection_deleted"];
 
 export function TodoPage() {
   const { slug = "" } = useParams();
@@ -26,10 +26,12 @@ export function TodoPage() {
   useEvents(slug, onEvent, { demo: false });
   useDemoSeemo(onEvent);
   const d = todo.data;
+  // Accounts whose sign-in waits for a person; the field may be missing on an older daemon.
+  const hands: NeedsHand[] = (d?.accounts_needing_hand ?? d?.needs_hand ?? []).filter((x) => x && x.connection);
   // The getting-started steps sit here until every one is done or skipped; the page is "Getting started" until then.
   const [guideDone, setGuideDone] = useState<boolean | undefined>(undefined);
   const starting = guideDone === false;
-  const empty = d && guideDone !== false && d.approvals.length === 0 && d.drafts.length === 0 && d.ready.length === 0 && d.scheduled.length === 0 && d.attention.length === 0;
+  const empty = d && guideDone !== false && d.approvals.length === 0 && d.drafts.length === 0 && d.ready.length === 0 && d.scheduled.length === 0 && d.attention.length === 0 && hands.length === 0;
   return (
     <div className="prof todo">
       <div className="cm-head">
@@ -79,12 +81,28 @@ export function TodoPage() {
         </section>
       )}
 
-      {d && d.attention.length > 0 && (
+      {d && d.attention.length + hands.length > 0 && (
         <section className="todo-sec">
           <h2>
-            Needs a hand <span className="n">{d.attention.length}</span>
+            Needs a hand <span className="n">{d.attention.length + hands.length}</span>
           </h2>
           <ul className="todo-rows">
+            {hands.map((h) => (
+              <li key={h.connection} className="todo-row">
+                <Link className="what" to={`/p/${slug}/accounts#account=${encodeURIComponent(h.connection)}`}>
+                  <span className="ic">
+                    <Hand size={15} />
+                  </span>
+                  <span className="min0">
+                    <b>{h.label || h.connection} needs a hand to sign in</b>
+                    <small>{h.message ? `${sentence(h.message)}. ` : ""}Finish the sign-in in the live view.</small>
+                  </span>
+                </Link>
+                <Link className="btn p sm" to={`/p/${slug}/accounts#hands=${encodeURIComponent(h.connection)}`}>
+                  <Hand size={13} /> Take the controls
+                </Link>
+              </li>
+            ))}
             {d.attention.map((a) => (
               <Row key={`${a.type}/${a.id}`} slug={slug} a={a} icon={types.data?.find((t) => t.id === a.type)?.icon} onChange={todo.reload} />
             ))}

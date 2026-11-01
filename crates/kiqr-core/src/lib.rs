@@ -35,6 +35,7 @@ pub mod sources;
 pub mod store;
 pub mod tasks;
 pub mod tools;
+pub mod totp;
 
 pub use config::Config;
 pub use events::{Event, EventBus};

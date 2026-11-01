@@ -6,14 +6,18 @@
 // choose what Seemo may do there. Done lands on the Accounts page with
 // the new card lit. Opened from "Connect an account" and from every place
 // that used to send the user to install or add something for a service;
-// `?service=` or `?group=` (or the props) narrow it.
+// `?service=` or `?group=` (or the props) narrow it. A service that runs a
+// program KIQR installs (a browser) waits for it first; one that signs in
+// on that program asks where the password is and signs in, with the live
+// view when a person is needed.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, Check, Loader2, Plus, Terminal } from "lucide-react";
-import { api, useAsync, useEvents, SERVICE_GROUPS, type Ability, type Account, type KindInfo, type PlaceKind } from "../api";
+import { AlertCircle, ArrowLeft, Check, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal } from "lucide-react";
+import { api, useAsync, useEvents, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability, type Account, type KindInfo, type PlaceKind, type ProgramStatus } from "../api";
 import { ConnectButton } from "./ConnectButton";
-import { AccountKeys, ACCOUNT_EVENTS, accountIdentity, accountService, byGroup, chosenLabel, Fields, ownLabel, permissionSummary, PermissionMatrix, placeFields, PlaceFieldsForm, placeKinds, placeNoun, placeReady, placesOf, serviceOf, type Field } from "./Accounts";
+import { AccountKeys, ACCOUNT_EVENTS, accountIdentity, accountService, byGroup, chosenLabel, Fields, LoginEditor, ownLabel, permissionSummary, PermissionMatrix, placeFields, PlaceFieldsForm, placeKinds, placeNoun, placeReady, placesOf, sentence, serviceOf, sessionChip, signsInByHand, useSession, type Field } from "./Accounts";
+import { Hands, startUrlOf } from "./Hands";
 import { isService, serviceIcon } from "./abilityBits";
 import "../profile.css";
 import "../settings.css";
@@ -49,6 +53,21 @@ function hostOf(values: string[]): string {
   return "";
 }
 
+/** The computer's system, guessed from the browser: `macos`, `windows` or `linux`. */
+export function currentOS(): string {
+  const p = `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`.toLowerCase();
+  if (/mac|iphone|ipad/.test(p)) return "macos";
+  if (/win/.test(p)) return "windows";
+  return "linux";
+}
+const OS_NAME: Record<string, string> = { macos: "macOS", windows: "Windows", linux: "Linux" };
+
+/** Whether a service runs here: an ability without `platforms` runs everywhere; one of them must list this system. */
+function runsHere(s: Service, os: string): boolean {
+  const all = [...s.installed, ...s.market];
+  return !all.length || all.some((a) => !a.platforms?.length || a.platforms.includes(os));
+}
+
 export function ConnectPage({ service: givenService, group: givenGroup }: { service?: string; group?: string }) {
   const { slug = "" } = useParams();
   const [params] = useSearchParams();
@@ -60,6 +79,8 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
   const [group, setGroup] = useState(givenGroup ?? params.get("group") ?? "all");
   const [picked, setPicked] = useState<string | null>(wantService || null);
   const [created, setCreated] = useState<string | null>(null);
+  const [startUrl, setStartUrl] = useState<string | undefined>(undefined);
+  const [signedIn, setSignedIn] = useState(false);
   const [placed, setPlaced] = useState(false);
   // Installing a service's abilities, one after the other: which, and how many are done.
   const [installing, setInstalling] = useState<{ id: string; names: string[]; done: number } | null>(null);
@@ -86,6 +107,7 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
   const shown = services.filter((s) => group === "all" || s.group === group);
   const groups = byGroup(shown, (s) => s.group);
   const present = SERVICE_GROUPS.filter((g) => services.some((s) => s.group === g.id));
+  const os = useMemo(currentOS, []);
 
   /** A tile: every ability of the service the marketplace has and this machine does not is installed first, then the sign-in. */
   const choose = async (s: Service) => {
@@ -113,7 +135,7 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
   useEffect(() => {
     if (service && service.market.length && !installing && !error && tried.current !== service.id) void choose(service);
   }, [service?.id, service?.market.length]);
-  const step = created ? (placed ? 4 : 3) : service?.installed.length && !installing ? 2 : 1;
+  const step = created && signedIn ? (placed ? 4 : 3) : created || (service?.installed.length && !installing) ? 2 : 1;
   const done = (id: string) => navigate(`/p/${slug}/accounts#account=${encodeURIComponent(id)}`);
 
   return (
@@ -159,7 +181,7 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
                 <h2>{g.label}</h2>
                 <div className="cw-grid">
                   {g.items.map((s) => (
-                    <Tile key={s.id} s={s} count={have(s.id)} onPick={() => void choose(s)} />
+                    <Tile key={s.id} s={s} count={have(s.id)} os={os} onPick={() => void choose(s)} />
                   ))}
                 </div>
               </section>
@@ -182,15 +204,17 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
         </>
       )}
 
-      {step === 2 && service && (
+      {step === 2 && service && !created && (
         <SignIn
           key={service.id}
           slug={slug}
           service={service}
           onBack={() => (setPicked(null), setError(null))}
-          onCreated={setCreated}
+          onCreated={(id, url) => (setStartUrl(url), setCreated(id))}
+          onPrograms={data.reload}
         />
       )}
+      {step === 2 && created && <SessionStep slug={slug} id={created} startUrl={startUrl} onDone={() => setSignedIn(true)} />}
       {step === 3 && created && <PlaceSteps slug={slug} id={created} onDone={() => setPlaced(true)} />}
       {step === 4 && created && <Permissions slug={slug} id={created} onDone={() => done(created)} />}
     </div>
@@ -213,14 +237,15 @@ function Installing({ names, done }: { names: string[]; done: number }) {
   );
 }
 
-function Tile({ s, count, onPick }: { s: Service; count: number; onPick: () => void }) {
+function Tile({ s, count, os, onPick }: { s: Service; count: number; os: string; onPick: () => void }) {
   const Icon = serviceIcon(s.icon, s.group);
   const [broken, setBroken] = useState(false);
   const ab = primary(s.installed.length ? s.installed : s.market);
   // A program it runs that is not on this computer: it can be installed, but not run until it is.
-  const note = ab?.program_found === false ? "Needs a program this computer does not have yet" : !s.installed.length && ab?.runs_program ? "Runs a program on this computer" : null;
+  const here = runsHere(s, os);
+  const note = !here ? `Not on ${OS_NAME[os] ?? os} yet` : ab?.program_found === false ? "Needs a program this computer does not have yet" : !s.installed.length && ab?.runs_program ? "Runs a program on this computer" : null;
   return (
-    <button className={`cw-tile ${count ? "have" : ""}`} onClick={onPick}>
+    <button className={`cw-tile ${count ? "have" : ""} ${here ? "" : "unsupported"}`} onClick={onPick} disabled={!here} title={here ? undefined : `${s.name} does not run on ${OS_NAME[os] ?? os} yet`}>
       <span className="ic">{s.avatar && !broken ? <img src={s.avatar} alt="" onError={() => setBroken(true)} /> : <Icon size={17} />}</span>
       <b>{s.name}</b>
       <small className={s.installed.length + s.market.length > 1 ? "parts" : ""}>{serviceSummary(s)}</small>
@@ -235,7 +260,7 @@ function Tile({ s, count, onPick }: { s: Service; count: number; onPick: () => v
 }
 
 /** Step two: the service's way in. A sign-in button when it has one, else as few fields as possible; the first place when it needs one. */
-function SignIn({ slug, service, backLabel = "Another service", onBack, onCreated }: { slug: string; service: Service; backLabel?: string; onBack: () => void; onCreated: (id: string) => void }) {
+function SignIn({ slug, service, backLabel = "Another service", onBack, onCreated, onPrograms }: { slug: string; service: Service; backLabel?: string; onBack: () => void; onCreated: (id: string, startUrl?: string) => void; onPrograms?: () => void }) {
   // The one-button sign-in is always the way in when any ability of the service has one; typed keys are the last resort.
   const ab = service.installed.filter((a) => a.connect).sort((a, b) => score(b) - score(a))[0] ?? primary(service.installed);
   const Icon = serviceIcon(service.icon, service.group);
@@ -252,6 +277,9 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
   const [started, setStarted] = useState<{ id: string; paste: boolean } | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const reload = async (id: string) => setAccount(await api.account(slug, id).catch(() => null));
+  // The programs the service runs (a browser) are installed when its abilities are; until they are here, that comes first.
+  const [programsReady, setProgramsReady] = useState(false);
+  const needPrograms = service.installed.filter((a) => (a.programs ?? []).some((p) => !p.found));
   useEvents(slug, (e) => started && ACCOUNT_EVENTS.includes(e.type) && void reload(started.id), { demo: false });
   useEffect(() => {
     if (started) void reload(started.id);
@@ -267,6 +295,8 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
         </div>
       </div>
     );
+  if (needPrograms.length && !programsReady)
+    return <ProgramsStep abilities={needPrograms} onReady={() => (setProgramsReady(true), onPrograms?.())} onBack={onBack} backLabel={backLabel} />;
   const keyField = (k: Ability["auth"][number]): Field => ({ key: k.env, label: k.label || "Key", help: k.help, placeholder: k.placeholder, optional: k.optional, options: k.options, secret: /PASSWORD|KEY|TOKEN|SECRET/.test(k.env) });
   // With a button: only what it asks first. With keys: the required ones, the rest behind More.
   const asked = mode === "connect" ? ab.auth.filter((k) => ab.connect?.needs.includes(k.env)) : ab.auth.filter((k) => !k.optional);
@@ -281,7 +311,7 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
     try {
       const secrets = Object.fromEntries(ab.auth.map((k) => [k.env, values[k.env] ?? ""]).filter(([, v]) => v.trim()));
       const c = await api.createAccount(slug, { ability: ab.id, label: name || undefined, kind: kind?.kind, place: Object.keys(placeValues).length ? placeValues : undefined, secrets });
-      onCreated(c.id);
+      onCreated(c.id, startUrlOf(...Object.values(values)));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -379,6 +409,8 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
 export function ConnectService({ slug, ability, onInstalled, onDone, onCancel }: { slug: string; ability: Ability; onInstalled: () => void; onDone: (id: string) => void; onCancel: () => void }) {
   const svc = serviceOf(ability);
   const [created, setCreated] = useState<string | null>(null);
+  const [startUrl, setStartUrl] = useState<string | undefined>(undefined);
+  const [signedIn, setSignedIn] = useState(false);
   const [placed, setPlaced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -397,9 +429,10 @@ export function ConnectService({ slug, ability, onInstalled, onDone, onCancel }:
         </div>
       </div>
     );
+  if (created && !signedIn) return <SessionStep slug={slug} id={created} startUrl={startUrl} onDone={() => setSignedIn(true)} />;
   if (created && !placed) return <PlaceSteps slug={slug} id={created} onDone={() => setPlaced(true)} />;
   if (created) return <Permissions slug={slug} id={created} onDone={() => onDone(created)} />;
-  return <SignIn slug={slug} service={{ id: svc.id, name: svc.name, icon: svc.icon, group: svc.group, avatar: ability.avatar ?? null, installed: [ability], market: [] }} backLabel="Cancel" onBack={onCancel} onCreated={setCreated} />;
+  return <SignIn slug={slug} service={{ id: svc.id, name: svc.name, icon: svc.icon, group: svc.group, avatar: ability.avatar ?? null, installed: [ability], market: [] }} backLabel="Cancel" onBack={onCancel} onCreated={(id, url) => (setStartUrl(url), setCreated(id))} onPrograms={onInstalled} />;
 }
 
 /** Step three: what Seemo may do there, with the defaults the account started with. Saved as it is changed. */
@@ -511,6 +544,196 @@ function PlaceSteps({ slug, id, onDone }: { slug: string; id: string; onDone: ()
           Pick it later
         </button>
       </div>
+    </motion.div>
+  );
+}
+
+type ProgramLine = { program: string; version: string; state: "waiting" | "installing" | "installed" | "failed"; note: string };
+
+/**
+ * "Getting the browser ready": the programs the service runs, which KIQR
+ * installs on this machine as its abilities are installed. Progress comes
+ * from `program_*` events; Try again asks for the install once more.
+ */
+function ProgramsStep({ abilities, onReady, onBack, backLabel }: { abilities: Ability[]; onReady: () => void; onBack: () => void; backLabel: string }) {
+  const start = (list: ProgramStatus[]): ProgramLine[] => list.map((p) => ({ program: p.program, version: p.version, state: p.found ? "installed" : "waiting", note: p.found ? "" : p.how === "system" && p.system && Object.keys(p.system).length ? `installed with the system's package manager (${Object.entries(p.system).map(([m, pkg]) => `${m}: ${pkg}`).join(", ")})` : "" }));
+  const [lines, setLines] = useState<ProgramLine[]>(() => {
+    const seen = new Map<string, ProgramLine>();
+    for (const a of abilities) for (const l of start(a.programs ?? [])) if (!seen.has(l.program) || l.state !== "installed") seen.set(l.program, l);
+    return [...seen.values()];
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (program: string, f: (l: ProgramLine) => ProgramLine) => setLines((cur) => cur.map((l) => (l.program === program ? f(l) : l)));
+  useEvents(
+    null,
+    (e) => {
+      if (!PROGRAM_EVENTS.includes(e.type)) return;
+      const program = String(e.program ?? "");
+      if (e.type === "program_installing") set(program, (l) => ({ ...l, state: "installing", note: String(e.note ?? "") }));
+      if (e.type === "program_installed") set(program, (l) => ({ ...l, state: "installed", note: "" }));
+      if (e.type === "program_failed") set(program, (l) => ({ ...l, state: "failed", note: String(e.message ?? "") }));
+    },
+    { demo: false },
+  );
+  const done = lines.every((l) => l.state === "installed");
+  useEffect(() => {
+    if (done) onReady();
+  }, [done]);
+  const retry = async () => {
+    setBusy(true);
+    setError(null);
+    setLines((cur) => cur.map((l) => (l.state === "installed" ? l : { ...l, state: "installing", note: "" })));
+    try {
+      for (const a of abilities) {
+        const r = await api.installPrograms(a.id);
+        for (const p of r.programs ?? []) if (p.found) set(p.program, (l) => ({ ...l, state: "installed", note: "" }));
+      }
+    } catch (e) {
+      setError((e as Error).message);
+      setLines((cur) => cur.map((l) => (l.state === "installing" ? { ...l, state: "failed" } : l)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const failed = lines.some((l) => l.state === "failed");
+  return (
+    <div className="pcard cw-panel">
+      <div className="cw-head">
+        <div>
+          <h2>Getting the browser ready</h2>
+          <p className="muted sm">KIQR installs what this service runs on this machine, once. It takes a minute or two; you can leave this page and come back.</p>
+        </div>
+      </div>
+      <ul className="cw-prog">
+        {lines.map((l) => (
+          <li key={l.program} className={l.state === "installed" ? "done" : l.state === "failed" ? "bad" : ""}>
+            {l.state === "installed" ? <Check size={12} /> : l.state === "failed" ? <AlertCircle size={12} /> : <Loader2 size={12} className="spin" />}
+            <span>
+              {l.program} <span className="mono dim">{l.version}</span>
+              {l.state === "waiting" && <span className="note"> · waiting to start</span>}
+              {l.note && <span className="note"> · {l.note}</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {error && <p className="err sm">{error}</p>}
+      <div className="acts">
+        <button className={`btn ${failed ? "p" : "t"} sm`} disabled={busy} onClick={() => void retry()}>
+          {busy ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} {failed ? "Try again" : "Check again"}
+        </button>
+        <button className="btn t sm" onClick={onBack}>
+          <ArrowLeft size={13} /> {backLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * For an account that signs in on a hosted program: where the password is
+ * (saved in KIQR, or "I'll sign in myself"), then Sign in and how it went;
+ * "Needs a hand" opens the live view. Skipped for one that does not.
+ */
+function SessionStep({ slug, id, startUrl, onDone }: { slug: string; id: string; startUrl?: string; onDone: () => void }) {
+  const [a, setA] = useState<Account | null>(null);
+  const [phase, setPhase] = useState<"where" | "kiqr" | "signin">("where");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hands, setHands] = useState(false);
+  const load = () =>
+    api.account(slug, id).then(
+      (acc) => {
+        setA(acc);
+        if (!acc.has_session) onDone();
+      },
+      () => onDone(),
+    );
+  useEffect(() => {
+    void load();
+  }, [slug, id]);
+  useEvents(slug, (e) => ACCOUNT_EVENTS.includes(e.type) && e.connection === id && void load(), { demo: false });
+  const [st, setSt] = useSession(slug, a ?? { id, session: undefined });
+  if (!a?.has_session) return <Loader2 size={16} className="spin" />;
+  const byHand = signsInByHand(a);
+  const name = accountIdentity(a) || accountService(a).name;
+  const signIn = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.accountSignIn(slug, id);
+      if (r.started) setSt({ ...(st ?? { message: "", checked_at: null, signed_in_at: null }), state: "checking", message: "" });
+      else if (r.session) setSt(r.session);
+      void load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const state = st?.state ?? "unknown";
+  const chip = sessionChip(st);
+  const ask = phase === "where" && !byHand && a.login?.store !== "kiqr";
+  return (
+    <motion.div className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+      <div className="cw-head">
+        <div>
+          <h2>{ask || phase === "kiqr" ? "Where's your password?" : `Sign in to ${name}`}</h2>
+          <p className="muted sm">{byHand ? "This site is signed in by hand: you sign in once in the live view, a picture of the browser KIQR runs, and the browser keeps it." : ask || phase === "kiqr" ? "KIQR signs in on its own browser with it, and again whenever the site signs it out. Seemo never sees it." : "KIQR opens the site in its browser and signs in."}</p>
+        </div>
+      </div>
+
+      {ask && (
+        <div className="cw-choice">
+          <button onClick={() => setPhase("kiqr")}>
+            <b>
+              <KeyRound size={13} /> Save it in KIQR
+            </b>
+            <small>Your user name, password and, if the site asks for one, the code from your authenticator app. Kept on this machine only.</small>
+          </button>
+          <button onClick={() => setPhase("signin")}>
+            <b>
+              <Hand size={13} /> I'll sign in myself
+            </b>
+            <small>Sign in by hand in the live view. When the site signs KIQR out, it asks you again.</small>
+          </button>
+        </div>
+      )}
+      {phase === "kiqr" && <LoginEditor slug={slug} a={a} ask={false} onChange={() => void load()} onSaved={() => (setPhase("signin"), void signIn())} />}
+
+      {!ask && phase !== "kiqr" && (
+        <>
+          <p className="sm">
+            <span className={`chip sm ${chip.cls}`}>
+              {chip.spin ? <Loader2 size={11} className="spin" /> : <b />} {chip.text}
+            </span>
+          </p>
+          {state === "needs_hand" && (
+            <div className="acx-hand">
+              <p>
+                {st?.message ? `${sentence(st.message)}. ` : ""}Finish the sign-in in the live view.
+              </p>
+            </div>
+          )}
+          {error && <p className="err sm">{error}</p>}
+          <div className="acts">
+            {!byHand && state !== "signed_in" && state !== "checking" && (
+              <button className={`btn ${state === "needs_hand" ? "g" : "p"}`} disabled={busy} onClick={() => void signIn()}>
+                {busy ? <Loader2 size={14} className="spin" /> : <LogIn size={14} />} {state === "needs_hand" ? "Try again" : "Sign in"}
+              </button>
+            )}
+            {a.live_view && state !== "signed_in" && state !== "checking" && (byHand || state === "needs_hand" || a.login?.store !== "kiqr") && (
+              <button className={`btn ${byHand || state === "needs_hand" ? "p" : "g"}`} onClick={() => setHands(true)}>
+                <Hand size={14} /> Take the controls
+              </button>
+            )}
+            <button className={`btn ${state === "signed_in" ? "p" : "t"}`} onClick={onDone}>
+              {state === "signed_in" ? "Next" : "Next, finish this later"}
+            </button>
+          </div>
+        </>
+      )}
+      {hands && <Hands slug={slug} account={id} name={name} startUrl={startUrl ?? startUrlOf(a.identity, a.destination_text)} onClose={(signedIn) => (setHands(false), signedIn && setSt({ ...(st ?? { message: "", checked_at: null, signed_in_at: null }), state: "checking", message: "" }), void load())} />}
     </motion.div>
   );
 }

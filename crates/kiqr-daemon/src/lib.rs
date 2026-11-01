@@ -9,6 +9,7 @@ mod build;
 mod builtin;
 mod connect;
 mod ext;
+mod hands;
 mod images;
 mod learn;
 mod lists;
@@ -18,11 +19,13 @@ mod mcp_host;
 mod metrics_src;
 mod networks;
 mod performance;
+mod programs;
 mod publish;
 mod reset;
 mod setup;
 mod scheduler;
 mod seemo;
+mod session;
 mod signins;
 mod smtp;
 mod telemetry;
@@ -40,6 +43,8 @@ pub struct App {
     pub bus: EventBus,
     pub config: Arc<RwLock<Config>>,
     pub jobs: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Values a sign-in is typing right now: struck from every program answer, error and event while in use.
+    pub redact: Arc<std::sync::RwLock<Vec<String>>>,
     /// Page-limit handles of the crawls running now, by project.
     pub crawls: Arc<RwLock<std::collections::HashMap<String, Arc<kiqr_core::crawl::CrawlControl>>>>,
     /// Serialises saving the brand of projects crawled before brand collection.
@@ -82,6 +87,8 @@ impl App {
 pub async fn run(home: Home) -> Result<()> {
     let store = Store::open(home.clone())?;
     let _ = dotenvy::from_path(home.env_file());
+    // Programs KIQR installed for abilities come first for everything the daemon starts.
+    programs::prepend_path(&home);
     let mut config = Config::load(&store)?;
     // The default port was 7777 before 0.2 and nothing could change it, so a home on it moves with the default.
     if config.daemon.port == kiqr_core::config::OLD_DEFAULT_PORT {
@@ -125,6 +132,7 @@ pub async fn run(home: Home) -> Result<()> {
         bus: EventBus::new(),
         config: Arc::new(RwLock::new(config.clone())),
         jobs: Default::default(),
+        redact: Default::default(),
         crawls: Default::default(),
         brand_backfill: Default::default(),
         turns: Default::default(),
@@ -305,4 +313,29 @@ async fn migrate_to_connections(store: &kiqr_core::Store, config: &Config) -> an
     tracing::info!(channels = done.channels, accounts = done.connections, keys = done.keys_moved, switched_off = paused.len(), "abilities now keep their keys on each project's accounts");
     store.commit("[auto] connections: one account per channel and per project").await?;
     Ok(())
+}
+
+/// Strike the values a sign-in is typing right now from a text (`[credential]`).
+pub fn redact(app: &App, text: &str) -> String {
+    let values = app.redact.read().unwrap_or_else(|e| e.into_inner());
+    let mut out = text.to_string();
+    for v in values.iter() {
+        if !v.is_empty() {
+            out = out.replace(v.as_str(), "[credential]");
+        }
+    }
+    out
+}
+
+/// The same, through every string in a JSON value.
+pub fn redact_value(app: &App, v: serde_json::Value) -> serde_json::Value {
+    if app.redact.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
+        return v;
+    }
+    match v {
+        serde_json::Value::String(s) => serde_json::Value::String(redact(app, &s)),
+        serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(|x| redact_value(app, x)).collect()),
+        serde_json::Value::Object(o) => serde_json::Value::Object(o.into_iter().map(|(k, x)| (k, redact_value(app, x))).collect()),
+        other => other,
+    }
 }

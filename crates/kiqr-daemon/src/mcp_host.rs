@@ -1,9 +1,13 @@
 //! Hosting MCP servers for connections with `transport: mcp`: anything that
 //! needs code, a local framework or a browser. The daemon starts the program
 //! on first use, speaks newline JSON-RPC to it (the same framing `kiqr mcp`
-//! uses), keeps it alive, restarts it once if it dies, and kills it with the
-//! daemon. The model never talks to these servers directly: every call goes
-//! through the daemon, which maps an ability or an exposed tool onto them.
+//! uses), keeps it alive, starts it again when it died, and kills it with the
+//! daemon. One server runs per account and program
+//! (`<slug>/<account>@<program>`): every ability of the service that runs on
+//! that program (its own, or another's through `program:`) shares it, so one
+//! browser profile is never opened twice. The model never talks to these
+//! servers directly: every call goes through the daemon, which maps an
+//! ability or an exposed tool onto them.
 
 use anyhow::{anyhow, bail, Context, Result};
 use kiqr_core::extensions::Manifest;
@@ -20,19 +24,37 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Which copy of a program to run and what it is given: one server per
-/// connection (`id#connection`), started with that connection's keys.
+/// account and program (`<slug>/<account>@<program>`), started with that
+/// account's keys and the program's environment.
 #[derive(Clone, Debug, Default)]
 pub struct Launch {
     pub key: String,
+    /// The account's keys by name, and the program's `env_set`, filled.
     pub vars: Vec<(String, String)>,
     /// The account's own folder: the working directory unless the manifest
     /// names one, `KIQR_ACCOUNT_DIR` in its environment and in its `args`.
     pub dir: Option<std::path::PathBuf>,
+    /// The project's folder, `KIQR_PROJECT_DIR`.
+    pub project_dir: Option<std::path::PathBuf>,
+    /// Tools called once right after the program starts (opening the browser), with their arguments filled.
+    pub warmup: Vec<(String, Value)>,
 }
 
+impl Launch {
+    /// The key for an account's server of a program.
+    pub fn key_for(slug: &str, connection: Option<&str>, program: &str) -> String {
+        match connection {
+            Some(c) => format!("{slug}/{c}@{program}"),
+            None => format!("@{program}"),
+        }
+    }
+}
+
+/// One slot per key: the server, and a lock so two callers starting the same
+/// program wait for one spawn instead of racing, without holding the whole table.
 #[derive(Default)]
 pub struct McpHost {
-    servers: Mutex<HashMap<String, Arc<Server>>>,
+    slots: Mutex<HashMap<String, Arc<Mutex<Option<Arc<Server>>>>>>,
 }
 
 pub struct Server {
@@ -48,20 +70,44 @@ pub struct Server {
 }
 
 impl McpHost {
-    /// The running server for a connection, started if needed.
+    /// The running server for an account and program, started if needed. `m`
+    /// is the program's manifest (the one with the command).
     pub async fn server(&self, home: &std::path::Path, m: &Manifest, launch: &Launch) -> Result<Arc<Server>> {
-        let key = if launch.key.is_empty() { m.id.clone() } else { launch.key.clone() };
-        let mut all = self.servers.lock().await;
-        if let Some(s) = all.get(&key) {
+        let key = if launch.key.is_empty() { Launch::key_for("", None, &m.id) } else { launch.key.clone() };
+        let slot = self.slots.lock().await.entry(key.clone()).or_default().clone();
+        let mut slot = slot.lock().await;
+        if let Some(s) = slot.as_ref() {
             if s.alive.load(Ordering::SeqCst) {
                 return Ok(s.clone());
             }
             tracing::warn!(id = %key, "MCP server died; starting it again");
-            all.remove(&key);
+            *slot = None;
         }
-        let s = Server::spawn(home, m, &launch.vars, launch.dir.as_deref()).await?;
-        all.insert(key, s.clone());
+        let s = Server::spawn(home, m, launch).await?;
+        for (tool, args) in &launch.warmup {
+            let r = s.request("tools/call", json!({ "name": tool, "arguments": args }), CALL_TIMEOUT).await.with_context(|| format!("{}: warming up with {tool}", m.name))?;
+            let out = read_result(&r);
+            if out.is_error {
+                bail!("{}: {tool} said: {}", m.name, kiqr_core::profile::truncate_chars(out.text.trim(), 300));
+            }
+        }
+        *slot = Some(s.clone());
         Ok(s)
+    }
+
+    async fn take(&self, keep: impl Fn(&str) -> bool) -> Vec<Arc<Server>> {
+        let slots: Vec<Arc<Mutex<Option<Arc<Server>>>>> = {
+            let mut all = self.slots.lock().await;
+            let keys: Vec<String> = all.keys().filter(|k| !keep(k)).cloned().collect();
+            keys.iter().filter_map(|k| all.remove(k)).collect()
+        };
+        let mut gone = Vec::new();
+        for s in slots {
+            if let Some(server) = s.lock().await.take() {
+                gone.push(server);
+            }
+        }
+        gone
     }
 
     pub async fn tools(&self, home: &std::path::Path, m: &Manifest, launch: &Launch) -> Result<Vec<Value>> {
@@ -76,51 +122,58 @@ impl McpHost {
         Ok(r)
     }
 
-    /// Stop an ability's servers, every connection's (after a remove or a
-    /// manifest change), or one connection's with `id#connection`.
-    pub async fn stop(&self, id: &str) {
-        let gone: Vec<Arc<Server>> = {
-            let mut all = self.servers.lock().await;
-            let keys: Vec<String> = all.keys().filter(|k| *k == id || k.strip_prefix(id).is_some_and(|r| r.starts_with('#'))).cloned().collect();
-            keys.iter().filter_map(|k| all.remove(k)).collect()
-        };
-        for s in gone {
+    /// Stop a program's servers, every account's (after a remove or a manifest change).
+    pub async fn stop(&self, program: &str) {
+        for s in self.take(|k| k.rsplit_once('@').is_none_or(|(_, p)| p != program)).await {
             s.kill().await;
         }
     }
 
-    /// Stop every ability's server for one connection (`*#connection`): an
-    /// account is shared by the abilities of its service.
-    pub async fn stop_connection(&self, connection: &str) {
-        let gone: Vec<Arc<Server>> = {
-            let mut all = self.servers.lock().await;
-            let keys: Vec<String> = all.keys().filter(|k| k.rsplit_once('#').is_some_and(|(_, c)| c == connection)).cloned().collect();
-            keys.iter().filter_map(|k| all.remove(k)).collect()
-        };
-        for s in gone {
+    /// Stop every program's server for one account of a project: an account is
+    /// shared by the abilities of its service, and its keys just changed or it is gone.
+    pub async fn stop_connection(&self, slug: &str, connection: &str) {
+        let prefix = format!("{slug}/{connection}@");
+        for s in self.take(|k| !k.starts_with(&prefix)).await {
             s.kill().await;
         }
     }
 
     pub async fn running(&self) -> Vec<String> {
-        self.servers.lock().await.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(k, _)| k.clone()).collect()
+        let all: Vec<(String, Arc<Mutex<Option<Arc<Server>>>>)> = self.slots.lock().await.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut out = Vec::new();
+        for (k, s) in all {
+            if s.lock().await.as_ref().is_some_and(|s| s.alive.load(Ordering::SeqCst)) {
+                out.push(k);
+            }
+        }
+        out
     }
 }
 
 impl Server {
-    async fn spawn(home: &std::path::Path, m: &Manifest, vars: &[(String, String)], account_dir: Option<&std::path::Path>) -> Result<Arc<Server>> {
+    async fn spawn(home: &std::path::Path, m: &Manifest, launch: &Launch) -> Result<Arc<Server>> {
+        let account_dir = launch.dir.as_deref();
         let mut cmd = kiqr_core::process::command(&m.command);
-        // `${KIQR_ACCOUNT_DIR}` in an argument is the account's folder (`--user-data-dir ${KIQR_ACCOUNT_DIR}/profile`).
+        // `${KIQR_ACCOUNT_DIR}` and `${KIQR_PROJECT_DIR}` in an argument are the account's and the
+        // project's folders (`--user-data-dir ${KIQR_ACCOUNT_DIR}/profile`); `${NAME}` any variable set.
         let dir_text = account_dir.map(|d| d.display().to_string()).unwrap_or_default();
-        cmd.args(m.args.iter().map(|a| a.replace("${KIQR_ACCOUNT_DIR}", &dir_text)));
+        let project_text = launch.project_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+        let lookup = |k: &str| -> Option<String> {
+            match k {
+                "KIQR_ACCOUNT_DIR" => Some(dir_text.clone()),
+                "KIQR_PROJECT_DIR" => Some(project_text.clone()),
+                _ => launch.vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
+            }
+        };
+        cmd.args(m.args.iter().map(|a| kiqr_core::extensions::fill(a, &Value::Null, lookup)));
         cmd.env_clear();
         for k in kiqr_core::process::BASE_ENV.iter().chain(&["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]) {
             if let Ok(v) = std::env::var(k) {
                 cmd.env(k, v);
             }
         }
-        // The connection's keys, by the names the manifest gives them.
-        for (k, v) in vars {
+        // The account's keys by the names the manifest gives them, and the program's own settings.
+        for (k, v) in &launch.vars {
             if !v.trim().is_empty() {
                 cmd.env(k, v);
             }
@@ -128,6 +181,9 @@ impl Server {
         if let Some(d) = account_dir {
             let _ = std::fs::create_dir_all(d);
             cmd.env("KIQR_ACCOUNT_DIR", d);
+        }
+        if let Some(d) = &launch.project_dir {
+            cmd.env("KIQR_PROJECT_DIR", d);
         }
         let cwd = m.cwd.clone().map(std::path::PathBuf::from).or_else(|| account_dir.map(std::path::Path::to_path_buf)).unwrap_or_else(|| home.join("tmp").join("mcp").join(&m.id));
         let _ = std::fs::create_dir_all(&cwd);

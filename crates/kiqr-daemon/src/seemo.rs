@@ -1009,8 +1009,18 @@ async fn todo(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Val
     let mut scheduled: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Scheduled).collect();
     scheduled.sort_by_key(|a| a.publish_at);
     let attention: Vec<&assets::Asset> = all.iter().filter(|a| a.publish_error.is_some() && !a.archived && a.publications.is_empty()).collect();
-    let count = approvals.len() + drafts.len() + attention.len();
+    // Accounts whose sign-in needs a person: a captcha, a device check, or a first sign-in by hand.
+    let home = app.store.home();
+    let needing_hand: Vec<Value> = kiqr_core::connections::Connection::list(&app.store, &slug)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|c| {
+            let st = c.session(home, &slug);
+            st.needs_hand().then(|| json!({ "connection": c.id, "label": c.label, "service": c.service(), "message": st.message, "since": st.checked_at }))
+        })
+        .collect();
+    let count = approvals.len() + drafts.len() + attention.len() + needing_hand.len();
     // Not counted: a suggestion is an offer, not something waiting on the user.
     let suggestions = crate::networks::suggestions(&app, &slug).await;
-    Ok(Json(json!({ "approvals": approvals, "drafts": drafts, "ready": ready, "scheduled": scheduled, "attention": attention, "suggestions": suggestions, "count": count })))
+    Ok(Json(json!({ "approvals": approvals, "drafts": drafts, "ready": ready, "scheduled": scheduled, "attention": attention, "accounts_needing_hand": needing_hand, "suggestions": suggestions, "count": count })))
 }

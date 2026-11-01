@@ -35,6 +35,8 @@ const demoAccounts: Account[] = [
   { id: "google", label: "Google", ability: "google-analytics", ability_name: "Read Google Analytics", default: true, channel: false, publishes: false, missing: [], auth: [{ env: "GOOGLE_TOKEN", label: "Sign-in", help: "", optional: false, set: true, written: true }], connect: { label: "Sign in with Google", flow: "oauth2", needs: [], returns: ["GOOGLE_TOKEN"], https_only: false, via_cloud: true }, kind: "", created_by: "user", created_at: ago(4000), allow: perm([["read", "auto"], ["measure", "auto"]]), places: [{ id: "ga-unblockingapi", kind: "google-analytics", label: "unblockingapi.com", fields: { property: "properties/318204551" }, default: true }, { id: "sc-unblockingapi", kind: "search-console", label: "sc-domain:unblockingapi.com", fields: { site: "sc-domain:unblockingapi.com" }, default: true }], place_kinds: [GA_KIND, SC_KIND], publications: 0, connection_name: "Read Google Analytics", ready: true, signed_in: true, destination_text: "", service: "google", service_card: GOOGLE_CARD, used_by: [{ id: "google-analytics", name: "Read Google Analytics", does: [] }, { id: "search-console", name: "Read Google Search Console", does: [] }] },
   // Signed in but not finished: the property is still to choose.
   { id: "kiqr-repo", label: "kiqr/kiqr", ability: "github", ability_name: "Publish to GitHub", default: true, channel: true, publishes: true, missing: ["GITHUB_REPO"], auth: [{ env: "GITHUB_TOKEN", label: "Sign-in", help: "", optional: false, set: true, written: true }, { env: "GITHUB_REPO", label: "Repository", help: "owner/name", optional: false, set: false, placeholder: "kiqr/kiqr" }], connect: { label: "Connect with GitHub", flow: "oauth2", needs: [], returns: ["GITHUB_TOKEN"], https_only: false, via_cloud: true }, kind: "github", kind_label: "Repository", created_by: "user", created_at: ago(30), allow: perm([["read", "auto"], ["publish", "ask"], ["learn", "auto"]]), places: [], place_fields: { branch: { label: "Branch", optional: true, placeholder: "main" }, path: { label: "Folder", optional: true, placeholder: "content/blog" } }, needs_place: false, place_kinds: [{ kind: "github", label: "Repository", verb: "Publishes to", fields: { branch: { label: "Branch", optional: true, placeholder: "main" }, path: { label: "Folder", optional: true, placeholder: "content/blog" } }, needs: false }], publications: 0, connection_name: "Publish to GitHub", ready: false, signed_in: true, destination_text: "", service: "github", service_card: { id: "github", name: "GitHub", icon: "globe", group: "website" }, can_learn: true, learn: { label: "Learn the product from its README and docs" }, source: true },
+  // Signed in on KIQR's own browser from a login saved in KIQR; the site asked for a person.
+  { id: "x-acme", label: "@unblockingapi", ability: "x-browser", ability_name: "X in a browser", default: true, channel: true, publishes: true, missing: [], auth: [], kind: "x", kind_label: "X account", created_by: "user", created_at: ago(1500), allow: perm([["read", "auto"], ["reply", "ask"], ["publish", "ask"]]), places: [], place_fields: {}, needs_place: false, place_kinds: [], publications: 4, last_published: ago(600), connection_name: "X in a browser", ready: true, signed_in: true, destination_text: "", identity: "@unblockingapi", service: "x", service_card: { id: "x", name: "X", icon: "at-sign", group: "social" }, has_session: true, session: { state: "needs_hand", message: "the site asks for a person: verify you are human", checked_at: ago(12), signed_in_at: ago(3000) }, login: { store: "kiqr" }, login_set: ["LOGIN_USERNAME", "LOGIN_PASSWORD", "LOGIN_TOTP_SECRET"], live_view: true },
 ];
 type DemoList = MailList & { people: Contact[] };
 const person = (i: number, unsub = false): Contact => ({ email: `${["ana", "ben", "chloe", "dev", "eli", "fay", "gus", "hana", "ivo", "jon", "kim", "lou"][i % 12]}${i > 11 ? i : ""}@example.com`, name: ["Ana Ruiz", "Ben Ode", "Chloe Park", "Dev Rao", "Eli Stone", "Fay Lin", "Gus Berg", "Hana Ito", "Ivo Petrov", "Jon Hale", "Kim Moss", "Lou Amar"][i % 12], consent: "Signed up on the website", added: ago(10_000 - i * 30), unsubscribed: unsub ? ago(400) : null });
@@ -91,6 +93,49 @@ for (const a of [...demoAbilities.abilities, ...demoAbilities.market]) {
     demoAbilities.market.push({ ...base, id, name, summary, author: "KIQR", author_url: "https://github.com/kiqr", trust: "official", channels, sources: group === "numbers" ? ["traffic"] : [], categories: [group], homepage: "", repo: `https://github.com/kiqr/marketplace`, connect: { label: `Connect with ${name.replace(/^(Post to|Read|Passwords from) /, "")}`, flow: "oauth2", needs: [], returns: [], https_only: false, via_cloud: true }, auth: [{ env: `${service.toUpperCase().replace(/-/g, "_")}_TOKEN`, label: "Sign-in", help: "", optional: false, set: null }], missing: [], service, service_card: { id: service, name: name.replace(/^(Post to|Read|Passwords from) /, ""), icon: group === "numbers" ? "chart" : "globe", group }, allow: channels.length ? { publish: "ask", reply: "ask" } : {} });
 }
 
+{
+  // Services that run on KIQR's own browser: KIQR installs the browser first, and they sign in there.
+  const base = demoAbilities.market.find((x) => x.id === "wordpress")!;
+  const programs = () => [
+    { program: "chromium", version: "131.0", found: false, how: "download" },
+    { program: "playwright-mcp", version: "0.0.41", found: false, how: "uv" },
+  ];
+  const browser: [string, string, string, string, string, string, string[]][] = [
+    ["browser", "A site behind a login", "Seemo reads and works on a site you sign in to by hand, in KIQR's own browser.", "browser", "A site behind a login", "sites", []],
+    ["x-browser", "X in a browser", "Posts, replies and reads on X through KIQR's own browser, signed in with your login.", "x", "X", "social", ["x"]],
+    ["reddit-browser", "Reddit in a browser", "Posts to subreddits and replies through KIQR's own browser, signed in with your login.", "reddit", "Reddit", "social", ["reddit"]],
+  ];
+  for (const [id, name, summary, service, card, group, channels] of browser)
+    demoAbilities.market.push({
+      ...base,
+      id,
+      name,
+      summary,
+      author: "KIQR",
+      author_url: "https://github.com/kiqr",
+      trust: "official",
+      channels,
+      sources: [],
+      categories: [group],
+      homepage: "",
+      repo: "https://github.com/kiqr/marketplace",
+      connect: null,
+      runs_program: true,
+      program_found: false,
+      programs: null,
+      platforms: ["linux", "windows"],
+      auth: id === "browser" ? [{ env: "SITE_URL", label: "The site's address", help: "The page you sign in on, or the site's front page", optional: false, placeholder: "https://example.com/login", set: null }] : [],
+      kinds: id === "reddit-browser" ? [{ kind: "reddit", label: "Subreddit", name: "Reddit", place: { subreddit: { label: "Subreddit", placeholder: "webscraping", help: "The name without r/" } } }] : [],
+      missing: [],
+      service,
+      service_card: { id: service, name: card, icon: group === "sites" ? "globe" : service === "x" ? "at-sign" : "message-square-text", group },
+      allow: channels.length ? { publish: "ask", reply: "ask" } : {},
+      _programs: programs(),
+    } as Ability);
+}
+/** The programs a demo browser ability needs, until "installed". */
+const demoPrograms = (a: Ability) => (a as Ability & { _programs?: Ability["programs"] })._programs ?? null;
+
 /** A new demo account of an ability, as creating one or starting a sign-in adds it. */
 function demoNewAccount(ab: Ability | undefined, body: Record<string, unknown>): Account {
   const card = ab?.service_card ?? { id: ab?.id ?? "service", name: ab?.name ?? "Account", group: "tools" };
@@ -126,6 +171,7 @@ function demoNewAccount(ab: Ability | undefined, body: Record<string, unknown>):
     service: card.id,
     service_card: card,
   };
+  if (ab && demoPrograms(ab)) Object.assign(c, { has_session: true, session: { state: "unknown", message: "", checked_at: null, signed_in_at: null }, login: null, login_set: [], live_view: true, identity: String((body.secrets as Record<string, string> | undefined)?.SITE_URL ?? "") || undefined });
   demoAccounts.push(settleAccount(c));
   return c;
 }
@@ -388,7 +434,7 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
       const i = demoAbilities.market.findIndex((x) => x.id === id);
       if (i >= 0) {
         const given = Object.keys(body.secrets ?? {}).length > 0;
-        const a: Ability = { ...demoAbilities.market[i], installed: true, updatable: true, ready: demoAbilities.market[i].missing.length === 0 || given, missing: given ? [] : demoAbilities.market[i].missing, scope: { scope: "global" }, folder: `~/.kiqr/abilities/${id}` };
+        const a: Ability = { ...demoAbilities.market[i], programs: demoPrograms(demoAbilities.market[i]), installed: true, updatable: true, ready: demoAbilities.market[i].missing.length === 0 || given, missing: given ? [] : demoAbilities.market[i].missing, scope: { scope: "global" }, folder: `~/.kiqr/abilities/${id}` };
         demoAbilities.market.splice(i, 1);
         demoAbilities.abilities.push(a);
       }
@@ -419,6 +465,37 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
     if (body.connection) return Promise.resolve({ url: "about:blank", callback: true, connection: body.connection, fields: [] } as T);
     const c = demoNewAccount(ab, body);
     return Promise.resolve({ url: "about:blank", callback: true, connection: c.id, fields: [] } as T);
+  }
+  // Signing in on KIQR's browser: the demo has no browser, so a sign-in always needs a hand, and the live view waits for its first picture.
+  const sessM = /\/connections\/([^/]+)\/(signin|signout|session|hands)$/.exec(path);
+  if (sessM) {
+    const c = demoAccounts.find((x) => x.id === sessM[1]);
+    if (!c) return Promise.reject(new Error("no such account"));
+    const now = new Date().toISOString();
+    if (sessM[2] === "signin") {
+      c.session = { state: "needs_hand", message: c.service === "browser" ? "signed out; sign in once in the live view" : "the site asks for a person: verify you are human", checked_at: now, signed_in_at: c.session?.signed_in_at ?? null };
+      return Promise.resolve({ started: true } as T);
+    }
+    if (sessM[2] === "signout") {
+      c.session = { state: "signed_out", message: "signed out", checked_at: now, signed_in_at: null };
+      return Promise.resolve({ session: c.session } as T);
+    }
+    if (sessM[2] === "hands") return Promise.resolve({ hands: `demo-${c.id}`, token: "demo", can: { click: true, key: true, type: true, navigate: true } } as T);
+    return Promise.resolve({ has_session: !!c.has_session, session: c.session, login: c.login ?? null, live_view: !!c.live_view } as T);
+  }
+  if (/\/hands\/[^/]+\/(input|end)$/.test(path)) return Promise.resolve((path.endsWith("/end") ? { ended: true } : { ok: true }) as T);
+  const progM = /^\/api\/abilities\/([^/]+)\/programs$/.exec(path);
+  if (progM) {
+    const a = demoAbilities.abilities.find((x) => x.id === progM[1]);
+    if (a?.programs) a.programs = a.programs.map((p) => ({ ...p, found: true }));
+    if (a) a.program_found = true;
+    return Promise.resolve({ id: progM[1], programs: a?.programs ?? [] } as T);
+  }
+  const loginSecretM = /\/connections\/([^/]+)\/secrets\/(LOGIN_[A-Z_]+)$/.exec(path);
+  if (loginSecretM) {
+    const c = demoAccounts.find((x) => x.id === loginSecretM[1]);
+    if (c) c.login_set = [...(c.login_set ?? []).filter((k) => k !== loginSecretM[2]), ...(body.value ? [loginSecretM[2]] : [])];
+    return Promise.resolve({ name: loginSecretM[2], set: !!body.value } as T);
   }
   if (/\/secrets\//.test(path)) return Promise.resolve({ name: path.split("/").pop(), set: !!body.value } as T);
   if (/\/connections(\?|$)/.test(path)) {
@@ -470,6 +547,7 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
       if (typeof body.label === "string" && body.label.trim()) c.label = body.label.trim();
       if (typeof body.publisher === "string") Object.assign(c, { publisher: body.publisher, publisher_name: c.publishers?.find((p) => p.id === body.publisher)?.name ?? null });
       if (body.allow) for (const [role, v] of Object.entries(body.allow as Record<string, Allow>)) c.allow = (c.allow ?? []).map((p) => (p.role === role ? { ...p, allow: v } : p));
+      if (body.login) c.login = body.login.store ? body.login : null;
       settleAccount(c);
     }
     return Promise.resolve((method === "DELETE" ? undefined : c) as T);
@@ -669,9 +747,10 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
       ready: all.filter((a) => a.status === "ready"),
       scheduled: all.filter((a) => a.status === "scheduled").sort((x, y) => (x.publish_at ?? "").localeCompare(y.publish_at ?? "")),
       attention: all.filter((a) => !!a.publish_error),
+      accounts_needing_hand: demoAccounts.filter((c) => c.session?.state === "needs_hand").map((c) => ({ connection: c.id, label: c.label, service: c.service, message: c.session!.message, since: c.session!.checked_at })),
       count: 0,
     };
-    todo.count = todo.drafts.length + todo.attention.length;
+    todo.count = todo.drafts.length + todo.attention.length + (todo.accounts_needing_hand?.length ?? 0);
     return Promise.resolve(todo as T);
   }
   return Promise.resolve({} as T);

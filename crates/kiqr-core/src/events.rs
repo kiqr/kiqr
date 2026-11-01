@@ -121,6 +121,16 @@ pub enum EventKind {
     MediaCreated { ability: String, asset_type: String, id: String, file: String, provider: String },
     /// An account (a connection of a service in a project) was added or changed; `kind` is set when its service publishes.
     ConnectionSaved { connection: String, label: String, ability: String, #[serde(default)] kind: String },
+    /// A program an ability needs is being installed into `~/.kiqr/bin`, is there, or could not be.
+    ProgramInstalling { program: String, version: String, #[serde(default)] note: String },
+    ProgramInstalled { program: String, version: String },
+    ProgramFailed { program: String, version: String, message: String },
+    /// An account's sign-in on a hosted program changed state: `signed_in`, `signed_out`, `needs_hand`, `checking`.
+    SessionChanged { connection: String, state: String, #[serde(default)] message: String },
+    /// A live view of an account's program: one frame (a JPEG or PNG, base64) for whoever watches, never kept.
+    HandsFrame { connection: String, hands: String, mime: String, data: String, #[serde(default)] url: String },
+    HandsStarted { connection: String, hands: String },
+    HandsEnded { connection: String, hands: String, #[serde(default)] message: String },
     /// A list of people to email was added, changed or had people added or removed.
     ListChanged { list: String, label: String, contacts: usize },
     ListDeleted { list: String },
@@ -200,6 +210,13 @@ impl EventKind {
                 | EventKind::MediaCreated { .. }
                 | EventKind::ConnectionSaved { .. }
                 | EventKind::ConnectionDeleted { .. }
+                | EventKind::ProgramInstalling { .. }
+                | EventKind::ProgramInstalled { .. }
+                | EventKind::ProgramFailed { .. }
+                | EventKind::SessionChanged { .. }
+                | EventKind::HandsFrame { .. }
+                | EventKind::HandsStarted { .. }
+                | EventKind::HandsEnded { .. }
                 | EventKind::ListChanged { .. }
                 | EventKind::ListDeleted { .. }
                 | EventKind::ListSending { .. }

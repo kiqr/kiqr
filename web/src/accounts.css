@@ -112,3 +112,51 @@
 .cw-prog li { display: flex; align-items: center; gap: 6px; list-style: none; }
 .cw-prog li.done { color: var(--fg); }
 .cw-tile .parts { color: var(--dim); }
+
+/* Signing in on a hosted program: the state line, its buttons, the login. */
+.acx-session { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+.acx-session .grow { flex: 1; }
+.acx-hand { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r); background: var(--warn-soft); border: 1px solid color-mix(in oklab, var(--warn) 30%, transparent); }
+.acx-hand p { font-size: 13px; }
+.acx-hand .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.acx-login { display: flex; flex-direction: column; gap: 10px; }
+.acx-login .q { font: 500 13px/1.4 var(--sans); }
+.acx-login .saved { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
+.acx-login .dots { font: 500 12px var(--mono); letter-spacing: .1em; color: var(--ok); }
+.acx-login .acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.acx-login .input { max-width: 360px; }
+.cw-choice { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.cw-choice button { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px 14px; text-align: left; border-radius: var(--r); border: 1px solid var(--line); background: var(--panel-2); color: var(--fg); cursor: pointer; }
+.cw-choice button:hover { border-color: var(--line-2); }
+.cw-choice button.on { border-color: rgba(94,234,212,.4); background: var(--accent-soft); }
+.cw-choice b { font: 600 13.5px/1.3 var(--sans); }
+.cw-choice small { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.cw-prog li.bad { color: var(--bad); }
+.cw-prog .note { color: var(--dim); }
+.cw-sys { font: 500 12px var(--mono); padding: 6px 8px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line); color: var(--fg); }
+.cw-tile.unsupported .ic { color: var(--muted); background: var(--panel-2); border-color: var(--line-2); }
+
+/* The live view: the browser's picture, scaled to fit, a person's clicks and keys back. */
+.hd-back { padding: 16px; }
+.hd { width: min(1180px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--sh-lg); overflow: auto; }
+.hd-head { display: flex; align-items: flex-start; gap: 12px; }
+.hd-head .min0 { flex: 1; min-width: 0; }
+.hd-head h2 { font: 600 17px/1.3 var(--sans); }
+.hd-url { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.hd-url .input { flex: 1; min-width: 0; font-size: 12.5px; }
+.hd-stage { position: relative; display: grid; place-items: center; min-height: 240px; border-radius: var(--r); background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+.hd-stage.on { border-color: color-mix(in oklab, var(--accent) 55%, transparent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.hd-stage img { display: block; max-width: 100%; max-height: calc(100vh - 250px); width: auto; height: auto; cursor: crosshair; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+.hd-keys { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none; pointer-events: none; }
+.hd-wait { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px 16px; text-align: center; color: var(--muted); }
+.hd-wait .t { font: 600 15px/1.3 var(--sans); color: var(--fg); }
+.hd-tip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hd-tip .lnk-btn { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
+.hd-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hd-acts .grow { flex: 1; }
+@media (max-width: 700px) {
+  .hd-back { padding: 0; place-items: stretch; }
+  .hd { max-height: 100vh; border-radius: 0; padding: 12px; }
+  .hd-stage img { width: 100%; max-height: none; }
+  .hd-acts .dim { display: none; }
+}

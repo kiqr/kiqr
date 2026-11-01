@@ -138,6 +138,10 @@ pub struct SmtpSpec {
 pub struct Step {
     pub name: String,
     pub request: HttpRequest,
+    /// On a hosted program (`transport: mcp`): the server tool this step calls, with
+    /// `args` as a template over the arguments and what earlier steps saved.
+    pub call: String,
+    pub args: Option<Value>,
     /// var → pointer into this step's answer. Empty: the whole answer.
     pub save: BTreeMap<String, String>,
     /// Run only when this fills to something (not empty, not `[]`, not false).
@@ -468,6 +472,29 @@ pub struct Manifest {
     pub cwd: Option<String>,
     /// MCP: which of the server's tools to offer raw (`all`, or names). Empty: none.
     pub expose: Vec<String>,
+    /// MCP: run on another installed ability's program instead of a command of
+    /// its own (the browser): that ability's `command`, `args`, `env_set` and
+    /// `requires`, one server per account shared by every ability that names it.
+    pub program: String,
+    /// Environment set for the program, each value a template over the
+    /// account's keys, `${KIQR_ACCOUNT_DIR}` and `${KIQR_PROJECT_DIR}`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_set: BTreeMap<String, String>,
+    /// Tools of the program called once each time it starts, before anything
+    /// else (opening the browser), each a step with `call` and `args`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warmup: Vec<Step>,
+    /// Programs KIQR installs for this ability (pinned, checked), honoured only
+    /// for official abilities.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<Requirement>,
+    /// Arguments of exposed or own tools that are URLs: each is checked against `hosts`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub url_args: Vec<String>,
+    /// How an account of this ability is signed in and kept signed in on a hosted program.
+    pub session: Option<Session>,
+    /// How a person can see and drive the hosted program when a sign-in needs a hand.
+    pub live_view: Option<LiveView>,
     /// A link for the Abilities page.
     pub homepage: String,
     /// Marketplace shelves: images, video, music, email, publishing, browser, tools.
@@ -494,6 +521,89 @@ impl Manifest {
             profile_hosts: self.service.profile_hosts.clone(),
         }
     }
+}
+
+/// A program KIQR installs for an ability: pinned to a version, fetched from
+/// a URL per platform and checked against its sha256 before it is unpacked
+/// into `~/.kiqr/bin`, or installed as a `uv` tool, or named as a system
+/// package the user installs. Honoured only for official abilities.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Requirement {
+    /// The program's name on PATH once installed.
+    pub program: String,
+    pub version: String,
+    /// A command that prints something containing `version` when the right one is there (default: `<program> --version`).
+    pub check: Vec<String>,
+    pub install: Vec<Download>,
+    /// `uv tool install <this>` (a pinned spec), through the `uv` KIQR installed.
+    pub uv_tool: String,
+    /// A system package by package manager (`apt`, `brew`, `winget`): shown to the user as a command, never run.
+    pub system: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Download {
+    /// `linux`, `macos`, `windows`.
+    pub os: String,
+    /// `x86_64`, `aarch64`.
+    pub arch: String,
+    pub url: String,
+    pub sha256: String,
+    /// `zip`, `tar.gz`, `tar.xz`, or empty for a bare binary.
+    pub archive: String,
+    /// The binary's path inside the archive (or its name); the program's name when empty.
+    pub bin: String,
+}
+
+/// Signing an account in on a hosted program and knowing whether it is:
+/// `check` steps say (the last answer's text matched by `signed_in_when`),
+/// `login` steps type the credentials (`{{credential.username}}`,
+/// `{{credential.password}}`, `{{credential.otp}}`: only here, never in a
+/// tool Seemo calls), `blocked_when` texts in an answer mean a person is
+/// needed, and `every` is how often the check runs.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Session {
+    pub check: Vec<Step>,
+    /// A piece of text (or a selector the program echoes) in the check's last answer that means signed in.
+    pub signed_in_when: String,
+    /// Or the other way round: texts that mean signed out (a password field on the start page); signed in when none shows.
+    pub signed_out_when: Vec<String>,
+    pub login: Vec<Step>,
+    pub blocked_when: Vec<String>,
+    /// `6h`, `30m`, `1d`; empty: 6 hours.
+    pub every: String,
+}
+
+impl Session {
+    pub fn every(&self) -> std::time::Duration {
+        let t = self.every.trim();
+        let (n, unit) = t.split_at(t.len().saturating_sub(1));
+        match (n.parse::<u64>(), unit) {
+            (Ok(n), "m") => std::time::Duration::from_secs(n * 60),
+            (Ok(n), "h") => std::time::Duration::from_secs(n * 3600),
+            (Ok(n), "d") => std::time::Duration::from_secs(n * 86400),
+            _ => std::time::Duration::from_secs(6 * 3600),
+        }
+    }
+}
+
+/// The program's tools a person's live view is built from, each a step on
+/// the program (`call` and `args`): `frame` answers with an image of the
+/// page; `click` gets `{{x}}` and `{{y}}` (a fraction of the frame's width and
+/// height, 0 to 1, and `{{px}}`, `{{py}}` in pixels of the frame), `key` gets
+/// `{{key}}`, `type` gets `{{text}}`, `navigate` gets `{{url}}`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LiveView {
+    pub frame: Step,
+    pub click: Step,
+    pub key: Step,
+    #[serde(rename = "type")]
+    pub type_: Step,
+    pub navigate: Step,
 }
 
 /// What older accounts of an ability called things: keys renamed
@@ -592,6 +702,13 @@ impl Default for Manifest {
             sources: BTreeMap::new(),
             learn: None,
             fits: Fits::default(),
+            program: String::new(),
+            env_set: BTreeMap::new(),
+            warmup: Vec::new(),
+            requires: Vec::new(),
+            url_args: Vec::new(),
+            session: None,
+            live_view: None,
             command: String::new(),
             args: vec![],
             env: vec![],
@@ -991,8 +1108,8 @@ pub fn validate(m: &Manifest) -> Result<()> {
         check_provide(m, &t.provide, &format!("tool '{}'", t.name))?;
     }
     for (ability, p) in &m.provides {
-        if crate::abilities::find(ability).is_none() {
-            bail!("'{ability}' is not an ability (image, video, music, email)");
+        if crate::abilities::find(ability).is_none() && !crate::abilities::INTERNAL.contains(&ability.as_str()) {
+            bail!("'{ability}' is not an ability (image, video, music, email, credential)");
         }
         check_provide(m, p, &format!("ability '{ability}'"))?;
     }
@@ -1005,8 +1122,61 @@ pub fn validate(m: &Manifest) -> Result<()> {
             check_provide(m, &Provide { request: Some(r.request.clone()), ..Default::default() }, &format!("source '{src}' request {}", i + 1))?;
         }
     }
+    for r in &m.requires {
+        if r.program.trim().is_empty() {
+            bail!("requires: every program needs a name");
+        }
+        if r.version.trim().is_empty() && (!r.install.is_empty() || !r.uv_tool.trim().is_empty()) {
+            bail!("requires: {} needs a version to pin", r.program);
+        }
+        if r.install.is_empty() && r.uv_tool.trim().is_empty() && r.system.is_empty() {
+            bail!("requires: {} says nothing about how to install it", r.program);
+        }
+        for d in &r.install {
+            if !["linux", "macos", "windows"].contains(&d.os.as_str()) || !["x86_64", "aarch64"].contains(&d.arch.as_str()) {
+                bail!("requires: {}: os is linux, macos or windows and arch x86_64 or aarch64", r.program);
+            }
+            if !d.url.starts_with("https://") || d.sha256.len() != 64 || !d.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+                bail!("requires: {}: every download needs an https URL and its sha256", r.program);
+            }
+            if !["", "zip", "tar.gz"].contains(&d.archive.as_str()) {
+                bail!("requires: {}: archive is zip, tar.gz or empty", r.program);
+            }
+        }
+    }
+    if !m.program.is_empty() && !crate::tools::valid_ext_id(&m.program) {
+        bail!("program must be an ability id (got '{}')", m.program);
+    }
+    for (n, _) in &m.env_set {
+        if !valid_env_name(n) {
+            bail!("env_set: '{n}' is not a variable name");
+        }
+    }
+    for st in &m.warmup {
+        if st.call.trim().is_empty() {
+            bail!("warmup: step '{}' needs the program tool it calls", st.name);
+        }
+    }
+    if let Some(sess) = &m.session {
+        if m.transport != Transport::Mcp {
+            bail!("session needs transport: mcp");
+        }
+        for st in sess.check.iter().chain(&sess.login) {
+            if st.call.trim().is_empty() {
+                bail!("session: step '{}' needs the program tool it calls", st.name);
+            }
+        }
+        if sess.check.is_empty() || (sess.signed_in_when.trim().is_empty() && sess.signed_out_when.is_empty()) {
+            bail!("session needs check steps and signed_in_when or signed_out_when");
+        }
+    }
+    if let Some(lv) = &m.live_view {
+        if lv.frame.call.trim().is_empty() {
+            bail!("live_view needs the program tool that answers with an image (frame.call)");
+        }
+    }
     match m.transport {
-        Transport::Mcp if m.command.trim().is_empty() => bail!("an mcp connection needs a command"),
+        Transport::Mcp if m.command.trim().is_empty() && m.program.trim().is_empty() => bail!("an mcp connection needs a command, or the program of another ability"),
         Transport::Smtp if m.smtp.as_ref().map(|s| s.host.trim().is_empty() || (s.user.trim().is_empty() && s.from.trim().is_empty())).unwrap_or(true) => bail!("an smtp connection needs an smtp block with host and user (or from)"),
         Transport::Http if m.hosts.is_empty() && (!m.provides.is_empty() || !m.tools.is_empty()) => bail!("an http connection must list the hosts it may call"),
         _ => {}
@@ -1101,6 +1271,16 @@ fn check_provide(m: &Manifest, p: &Provide, what: &str) -> Result<()> {
         Transport::Command => {
             if p.command.as_ref().map(|c| c.command.trim().is_empty()).unwrap_or(true) {
                 bail!("{what} needs a command");
+            }
+        }
+        Transport::Mcp if !p.steps.is_empty() => {
+            if p.steps.len() > MAX_STEPS {
+                bail!("{what} has {} steps; at most {MAX_STEPS}", p.steps.len());
+            }
+            for st in &p.steps {
+                if st.call.trim().is_empty() {
+                    bail!("{what}: step '{}' needs the program tool it calls", st.name);
+                }
             }
         }
         Transport::Mcp => {

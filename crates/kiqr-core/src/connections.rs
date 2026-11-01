@@ -28,14 +28,30 @@ use std::path::PathBuf;
 /// How far Seemo may go with one role on an account: on its own (the card
 /// is the record), after a yes (the card waits), or not at all. Roles that
 /// never act (`read`, `learn`, `measure`) know only `auto` (on) and `off`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Allow {
-    #[serde(alias = "on")]
     Auto,
     #[default]
     Ask,
     Off,
+}
+
+impl<'de> Deserialize<'de> for Allow {
+    /// `auto`, `on`, `ask`, `off`; and the booleans YAML readers make of `on` and `off`.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Flag(bool),
+            Word(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Flag(true) => Ok(Allow::Auto),
+            Raw::Flag(false) => Ok(Allow::Off),
+            Raw::Word(w) => Allow::parse(&w).ok_or_else(|| serde::de::Error::custom(format!("'{w}' is not auto, ask or off"))),
+        }
+    }
 }
 
 /// Everything an account can be allowed: the tool roles plus learning the
@@ -90,6 +106,50 @@ impl Place {
     }
 }
 
+/// Where an account's login lives, for the sign-in runner: `store` is `kiqr`
+/// (the values in this account's own `.env`: `LOGIN_USERNAME`,
+/// `LOGIN_PASSWORD`, `LOGIN_TOTP_SECRET`) or the id of a password manager
+/// account in the project, and `ref` names the item there
+/// (`op://Vault/Item`). Neither is a secret, so both are committed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Login {
+    pub store: String,
+    #[serde(rename = "ref", skip_serializing_if = "String::is_empty")]
+    pub ref_: String,
+}
+
+impl Login {
+    pub const KIQR: &'static str = "kiqr";
+    pub const USERNAME: &'static str = "LOGIN_USERNAME";
+    pub const PASSWORD: &'static str = "LOGIN_PASSWORD";
+    pub const TOTP: &'static str = "LOGIN_TOTP_SECRET";
+    /// The key names a login saved in KIQR uses: never shown, never read by anything but the runner.
+    pub const KEYS: &'static [&'static str] = &[Self::USERNAME, Self::PASSWORD, Self::TOTP];
+}
+
+/// How an account's sign-in on a hosted program stands: kept in the
+/// account's `data/status.json` (never committed), shown as a badge.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionStatus {
+    /// `unknown`, `checking`, `signed_in`, `signed_out`, `needs_hand`.
+    pub state: String,
+    pub message: String,
+    pub checked_at: Option<DateTime<Utc>>,
+    pub signed_in_at: Option<DateTime<Utc>>,
+}
+
+impl SessionStatus {
+    pub const SIGNED_IN: &'static str = "signed_in";
+    pub const SIGNED_OUT: &'static str = "signed_out";
+    pub const NEEDS_HAND: &'static str = "needs_hand";
+    pub const CHECKING: &'static str = "checking";
+    pub fn needs_hand(&self) -> bool {
+        self.state == Self::NEEDS_HAND
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Connection {
@@ -119,6 +179,9 @@ pub struct Connection {
     /// Where inside the account content goes, when the kind has places.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub places: Vec<Place>,
+    /// Where its login lives, for an account signed in on a hosted program.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<Login>,
     /// The ability that publishes here, when the user picked one of several
     /// (`pick_publisher`). Empty: the one it was made with, else the first on.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -161,6 +224,7 @@ impl Default for Connection {
             kind: String::new(),
             allow: BTreeMap::new(),
             places: Vec::new(),
+            login: None,
             publisher: String::new(),
             publications: 0,
             last_published: None,
@@ -425,6 +489,20 @@ impl Connection {
         home.connections_dir(slug).join(&self.id).join("data")
     }
 
+    /// How the sign-in stands (`data/status.json`); unknown when never checked.
+    pub fn session(&self, home: &Home, slug: &str) -> SessionStatus {
+        std::fs::read_to_string(self.data_dir(home, slug).join("status.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    pub fn set_session(&self, home: &Home, slug: &str, st: &SessionStatus) -> Result<()> {
+        let f = self.data_dir(home, slug).join("status.json");
+        if let Some(d) = f.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(f, serde_json::to_string_pretty(st)?)?;
+        Ok(())
+    }
+
     fn activity_file(&self, home: &Home, slug: &str) -> PathBuf {
         home.connections_dir(slug).join(&self.id).join("activity.jsonl")
     }
@@ -496,7 +574,8 @@ pub fn env_for(home: &Home, slug: &str, conn: Option<&Connection>, m: &Manifest)
     let own = key_names(m);
     let keys = conn.map(|c| c.keys(home, slug)).unwrap_or_default();
     let rest = secrets::env_fn(home, Some(slug));
-    move |k: &str| if own.iter().any(|n| n == k) { keys.get(k).cloned() } else { rest(k) }
+    // A login saved in KIQR is the sign-in runner's alone: no template ever gets it.
+    move |k: &str| if Login::KEYS.contains(&k) { None } else if own.iter().any(|n| n == k) { keys.get(k).cloned() } else { rest(k) }
 }
 
 pub fn valid_id(id: &str) -> bool {
