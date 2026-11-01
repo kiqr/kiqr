@@ -944,6 +944,7 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [brokenAvatar, setBrokenAvatar] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (highlight) ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -964,9 +965,7 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
   return (
     <motion.div ref={ref} layout className={`pcard acx ${a.ready ? "" : "off"} ${highlight ? "hi" : ""}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
       <div className="acx-head">
-        <span className="ic">
-          <Icon size={17} />
-        </span>
+        <span className="ic">{a.avatar && !brokenAvatar ? <img src={a.avatar} alt="" onError={() => setBrokenAvatar(true)} /> : <Icon size={17} />}</span>
         <div className="min0">
           <h3>{svc.name}</h3>
           {naming ? (

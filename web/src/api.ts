@@ -486,6 +486,8 @@ export type Account = {
   /** Its places are lists of people (a mail account), when the daemon says so. */
   takes_lists?: boolean;
   service_card?: ServiceCard;
+  /** The service's mark (its ability's avatar), as a URL, when it has one. */
+  avatar?: string | null;
   publications: number;
   last_published?: string | null;
   connection_name: string;

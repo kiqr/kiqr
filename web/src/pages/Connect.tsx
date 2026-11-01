@@ -324,9 +324,7 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
   return (
     <div className="pcard cw-panel">
       <div className="cw-head">
-        <span className="ic">
-          <Icon size={19} />
-        </span>
+        <span className="ic">{service.avatar ? <img src={service.avatar} alt="" /> : <Icon size={19} />}</span>
         <div>
           <h2>{service.name}</h2>
           <p className="muted sm">{serviceSummary(service)}</p>

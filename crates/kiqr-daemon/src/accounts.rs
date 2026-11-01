@@ -151,6 +151,8 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
                 v["needs_place"] = json!(crate::publish::needs_place(m, k));
             }
             v["service_card"] = json!(m.service_card());
+            // The service's mark for the card: its ability's avatar, when it ships one.
+            v["avatar"] = json!(app.registry.read().await.entry(Some(slug), &m.id).and_then(|e| crate::market::folder_avatar(e, &m.avatar)));
             // Every kind of place this account can have: the publishing kind's, and one per ability of
             // the service that works on a place of its own (a property, a site), with what it needs.
             let mut kinds: Vec<Value> = Vec::new();

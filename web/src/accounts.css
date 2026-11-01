@@ -12,6 +12,7 @@
 .pcard.acx.hi { border-color: color-mix(in oklab, var(--accent) 60%, transparent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .acx-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .acx-head .ic { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(94,234,212,.22); }
+.acx-head .ic img, .cw-head .ic img { width: 100%; height: 100%; border-radius: inherit; display: block; }
 .pcard.acx.off .acx-head .ic { color: var(--muted); background: var(--panel-2); border-color: var(--line-2); }
 .acx-head .min0 { flex: 1; min-width: 0; }
 .acx-head .svc { font: 500 11px/1.3 var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }

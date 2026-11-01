@@ -220,8 +220,13 @@ fn avatar_url(item: &IndexItem, m: Option<&Manifest>, e: Option<&extensions::Ent
         // The index's fetch time as a version, so a browser refetches a changed mark at the same URL.
         return Some(format!("{named}{}v={stamp}", if named.contains('?') { "&" } else { "?" }));
     }
-    let e = e?;
-    if !e.dir.join(&named).is_file() {
+    folder_avatar(e?, &named)
+}
+
+/// The URL of an installed folder's own mark (`avatar: avatar.svg`), served by `/api/abilities/{id}/avatar`; none when the file is not there.
+pub fn folder_avatar(e: &extensions::Entry, named: &str) -> Option<String> {
+    let named = named.trim();
+    if named.is_empty() || !e.dir.join(named).is_file() {
         return None;
     }
     let project = match &e.scope {

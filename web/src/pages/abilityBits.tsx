@@ -35,7 +35,6 @@ export function serviceIcon(icon?: string, group?: string): LucideIcon {
   return (group && GROUP_ICON[group]) || Plug;
 }
 
-/** An ability that works through an account of its service (keys, a sign-in, places to publish, numbers to read): plumbing behind the Accounts page. */
 /** An ability that works through an account of a service: one in a group of the connect grid (the shipped browser is core and still one), or anything not core that takes keys, a sign-in, a kind, a source or places. */
 export function isService(a: Ability): boolean {
   if (a.service_card?.group) return true;
