@@ -17,6 +17,7 @@ const READING = "#818cf8";
 const MONO = '"JetBrains Mono", ui-monospace, monospace';
 
 const RING = 78; // world px between depth rings
+const BACKDROP_MARGIN = 40; // screen px kept clear around the radar as a backdrop
 const BEAM_SPEED = 0.0011; // rad per ms
 const SPAWN_MS = 650;
 const PACKET_MS = 700;
@@ -80,10 +81,13 @@ export function SiteGraph({
   store,
   reducedMotion,
   onHover,
+  backdrop = false,
 }: {
   store: CrawlStore;
   reducedMotion: boolean;
   onHover?: (h: HoverInfo | null) => void;
+  /** Behind a page: no controls and no pointer, the site's root always in the middle, and the whole radar inside the frame with room around it. */
+  backdrop?: boolean;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -178,7 +182,24 @@ export function SiteGraph({
     const toWorld = (sx: number, sy: number) => ({ x: (sx - width / 2) / cam.k + cam.x, y: (sy - height / 2) / cam.k + cam.y });
 
     function autoFit() {
-      if (userCameraRef.current || simNodes.size === 0) return;
+      if (simNodes.size === 0) return;
+      if (backdrop) {
+        // Everything drawn (the nodes, the rings and the beam) within the smaller half of the frame, less a margin.
+        let maxR = 0, maxDepth = 1;
+        for (const n of simNodes.values()) {
+          maxR = Math.max(maxR, Math.hypot(n.x, n.y) + n.r);
+          maxDepth = Math.max(maxDepth, n.depth);
+        }
+        maxR = Math.max(maxR, (Math.min(maxDepth, 7) + 1.2) * RING, 2 * RING);
+        const room = Math.min(width, height) / 2 - BACKDROP_MARGIN;
+        const targetK = clamp(room / maxR, 0.12, 2.2);
+        const lerp = reducedMotion ? 1 : 0.045;
+        cam.k += (targetK - cam.k) * lerp;
+        cam.x = 0;
+        cam.y = 0;
+        return;
+      }
+      if (userCameraRef.current) return;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const n of simNodes.values()) {
         minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
@@ -257,16 +278,18 @@ export function SiteGraph({
     const onClick = () => {
       if (hoveredId && !dragMoved) window.open(hoveredId, "_blank", "noopener");
     };
-    canvas.addEventListener("wheel", onWheel, { passive: false });
+    if (!backdrop) canvas.addEventListener("wheel", onWheel, { passive: false });
     zoomRef.current = (factor: number) => {
       cam.k = clamp(cam.k * factor, 0.15, 5);
       setUserCamera(true);
     };
-    canvas.addEventListener("pointerdown", onDown);
-    canvas.addEventListener("pointerup", onUp);
-    canvas.addEventListener("pointermove", onMove);
-    canvas.addEventListener("pointerleave", onLeave);
-    canvas.addEventListener("click", onClick);
+    if (!backdrop) {
+      canvas.addEventListener("pointerdown", onDown);
+      canvas.addEventListener("pointerup", onUp);
+      canvas.addEventListener("pointermove", onMove);
+      canvas.addEventListener("pointerleave", onLeave);
+      canvas.addEventListener("click", onClick);
+    }
 
     // ---------- render ----------
     const packets: { url: string; dir: 1 | -1; at: number }[] = [];
@@ -322,7 +345,7 @@ export function SiteGraph({
         ctx.stroke();
       }
       ctx.setLineDash([]);
-      if (ringFade === 1 && cam.k > 0.45) {
+      if (ringFade === 1 && cam.k > 0.45 && !backdrop) {
         ctx.fillStyle = "rgba(131,146,173,0.45)";
         ctx.font = `${10 / cam.k}px ${MONO}`;
         for (let d = 1; d <= Math.min(maxDepth, 7); d++) ctx.fillText(`depth ${d}`, rx + 4 / cam.k, ry - d * RING - 4 / cam.k);
@@ -511,12 +534,12 @@ export function SiteGraph({
       canvas.removeEventListener("pointerleave", onLeave);
       canvas.removeEventListener("click", onClick);
     };
-  }, [store, reducedMotion]);
+  }, [store, reducedMotion, backdrop]);
 
   return (
-    <div ref={wrapRef} className="cr-graph-canvas">
+    <div ref={wrapRef} className={`cr-graph-canvas ${backdrop ? "backdrop" : ""}`}>
       <canvas ref={canvasRef} aria-label="Live map of crawled pages" role="img" />
-      <div className="cr-graph-ctl">
+      {!backdrop && <div className="cr-graph-ctl">
         <span className="cr-hint">Ctrl + scroll to zoom · drag to pan</span>
         {userCamera && (
           <button onClick={() => setUserCamera(false)} className="cr-ctl">
@@ -529,7 +552,7 @@ export function SiteGraph({
         <button onClick={() => zoomRef.current(0.8)} aria-label="Zoom out" className="cr-ctl sq">
           −
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

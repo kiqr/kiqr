@@ -8,24 +8,63 @@
 .wl-head .av { width: 40px; height: 40px; border-radius: 12px; } .wl-head .av::after { inset: 12px; }
 .wl-head .cap { margin-bottom: 2px; }
 
-.wl-grid { display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr); }
-@media (min-width: 1100px) { .wl-grid { grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); align-items: start; } }
-/* Seemo's window sits on the right while it reads; on narrower screens the build keeps clear of it. */
-@media (min-width: 900px) and (max-width: 1099px) { .wl.wl-build { padding-right: 412px; } }
+/*
+ * The build is one window, never scrolled: the site map fills it as a backdrop
+ * (no controls, no pointer), fitted inside with room around it and centred on
+ * the site's root, and the ring sits on the exact middle of the window over the
+ * root. The brand hangs above the ring, the stage, the steps and what Seemo is
+ * thinking below it; the title top left, the counts bottom left.
+ */
+html:has(.wl-build), html:has(.wl-build) body { overflow: hidden; }
+.wl.wl-build { --ring: clamp(150px, 25vh, 220px); --col: min(480px, calc(100vw - 32px)); position: fixed; inset: 0; z-index: 1; max-width: none; margin: 0; padding: 0; overflow: hidden; }
+/* With Seemo's window open beside it (it opens by itself from 1140px), the middle stays centred and narrows to keep clear of it. */
+@media (min-width: 1140px) { .wl.wl-build { --col: clamp(300px, calc(100vw - 840px), 480px); } }
+.wl-graph { position: absolute; inset: 0; z-index: 0; }
+.wl-graph .cr-graph-canvas { -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 55%, transparent 80%); mask-image: radial-gradient(circle at 50% 50%, #000 55%, transparent 80%); }
+.wl-graph canvas { opacity: .85; }
+/* Quieter behind the middle column, so the words stay easy to read. */
+.wl-graph::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse calc(var(--col) * .75) 70% at 50% 58%, color-mix(in oklab, var(--bg) 80%, transparent), color-mix(in oklab, var(--bg) 35%, transparent) 70%, transparent 100%); }
+.wl-build .wl-head { position: absolute; top: 20px; left: 24px; right: 24px; z-index: 2; margin: 0; pointer-events: none; }
+.wl-foot { position: absolute; left: 24px; bottom: 18px; z-index: 2; display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap; max-width: calc(100vw - 120px); font-size: 11px; color: var(--muted); }
+.wl-foot .warn { color: var(--warn); }
+.wl-notify { position: absolute; top: 24px; right: 24px; z-index: 2; }
+.wl-notify .btn, .wl-notify > span { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: color-mix(in oklab, var(--bg) 55%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 
-/* The site map, compact. */
-.wl-graph { position: relative; height: 360px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); overflow: hidden; }
-@media (min-width: 1100px) { .wl-graph { height: 640px; position: sticky; top: 16px; } }
-.wl-graph-foot { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 14px; font-size: 11px; color: var(--muted); }
-.wl-graph-foot .warn { color: var(--warn); }
+/* The middle column: hung from the ring, whose centre is the window's. */
+.wl-center-col { position: absolute; z-index: 1; left: 50%; top: 50%; width: var(--col); transform: translate(-50%, calc(var(--ring) / -2)); display: flex; flex-direction: column; align-items: center; text-align: center; }
+.wl-above { position: absolute; left: 0; right: 0; top: -18px; transform: translateY(-100%); display: flex; justify-content: center; }
+.wl-below { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 16px; }
+.wl-ring { position: relative; width: var(--ring); height: var(--ring); flex: none; }
+.wl-ring svg { display: block; position: relative; width: 100%; height: 100%; filter: drop-shadow(0 0 24px color-mix(in oklab, var(--accent) 18%, transparent)); }
+.wl-ring-c { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; }
+.wl-ring-c b { font: 600 calc(var(--ring) * .236)/1 var(--sans); letter-spacing: -.04em; }
+.wl-ring-c small { font-size: calc(var(--ring) * .1); color: var(--muted); margin-left: 2px; }
+/* A dark lens under the ring: the map moves around it, never through it. */
+.wl-ring::before { content: ""; position: absolute; inset: -34px; border-radius: 50%; background: radial-gradient(circle, color-mix(in oklab, var(--bg) 92%, transparent) 62%, transparent 72%); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); -webkit-mask-image: radial-gradient(circle, #000 66%, transparent 72%); mask-image: radial-gradient(circle, #000 66%, transparent 72%); }
+.wl-build .wl-stage { padding: 8px 18px; border-radius: 16px; background: color-mix(in oklab, var(--bg) 72%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+.wl-build .wl-steps, .wl-build .wl-brandline { padding: 6px 12px; border-radius: 999px; background: color-mix(in oklab, var(--bg) 55%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 
-/* The middle column: the ring, the stage, what Seemo learned. */
-.wl-center-col { display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center; }
-.wl-ring { position: relative; width: 220px; height: 220px; }
-.wl-ring svg { display: block; filter: drop-shadow(0 0 24px color-mix(in oklab, var(--accent) 18%, transparent)); }
-.wl-ring-c { position: absolute; inset: 0; display: grid; place-items: center; }
-.wl-ring-c b { font: 600 52px/1 var(--sans); letter-spacing: -.04em; }
-.wl-ring-c small { font-size: 22px; color: var(--muted); margin-left: 2px; }
+/* What Seemo is thinking: one sentence at a time, word by word. */
+.wl-think { width: 100%; min-height: 108px; display: flex; justify-content: center; align-items: flex-start; }
+.wl-think-in { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 100%; padding: 10px 18px 12px; border-radius: 16px; background: color-mix(in oklab, var(--accent-2) 7%, color-mix(in oklab, var(--bg) 70%, transparent)); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.wl-think .cap { display: inline-flex; align-items: center; gap: 7px; color: var(--accent-2); margin: 0; }
+.wl-think-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent-2) 50%, transparent); animation: wl-think 1.4s ease-in-out infinite; }
+@keyframes wl-think { 50% { box-shadow: 0 0 0 5px transparent; opacity: .6; } }
+.wl-think-line { font: 500 16px/1.5 var(--sans); color: var(--fg); text-wrap: balance; }
+.wl-think-line span { display: inline; }
+.wl-think-empty { padding-top: 10px; }
+.wl-build .wl-brandline { flex-wrap: nowrap; max-width: 100%; }
+.wl-build .wl-brandline i { width: 20px; height: 20px; flex: none; }
+@media (max-width: 1320px) { .wl-build .wl-brandline i:nth-of-type(n+5) { display: none; } }
+/* A phone: the stage says what the steps say, and the counts give way to Seemo's button. */
+@media (max-width: 700px) {
+  .wl.wl-build { --ring: clamp(140px, 22vh, 200px); }
+  .wl-build .wl-steps, .wl-foot, .wl-notify { display: none; }
+  .wl-build .wl-brandline .cap { display: none; }
+  .wl-think-line { font-size: 14px; }
+}
+@media (max-height: 760px) { .wl-think-line { font-size: 14px; } .wl-below { gap: 10px; margin-top: 12px; } .wl-think { min-height: 92px; } }
+@media (prefers-reduced-motion: reduce) { .wl-think-dot { animation: none; } }
 .wl-ring.done .wl-ring-c { color: var(--accent); animation: wl-pop 600ms cubic-bezier(.2,1.4,.4,1) both; }
 .wl-ring.failed svg { filter: none; opacity: .4; }
 .wl-ring.failed .wl-ring-c { color: var(--warn); }
@@ -45,17 +84,12 @@
 .wl-act, .wl-problem { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .wl-problem p { display: inline-flex; gap: 8px; align-items: flex-start; color: var(--warn); max-width: 420px; text-align: left; }
 .wl-problem .row, .wl-part .row, .wl-fix .row, .wl-plan .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.wl-leave .btn, .wl-leave span { display: inline-flex; align-items: center; gap: 6px; }
 
 .wl-brandline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
 .wl-brandline img { height: 26px; max-width: 110px; object-fit: contain; border-radius: 6px; background: #fff1; padding: 3px; }
 .wl-brandline i { width: 22px; height: 22px; border-radius: 7px; box-shadow: inset 0 0 0 1px #ffffff26; display: inline-block; }
 .wl-brandline .cap { margin-right: 4px; }
 
-.wl-learned { width: 100%; display: flex; flex-direction: column; gap: 8px; text-align: left; }
-.wl-learned .cap { text-align: center; }
-.wl-fact { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: var(--r); background: color-mix(in oklab, var(--accent-2) 9%, var(--panel)); border: 1px solid color-mix(in oklab, var(--accent-2) 22%, transparent); font-size: 13px; line-height: 1.45; }
-.wl-fact .lb { font-size: 11px; color: var(--accent-2); text-transform: uppercase; letter-spacing: .06em; }
 
 /* The questions. */
 .wl-side { min-width: 0; }
@@ -113,42 +147,6 @@
   .wl-steps .now .dot, .wl-ring.done .wl-ring-c { animation: none; }
 }
 
-/*
- * Wide screens: the site map is the page. It fills the window behind
- * everything, still dragged and zoomed, with the progress floating in the
- * middle on top of it: the radar around what Seemo is understanding.
- */
-@media (min-width: 1100px) {
-  .wl.wl-build { max-width: none; padding: 0 0 64px; min-height: calc(100vh - 32px); }
-  .wl-build .wl-graph { position: fixed; inset: 0; height: auto; top: 0; z-index: 0; border: 0; border-radius: 0; background: transparent; }
-  /* Fades out at the edges, and quieter behind the middle so the words stay easy to read. */
-  .wl-build .wl-graph .cr-graph-canvas { -webkit-mask-image: radial-gradient(ellipse 75% 75% at 50% 50%, #000 45%, transparent 100%); mask-image: radial-gradient(ellipse 75% 75% at 50% 50%, #000 45%, transparent 100%); }
-  .wl-build .wl-graph::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 340px 75% at 50% 60%, color-mix(in oklab, var(--bg) 82%, transparent), color-mix(in oklab, var(--bg) 40%, transparent) 70%, transparent 100%); }
-  .wl-build .wl-graph-foot { position: fixed; left: 24px; bottom: 18px; z-index: 2; }
-  .wl-build .cr-graph-ctl { left: 24px; right: auto; bottom: 44px; }
-  .wl-build .wl-head { position: relative; z-index: 2; pointer-events: none; padding: 8px 0 0; }
-  /* Only the middle takes the pointer; around it, the map underneath does. */
-  .wl-build .wl-grid { display: block; position: relative; z-index: 1; pointer-events: none; }
-  .wl-build .wl-center-col { pointer-events: auto; width: min(480px, 100%); margin: 0 auto; padding-top: max(0px, calc(50vh - 200px)); }
-  .wl-build .wl-graph canvas { opacity: .85; }
-  /* A dark lens under the ring and a glass under the words: the map moves around them, never through them. */
-  .wl-build .wl-ring::before { content: ""; position: absolute; inset: -34px; border-radius: 50%; background: radial-gradient(circle, color-mix(in oklab, var(--bg) 92%, transparent) 62%, transparent 72%); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); -webkit-mask-image: radial-gradient(circle, #000 66%, transparent 72%); mask-image: radial-gradient(circle, #000 66%, transparent 72%); }
-  .wl-build .wl-ring svg { position: relative; } .wl-build .wl-ring-c { z-index: 1; }
-  .wl-build .wl-stage { padding: 10px 18px; border-radius: 16px; background: color-mix(in oklab, var(--bg) 72%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
-  .wl-build .wl-fact { background: color-mix(in oklab, var(--accent-2) 10%, color-mix(in oklab, var(--panel) 78%, transparent)); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
-  .wl-build .wl-steps, .wl-build .wl-leave, .wl-build .wl-brandline { padding: 6px 12px; border-radius: 999px; background: color-mix(in oklab, var(--bg) 55%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
-}
-/* Where the window is too narrow for both, the middle moves left of Seemo's window, so it never sits under it. */
-@media (min-width: 1100px) and (max-width: 1319px) {
-  .wl-build .wl-center-col { margin-left: max(24px, calc((100vw - 412px - 480px) / 2)); }
-}
-
-/* Narrow screens: what matters first — the progress, then the questions, then the map. */
-@media (max-width: 1099px) {
-  .wl-center-col { order: 1; }
-  .wl-side { order: 2; }
-  .wl-graph { order: 3; }
-}
 
 /* "While I read" as a conversation with Seemo, in the chat's own look. */
 .wl-chat { padding: 0; gap: 0; min-height: 0; }
@@ -159,8 +157,8 @@
 .wl-chat-h .sm { display: inline-flex; align-items: center; gap: 6px; }
 .wl-live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 var(--accent-soft); animation: wl-breathe 1.6s ease-in-out infinite; }
 .wl-conv { padding: 16px; gap: 10px; max-height: 420px; min-height: 180px; }
-.wl-conv .cm.ai .body p { font-size: 14px; line-height: 1.5; background: var(--panel-2); border: 1px solid var(--line); padding: 9px 12px; border-radius: 14px; border-top-left-radius: 4px; display: inline-block; }
-.wl-conv .cm.ai .body p.thinking { display: inline-flex; padding: 12px 14px; }
+.wl-conv .cm.ai .body > p { font-size: 14px; line-height: 1.5; background: var(--panel-2); border: 1px solid var(--line); padding: 9px 12px; border-radius: 14px; border-top-left-radius: 4px; display: inline-block; }
+.wl-conv .cm.ai .body > p.thinking { display: inline-flex; padding: 12px 14px; }
 .wl-conv .wl-av-gap { visibility: hidden; }
 .wl-conv .cm.you .ms.y { font-size: 14px; }
 .wl-reply { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 14px; border-top: 1px solid var(--line); }
@@ -179,3 +177,5 @@
 .wl-sugs .min0 { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .wl-sugs b { font-size: 13px; font-weight: 600; }
 .wl-sugs small { font-size: 11px; color: var(--accent-2); }
+.wl-sugs .wl-sug-x { padding: 4px; margin-left: -4px; color: var(--dim); }
+.wl-sugs .wl-sug-x:hover { color: var(--fg); }

@@ -76,6 +76,8 @@
 .cr-graph-grid { position: absolute; inset: 0; opacity: .25; pointer-events: none; }
 .cr-graph-canvas { position: absolute; inset: 0; }
 .cr-graph-canvas canvas { display: block; cursor: grab; touch-action: none; }
+.cr-graph-canvas.backdrop { pointer-events: none; }
+.cr-graph-canvas.backdrop canvas { cursor: default; touch-action: auto; }
 .cr-graph-ctl { position: absolute; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 6px; }
 .cr-hint { display: none; font-size: 10px; color: var(--dim, #56627c); }
 @media (min-width: 640px) { .cr-hint { display: inline; } }

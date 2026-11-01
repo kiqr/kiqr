@@ -397,3 +397,9 @@ a.mk-author:hover { color: var(--accent); }
 .fr-captcha img { width: 240px; height: 72px; border-radius: 10px; border: 1px solid var(--line-2); user-select: none; -webkit-user-drag: none; }
 .fr-captcha-in { display: flex; gap: 4px; align-items: center; flex: 1; min-width: 140px; }
 .fr-captcha-in .input { width: 100%; }
+.fr-keep { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2); cursor: pointer; }
+.fr-keep input { margin-top: 3px; accent-color: var(--accent); flex: none; }
+.fr-keep span { display: flex; flex-direction: column; gap: 3px; }
+.fr-keep b { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.fr-keep small { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.fr-keep code { color: var(--fg); }

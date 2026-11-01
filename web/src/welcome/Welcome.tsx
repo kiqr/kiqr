@@ -5,6 +5,7 @@
 //   Act 2: the reveal: the business as Seemo sees it, confirmed or fixed.
 //   Act 3: the first week: the plan and three posts in the brand.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowRight, Bell, BellRing, Hourglass, Play, RotateCcw, TriangleAlert } from "lucide-react";
@@ -14,6 +15,7 @@ import { CrawlStore, sectionTitle } from "../crawl/store";
 import { SiteGraph } from "../crawl/site-graph";
 import { BuildRing, STAGE_WORDS, StageSteps, etaWords } from "./BuildRing";
 import { Intake } from "./Intake";
+import { Thinking, asThought, type Thought } from "./Thinking";
 import { Reveal } from "./Reveal";
 import { FirstWeek } from "./FirstWeek";
 import { closeSeemo, openSeemo, setSeemoIntro } from "../SeemoWidget";
@@ -22,6 +24,8 @@ import "../welcome.css";
 
 /** Without word for this long, say it is still working rather than leave a frozen screen. */
 const QUIET_MS = 45000;
+/** From this width Seemo's window opens by itself beside the centred build (welcome.css keeps the middle clear of it). */
+const SIDE_BY_SIDE = 1140;
 
 type Act = "build" | "done" | "reveal" | "week";
 
@@ -111,18 +115,16 @@ export function Welcome() {
   const quiet = shown?.running && shown.last_at ? now - new Date(shown.last_at).getTime() > QUIET_MS : false;
 
   const s = store.state;
-  const learned = useMemo(() => {
-    const seen = new Set<string>();
-    const out: { key: string; label: string; value: string }[] = [];
-    for (const r of s.analysis.recent) {
+  // Every sentence learned so far, oldest first (the store keeps the newest page first).
+  const thoughts = useMemo(() => {
+    const out: Thought[] = [];
+    for (const r of [...s.analysis.recent].reverse()) {
       for (const f of r.facts) {
-        const v = f.value.trim();
-        if (!v || seen.has(v.toLowerCase())) continue;
-        seen.add(v.toLowerCase());
-        out.push({ key: `${f.section}:${v}`, label: sectionTitle(f.section), value: v });
+        const t = asThought(`${f.section}:${f.value.trim().toLowerCase()}`, sectionTitle(f.section), f.value);
+        if (t) out.push(t);
       }
     }
-    return out.slice(0, 6);
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.analysis.recent]);
   const audienceHint = s.analysis.recent.flatMap((r) => r.facts).find((f) => f.section === "audience")?.value;
@@ -142,7 +144,7 @@ export function Welcome() {
   useEffect(() => {
     if (!talking || opened.current) return;
     opened.current = true;
-    if (window.innerWidth >= 900) openSeemo();
+    if (window.innerWidth >= SIDE_BY_SIDE) openSeemo();
   }, [talking]);
   // The reveal takes the whole screen: the window folds away and goes back to being the chat.
   useEffect(() => {
@@ -200,8 +202,14 @@ export function Welcome() {
     );
   }
 
-  return (
+  // On the body: the page transition leaves a transform on its wrapper, which would make the window-sized layout its size instead.
+  return createPortal(
     <div className="wl wl-build">
+      <section className="wl-graph" aria-hidden>
+        <div className="bg-grid cr-graph-grid" />
+        <SiteGraph key={`${slug}-${stream}`} store={store} reducedMotion={reduced} backdrop />
+      </section>
+
       <header className="wl-head">
         <span className="av" />
         <div>
@@ -210,19 +218,41 @@ export function Welcome() {
         </div>
       </header>
 
-      <div className="wl-grid">
-        <section className="wl-graph">
-          <div className="bg-grid cr-graph-grid" />
-          <SiteGraph key={`${slug}-${stream}`} store={store} reducedMotion={reduced} onHover={() => {}} />
-          <div className="wl-graph-foot mono">
-            <span>{s.stats.crawled} pages read</span>
-            <span>{s.stats.facts} facts</span>
-            {s.stats.blocked > 0 && <span className="warn">{s.stats.blocked} blocked</span>}
-          </div>
-        </section>
+      <footer className="wl-foot">
+        <span className="mono">
+          {s.stats.crawled} pages read · {s.stats.facts} facts{s.stats.blocked > 0 && <span className="warn"> · {s.stats.blocked} blocked</span>}
+        </span>
+      </footer>
+      <div className="wl-notify">
+        {shown.running &&
+          (notify ? (
+            <span className="dim sm">
+              <BellRing size={13} /> I'll let you know when it's ready.
+            </span>
+          ) : (
+            <button className="btn t sm" onClick={() => void askNotify()}>
+              <Bell size={13} /> You can leave this tab. Tell me when it's ready
+            </button>
+          ))}
+      </div>
 
-        <section className="wl-center-col">
-          <BuildRing build={shown} />
+      {/* The ring sits on the middle of the window; what belongs to it hangs above and below. */}
+      <section className="wl-center-col">
+        <div className="wl-above">
+          {brand && (brand.colors.length > 0 || brand.logo) && (
+            <motion.div initial={reduced ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="wl-brandline">
+              <span className="cap">Your brand</span>
+              {brand.logo && <img src={brand.logo} alt="" onError={(e) => (e.currentTarget.style.display = "none")} />}
+              {brand.colors.slice(0, 6).map((c, i) => (
+                <motion.i key={c} initial={reduced ? false : { scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.1 + i * 0.06 }} style={{ background: c }} title={c} />
+              ))}
+            </motion.div>
+          )}
+        </div>
+
+        <BuildRing build={shown} />
+
+        <div className="wl-below">
           <div className="wl-stage">
             <h2>{STAGE_WORDS[stage]}</h2>
             {shown.running && <p className="muted">{etaWords(shown.eta_secs)}</p>}
@@ -276,46 +306,11 @@ export function Welcome() {
           )}
           {error && <p className="err sm">{error}</p>}
 
-          {shown.running && (
-            <div className="wl-leave">
-              {notify ? (
-                <span className="dim sm">
-                  <BellRing size={13} /> I'll let you know when it's ready.
-                </span>
-              ) : (
-                <button className="btn t sm" onClick={() => void askNotify()}>
-                  <Bell size={13} /> You can leave this tab. Tell me when it's ready
-                </button>
-              )}
-            </div>
-          )}
-
-          {brand && (brand.colors.length > 0 || brand.logo) && (
-            <motion.div initial={reduced ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="wl-brandline">
-              <span className="cap">Your brand</span>
-              {brand.logo && <img src={brand.logo} alt="" onError={(e) => (e.currentTarget.style.display = "none")} />}
-              {brand.colors.slice(0, 6).map((c, i) => (
-                <motion.i key={c} initial={reduced ? false : { scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.1 + i * 0.06 }} style={{ background: c }} title={c} />
-              ))}
-            </motion.div>
-          )}
-
-          <div className="wl-learned">
-            <p className="cap">What I've learned so far</p>
-            {learned.length === 0 && <p className="dim sm">The first facts show up here as I read.</p>}
-            <AnimatePresence initial={false} mode="popLayout">
-              {learned.map((f) => (
-                <motion.div key={f.key} layout initial={reduced ? false : { opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="wl-fact">
-                  <span className="lb">{f.label}</span>
-                  <span>{f.value}</span>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </div>
-        </section>
-
-      </div>
-    </div>
+          {shown.running && <Thinking thoughts={thoughts} reduced={reduced} empty="What I learn shows up here as I read." />}
+        </div>
+      </section>
+    </div>,
+    document.body,
   );
 }
 

@@ -22,6 +22,8 @@ pub struct Intake {
     pub networks: Vec<String>,
     /// Questions they skipped, so they are not asked again.
     pub skipped: Vec<String>,
+    /// Abilities Seemo suggested that they don't want (by id): no longer suggested.
+    pub dismissed: Vec<String>,
     /// RFC 3339.
     pub updated_at: String,
 }

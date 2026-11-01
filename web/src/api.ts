@@ -52,6 +52,8 @@ export type Intake = {
   time: "" | "lt1" | "1to3" | "3plus";
   networks: string[];
   skipped: string[];
+  /** Suggested abilities the owner doesn't want (ids). */
+  dismissed?: string[];
   updated_at?: string;
 };
 
@@ -427,6 +429,8 @@ export type Account = {
   publishers?: { id: string; name: string }[];
 };
 export type Channel = Account;
+/** Where KIQR listens, when a factory reset could keep it (it isn't the default). `remote`: reachable from other machines. */
+export type ResetNetwork = { host: string; port: number; remote: boolean };
 export type AccountActivity = { connection: string; service: string; today: number; daily_cap: number | null; activity: { at: string; ability: string; role: string; tool: string; target?: string; url?: string | null }[] };
 export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; destination: Record<string, unknown>; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }> };
 
@@ -447,9 +451,9 @@ export const api = {
   setTelemetry: (enabled: boolean) => req<Telemetry>("/api/telemetry", { method: "PUT", body: JSON.stringify({ enabled }) }),
   config: () => req<Config>("/api/config"),
   /** Factory reset, step one: a one-time token and the phrase to type. Refused to anything but the web UI. */
-  resetStart: () => req<{ token: string; phrase: string; captcha: string; home: string; expires_in: number }>("/api/reset/start", { method: "POST", body: "{}" }),
+  resetStart: () => req<{ token: string; phrase: string; captcha: string; home: string; expires_in: number; network: ResetNetwork | null }>("/api/reset/start", { method: "POST", body: "{}" }),
   /** Step two: erase the home and restart as a new installation, on `port`. */
-  reset: (token: string, phrase: string, captcha: string) => req<{ resetting: boolean; port: number }>("/api/reset", { method: "POST", body: JSON.stringify({ token, phrase, captcha }) }),
+  reset: (token: string, phrase: string, captcha: string, keepNetwork = false) => req<{ resetting: boolean; port: number }>("/api/reset", { method: "POST", body: JSON.stringify({ token, phrase, captcha, keep_network: keepNetwork }) }),
   saveConfig: (c: Config) => req<Config>("/api/config", { method: "PUT", body: JSON.stringify(c) }),
   projects: () => req<Project[]>("/api/projects"),
   project: (slug: string) => req<Project>(`/api/projects/${slug}`),

@@ -13,6 +13,11 @@
 //! lives two minutes, with a captcha of KIQR's own (a small sum, drawn as a
 //! distorted PNG; the answer never leaves the daemon), and `/api/reset` needs
 //! that token, the captcha's answer and the phrase typed out by hand.
+//!
+//! A KIQR on a server listens beyond this machine (`daemon.host` 0.0.0.0, say).
+//! A new installation listens on 127.0.0.1 only, which would lock the person out
+//! of the page they reset from, so they can keep the address and port: the new
+//! `config.yaml` then holds just those.
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
@@ -86,7 +91,18 @@ async fn start(State(app): State<App>, headers: HeaderMap) -> ApiResult<Value> {
     use base64::Engine as _;
     let image = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png));
     *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some((token.clone(), Instant::now(), answer));
-    Ok(Json(json!({ "token": token, "phrase": PHRASE, "captcha": image, "home": root.display().to_string(), "expires_in": TOKEN_TTL.as_secs() })))
+    Ok(Json(json!({ "token": token, "phrase": PHRASE, "captcha": image, "home": root.display().to_string(), "expires_in": TOKEN_TTL.as_secs(), "network": network(&app) })))
+}
+
+/// Where this KIQR is set to listen, when that isn't where a new installation would.
+fn network(app: &App) -> Value {
+    let now = kiqr_core::config::Config::load(&app.store).map(|c| c.daemon).unwrap_or_default();
+    let fresh = kiqr_core::config::DaemonConfig::default();
+    if now.host == fresh.host && now.port == fresh.port {
+        return Value::Null;
+    }
+    let local = matches!(now.host.as_str(), "127.0.0.1" | "localhost" | "::1");
+    json!({ "host": now.host, "port": now.port, "remote": !local })
 }
 
 const CAPTCHA_W: u32 = 320;
@@ -155,6 +171,9 @@ struct Confirm {
     /// The captcha's answer.
     #[serde(default)]
     captcha: String,
+    /// Start again on the same address and port instead of the defaults.
+    #[serde(default)]
+    keep_network: bool,
 }
 
 async fn reset(State(app): State<App>, headers: HeaderMap, Json(c): Json<Confirm>) -> ApiResult<Value> {
@@ -173,13 +192,16 @@ async fn reset(State(app): State<App>, headers: HeaderMap, Json(c): Json<Confirm
     }
     let root = app.store.home().root().to_path_buf();
     safe_root(&root)?;
-    tracing::warn!(home = %root.display(), "factory reset requested from the web UI");
+    tracing::warn!(home = %root.display(), keep_network = c.keep_network, "factory reset requested from the web UI");
+    // Read before the erase: what the new config.yaml keeps.
+    let kept = c.keep_network.then(|| kiqr_core::config::Config::load(&app.store).map(|c| c.daemon).unwrap_or_default());
 
     // Stop Seemo and running work first, so nothing writes into the home while it goes.
     for t in app.turns.read().await.values() {
         t.stop();
     }
     let app2 = app.clone();
+    let keep = kept.clone();
     tokio::spawn(async move {
         for _ in 0..20 {
             if app2.turns.read().await.is_empty() && app2.jobs.read().await.is_empty() {
@@ -191,11 +213,17 @@ async fn reset(State(app): State<App>, headers: HeaderMap, Json(c): Json<Confirm
         if !failed.is_empty() {
             tracing::warn!(?failed, "factory reset: could not remove everything");
         }
+        if let Some(daemon) = keep {
+            let fresh = kiqr_core::config::Config { daemon, ..Default::default() };
+            if let Err(e) = fresh.save(&app2.store) {
+                tracing::warn!("factory reset: could not keep the network settings: {e:#}");
+            }
+        }
         tracing::warn!("factory reset done; starting again as a new installation");
         crate::restart_self(&app2.exe);
     });
-    // A new installation listens on the default address (unless KIQR_HOST / KIQR_PORT say otherwise); the page goes there.
-    let (_, port) = crate::listen_addr(&kiqr_core::config::DaemonConfig::default());
+    // A new installation listens on the default address, or the kept one (unless KIQR_HOST / KIQR_PORT say otherwise); the page goes there.
+    let (_, port) = crate::listen_addr(&kept.unwrap_or_default());
     Ok(Json(json!({ "resetting": true, "port": port })))
 }
 

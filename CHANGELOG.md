@@ -4,6 +4,12 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+- A factory reset on a machine KIQR is reached at over the network can keep the network settings ("Keep the network settings", checked when it listens beyond this machine), so the web UI comes back at the same address.
+- The build screen is one window that never scrolls: the site map is the backdrop, fitted with room around it and without controls, the ring sits on the centre, and what Seemo learns comes in one sentence at a time.
+- Writing to Seemo under its questions and suggestions carries on in the same window, and Seemo knows what it suggested. A suggestion has an × to drop it for good.
+- An ability that names what to look for in a site's HTML (WordPress) is suggested only when it is found there.
+- Favicons: the app has one (with kiqr.cloud and kiqr.dev in the same family, each its own colour).
+
 ## v0.3.4 — 2026-10-31
 
 - Signing in to kiqr.cloud from a browser shows kiqr.cloud's approval page and comes straight back, also when KIQR is opened at a server's plain http address (no activation code). Seemo's set-up suggestions and the getting-started steps offer it first, marked Optional.

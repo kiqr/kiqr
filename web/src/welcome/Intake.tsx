@@ -2,12 +2,13 @@
 // one at a time, in its own chat window (the widget in the corner). Every question can be skipped; every
 // answer is saved at once and the brief and the first plan use them. The
 // conversation is rebuilt from the saved answers, so a reload reads the same.
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowUp, Check, Cloud, Loader2, LogIn, Plus, Settings2 } from "lucide-react";
+import { ArrowUp, Check, Cloud, Loader2, LogIn, Plus, Settings2, X } from "lucide-react";
 import { api, type AbilitiesView, type Brand, type BuildStage, type Intake as IntakeT, type Network, type Setup, type SetupWhy } from "../api";
 import { AbilityModal } from "../pages/AbilityModal";
 import { useSignIns } from "../pages/SignIns";
+import { IntroFollowUp } from "../SeemoWidget";
 import "../chat.css";
 import "../profile.css";
 import "../settings.css";
@@ -140,6 +141,19 @@ export function Intake({ slug, host, brand, suggestion, stage, onDone }: { slug:
     box.current?.scrollTo({ top: box.current.scrollHeight, behavior: reduced ? "auto" : "smooth" });
   }, [shown, typing, reduced]);
 
+  // What the person wrote to Seemo after the questions, and its answers: the same conversation, carried on below.
+  const followUp = useContext(IntroFollowUp);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || !followUp) return;
+    // Follow the bottom as the reply streams in, unless they scrolled up to read.
+    const stick = () => el.scrollHeight - el.scrollTop - el.clientHeight < 160 && el.scrollTo({ top: el.scrollHeight });
+    stick();
+    const mo = new MutationObserver(stick);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => mo.disconnect();
+  }, [followUp]);
+
   if (!intake) return <div className="wl-embedded" />;
 
   const save = (next: IntakeT) => {
@@ -185,7 +199,8 @@ export function Intake({ slug, host, brand, suggestion, stage, onDone }: { slug:
             </div>
           ),
         )}
-        {ready && !q && <SetUp slug={slug} host={host} stage={stage} onGrow={() => box.current?.scrollTo({ top: box.current.scrollHeight, behavior: reduced ? "auto" : "smooth" })} />}
+        {ready && !q && <SetUp slug={slug} host={host} stage={stage} onGrow={() => box.current?.scrollTo({ top: box.current.scrollHeight, behavior: reduced ? "auto" : "smooth" })} onDismiss={(id) => save({ ...intake, dismissed: [...(intake.dismissed ?? []), id] })} />}
+        {followUp}
         {typing && (
           <div className="cm ai live">
             <span className="av" />
@@ -293,7 +308,7 @@ const listed = (xs: string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0,
  * the same way. Asked again as the crawl goes on, since the site tells it more
  * the further it reads.
  */
-function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stage?: BuildStage; /** The chat scrolls to show it. */ onGrow: () => void }) {
+function SetUp({ slug, host, stage, onGrow, onDismiss }: { slug: string; host: string; stage?: BuildStage; /** The chat scrolls to show it. */ onGrow: () => void; /** Not wanted: saved with the answers, and never suggested again. */ onDismiss: (id: string) => void }) {
   const [setup, setSetup] = useState<Setup | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -399,6 +414,20 @@ function SetUp({ slug, host, stage, onGrow }: { slug: string; host: string; stag
                   ) : (
                     <button className={`btn sm ${s.installed ? "g" : "p"}`} disabled={!!busy} onClick={() => void setUp(s.id, s.installed)}>
                       {busy === s.id ? <Loader2 size={12} className="spin" /> : s.installed ? <Settings2 size={12} /> : <Plus size={12} />} {s.installed ? "Set up" : "Add"}
+                    </button>
+                  )}
+                  {!s.ready && (
+                    <button
+                      className="btn t sm wl-sug-x"
+                      title={`Not for me: don't suggest ${s.name}`}
+                      aria-label={`Not for me: don't suggest ${s.name}`}
+                      disabled={!!busy}
+                      onClick={() => {
+                        onDismiss(s.id);
+                        setSetup((x) => (x ? { ...x, suggestions: x.suggestions.filter((y) => y.id !== s.id) } : x));
+                      }}
+                    >
+                      <X size={13} />
                     </button>
                   )}
                 </li>

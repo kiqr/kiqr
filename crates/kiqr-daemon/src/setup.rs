@@ -36,12 +36,16 @@ fn site_html(app: &App, slug: &str) -> Vec<String> {
         .collect()
 }
 
-/// Why one ability fits: the reasons, in the order the UI says them.
+/// Why one ability fits: the reasons, in the order the UI says them. An
+/// ability that names what to look for in the site's HTML works with something
+/// the site has to run on (its CMS, say), so without it nothing else counts.
 pub fn reasons(fits: &kiqr_core::extensions::Fits, channels: &[(String, String)], intake: &Intake, html: &[String]) -> Vec<Value> {
     let mut out = vec![];
     let seen = fits.html.iter().map(|h| h.to_lowercase()).filter(|h| !h.is_empty()).any(|h| html.iter().any(|page| page.contains(&h)));
     if seen {
         out.push(json!({ "kind": "site" }));
+    } else if !fits.html.is_empty() {
+        return out;
     }
     for named in &intake.networks {
         if let Some((_, name)) = channels.iter().find(|(k, n)| k.eq_ignore_ascii_case(named) || n.eq_ignore_ascii_case(named)) {
@@ -56,14 +60,33 @@ pub fn reasons(fits: &kiqr_core::extensions::Fits, channels: &[(String, String)]
 
 async fn suggest(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Value> {
     kiqr_core::project::Project::load(&app.store, &slug)?;
-    let intake = Intake::load(&app.store, &slug)?.unwrap_or_default();
-    let html = site_html(&app, &slug);
-    let items = crate::market::catalogue(&app).await;
-    let listing = crate::market::listing(&app, Some(&slug)).await;
+    Ok(Json(suggestions(&app, &slug).await?))
+}
+
+/// What Seemo would set up, for the project's lines in Seemo's prompt: the suggestions by name, and what the owner said no to.
+pub async fn prompt_lines(app: &App, slug: &str) -> Vec<String> {
+    let Ok(v) = suggestions(app, slug).await else { return vec![] };
+    let mut out = vec![];
+    let names: Vec<String> = v["suggestions"].as_array().into_iter().flatten().map(|s| format!("{} (`{}`{})", s["name"].as_str().unwrap_or(""), s["id"].as_str().unwrap_or(""), if s["ready"].as_bool() == Some(true) { ", set up" } else { "" })).collect();
+    if !names.is_empty() {
+        out.push(format!("In your first conversation you suggested setting up: {}. Each has Add and an × to drop it in that list and on To do", names.join(", ")));
+    }
+    let dismissed = Intake::load(&app.store, slug).ok().flatten().map(|i| i.dismissed).unwrap_or_default();
+    if !dismissed.is_empty() {
+        out.push(format!("They dropped these suggestions; don't suggest them again: {}", dismissed.join(", ")));
+    }
+    out
+}
+
+pub async fn suggestions(app: &App, slug: &str) -> anyhow::Result<Value> {
+    let intake = Intake::load(&app.store, slug)?.unwrap_or_default();
+    let html = site_html(app, slug);
+    let items = crate::market::catalogue(app).await;
+    let listing = crate::market::listing(app, Some(slug)).await;
     let state = |id: &str| listing.abilities.iter().chain(listing.market.iter()).find(|v| v["id"] == id).cloned().unwrap_or(Value::Null);
 
     let mut out = vec![];
-    for item in &items {
+    for item in items.iter().filter(|i| !intake.dismissed.contains(&i.id)) {
         let channels: Vec<(String, String)> = item.channels.iter().map(|c| (c.kind.clone(), c.display_name().to_string())).collect();
         let why = reasons(&item.fits, &channels, &intake, &html);
         if why.is_empty() {
@@ -95,7 +118,7 @@ async fn suggest(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<
     // Networks the owner named that no ability publishes to yet.
     let known: Vec<(String, String)> = items.iter().flat_map(|i| i.channels.iter().map(|c| (c.kind.clone(), c.display_name().to_string()))).collect();
     let waiting: Vec<&String> = intake.networks.iter().filter(|n| !known.iter().any(|(k, name)| k.eq_ignore_ascii_case(n) || name.eq_ignore_ascii_case(n))).collect();
-    Ok(Json(json!({ "suggestions": out, "waiting": waiting })))
+    Ok(json!({ "suggestions": out, "waiting": waiting }))
 }
 
 #[cfg(test)]
@@ -115,5 +138,9 @@ mod tests {
 
         let other = Intake { goal: "repeat".into(), ..Default::default() };
         assert!(reasons(&fits, &[], &other, &[]).is_empty(), "nothing said, nothing seen");
+        assert!(reasons(&fits, &channels, &intake, &["<p>a plain site</p>".to_string()]).is_empty(), "named the goal and the network, but the site doesn't run on it");
+
+        let any_site = Fits { goals: vec!["customers".into()], html: vec![] };
+        assert_eq!(reasons(&any_site, &[], &intake, &[]).len(), 1, "no HTML to look for: the goal alone is enough");
     }
 }

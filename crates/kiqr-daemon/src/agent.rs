@@ -344,7 +344,10 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
             None => format!("{what}, {}% done", build.pct),
         }
     });
-    let intake = kiqr_core::intake::Intake::load(&app.store, &project.slug).ok().flatten().map(|i| i.lines()).unwrap_or_default();
+    let mut intake = kiqr_core::intake::Intake::load(&app.store, &project.slug).ok().flatten().map(|i| i.lines()).unwrap_or_default();
+    if !intake.is_empty() {
+        intake.extend(crate::setup::prompt_lines(app, &project.slug).await);
+    }
     core_agent::Context {
         building,
         intake,

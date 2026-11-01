@@ -4,7 +4,7 @@
 // getting-started guide) opens the widget with `openSeemo(chatId)`. A page
 // can hand the widget something of its own to say for a while (the welcome
 // flow's first conversation) with `setSeemoIntro`.
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Maximize2, Minus, Plus } from "lucide-react";
 import { api, useDemoSeemo, useEvents, type KiqrEvent } from "./api";
@@ -25,8 +25,11 @@ export function closeSeemo() {
 }
 
 // What a page has Seemo say in the widget instead of the chat, until it hands it back (null).
-// With `talk`, the box to write to Seemo is under it: the first message starts a real chat.
+// With `talk`, the box to write to Seemo is under it: the first message starts a real chat,
+// which carries on under the intro in the same window (the intro puts `IntroFollowUp` last).
 type Intro = { node: ReactNode; subtitle: string; talk?: boolean };
+/** The chat written from the intro, as rows for the end of the intro's own list. */
+export const IntroFollowUp = createContext<ReactNode>(null);
 let intro: Intro | null = null;
 const listeners = new Set<() => void>();
 export function setSeemoIntro(next: Intro | null) {
@@ -52,12 +55,12 @@ export function SeemoWidget({ project }: { project: string | null }) {
   const onChatsPage = /^\/p\/[^/]+\/chats/.test(pathname);
   const chat = useChat(project, active);
   const shared = useSyncExternalStore(subscribeIntro, () => intro);
-  // Once the person writes during the intro, the widget is that chat from then on.
-  const [left, setLeft] = useState(false);
+  // Once the person writes during the intro, that chat carries on under it; when the intro ends, the widget is that chat.
+  const [follow, setFollow] = useState<string | null>(null);
   useEffect(() => {
-    if (!shared) setLeft(false);
+    if (!shared) setFollow(null);
   }, [shared]);
-  const own = left ? null : shared;
+  const own = shared;
 
   // Which chat to follow: the one last opened, else the newest.
   useEffect(() => {
@@ -165,18 +168,22 @@ export function SeemoWidget({ project }: { project: string | null }) {
             </button>
           </div>
         </div>
-        {own.node}
+        <IntroFollowUp.Provider value={follow && follow === active && project ? <Conversation slug={project} messages={chat.messages} streaming={chat.streaming} compact bare /> : null}>{own.node}</IntroFollowUp.Provider>
         {own.talk && (
           <Composer
             compact
             onSend={async (text) => {
-              const c = await api.createChat(project);
-              setActive(c.id);
-              setLeft(true);
-              await api.sendMessage(project, c.id, text);
+              let id = follow;
+              if (!id || id !== active) {
+                const c = await api.createChat(project, "Getting started");
+                id = c.id;
+                setActive(id);
+                setFollow(id);
+              }
+              await api.sendMessage(project, id, text);
             }}
             onStop={() => void chat.stop()}
-            busy={false}
+            busy={!!follow && !!chat.streaming}
             placeholder={own.subtitle.startsWith("reading") ? "Ask me anything while I read" : "Ask me anything"}
           />
         )}

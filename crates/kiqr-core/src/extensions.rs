@@ -323,6 +323,8 @@ pub struct ImageSize {
 /// and the crawl: the goals it serves (`customers`, `repeat`, `known`,
 /// `launch`) and text in a site's HTML that shows the business already uses
 /// the service (a script URL, a generator tag). Matched case-insensitively.
+/// When `html` is given it has to match: a goal or a named network alone
+/// doesn't suggest an ability that needs the site to run on something.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Fits {

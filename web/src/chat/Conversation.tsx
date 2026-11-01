@@ -12,7 +12,7 @@ import { AssetEmbed } from "../pages/AssetEmbed";
 /** A line from outside the chat (the crawl's narration), placed among the messages by its time. */
 export type Note = { text: string; at: Date };
 
-export function Conversation({ slug, messages, streaming, compact, notes = [] }: { slug: string; messages: Message[]; streaming: Streaming | null; compact?: boolean; notes?: Note[] }) {
+export function Conversation({ slug, messages, streaming, compact, notes = [], bare }: { slug: string; messages: Message[]; streaming: Streaming | null; compact?: boolean; notes?: Note[]; /** Just the rows, inside someone else's scrolling list (Seemo's first conversation). */ bare?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   // Follow the bottom while the reader is there; leave them alone when they scrolled up.
@@ -44,8 +44,8 @@ export function Conversation({ slug, messages, streaming, compact, notes = [] }:
   }
   flush(Infinity);
 
-  return (
-    <div className={`conv ${compact ? "compact" : ""}`} ref={box}>
+  const content = (
+    <>
       {rows.map((r) =>
         "m" in r ? (
           <MessageView key={r.m.id} slug={slug} m={r.m} compact={compact} />
@@ -77,6 +77,12 @@ export function Conversation({ slug, messages, streaming, compact, notes = [] }:
           </div>
         </div>
       )}
+    </>
+  );
+  if (bare) return content;
+  return (
+    <div className={`conv ${compact ? "compact" : ""}`} ref={box}>
+      {content}
     </div>
   );
 }
@@ -388,7 +394,7 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
           {Object.keys((p.options as Record<string, unknown>) ?? {}).length > 0 && (
             <p className="muted sm">
               {Object.entries(p.options as Record<string, unknown>)
-                .map(([k, v]) => `${k.replace(/_/g, " ")}: ${String(v)}`)
+                .map(([k, v]) => `${k.replace(/_/g, " ")}: ${Array.isArray(v) ? v.map((x) => (x && typeof x === "object" ? String((x as { path?: unknown }).path ?? JSON.stringify(x)) : String(x))).join(", ") : String(v)}`)
                 .join(" · ")}
             </p>
           )}

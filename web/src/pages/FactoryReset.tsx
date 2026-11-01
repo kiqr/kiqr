@@ -6,8 +6,8 @@
 // Seemo, the CLI or an ability).
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Bomb, Loader2, RefreshCw, ShieldAlert, X } from "lucide-react";
-import { api, type Project } from "../api";
+import { Bomb, Loader2, Network, RefreshCw, ShieldAlert, X } from "lucide-react";
+import { api, type Project, type ResetNetwork } from "../api";
 
 const HOLD_MS = 2000;
 
@@ -20,6 +20,8 @@ export function FactoryReset({ home, boot }: { home?: string; boot?: string }) {
   const [typed, setTyped] = useState("");
   const [sum, setSum] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [network, setNetwork] = useState<ResetNetwork | null>(null);
+  const [keepNetwork, setKeepNetwork] = useState(false);
 
   const open = () => {
     setError(null);
@@ -35,7 +37,13 @@ export function FactoryReset({ home, boot }: { home?: string; boot?: string }) {
     if (!keep) setError(null);
     setSum("");
     try {
-      setToken(await api.resetStart());
+      const t = await api.resetStart();
+      setToken(t);
+      // Asked once per opening: a new sum keeps the choice.
+      if (step !== "type") {
+        setNetwork(t.network);
+        setKeepNetwork(!!t.network?.remote);
+      }
       setStep("type");
     } catch (e) {
       setError((e as Error).message);
@@ -46,7 +54,7 @@ export function FactoryReset({ home, boot }: { home?: string; boot?: string }) {
     if (!token) return;
     setError(null);
     try {
-      const r = await api.reset(token.token, typed, sum);
+      const r = await api.reset(token.token, typed, sum, !!network && keepNetwork);
       setStep("erasing");
       waitForFresh(r.port, boot);
     } catch (e) {
@@ -94,7 +102,7 @@ export function FactoryReset({ home, boot }: { home?: string; boot?: string }) {
                 <div className="fr-erasing">
                   <Loader2 size={22} className="spin" />
                   <h2 id="fr-title">Starting fresh</h2>
-                  <p className="muted">Erasing {home ?? "the home folder"} and starting KIQR again as a new installation. This page reloads when it is back.</p>
+                  <p className="muted">Erasing {home ?? "the home folder"} and starting KIQR again as a new installation. {network?.remote && !keepNetwork ? "It now listens on this machine only: open http://127.0.0.1:4040 there, or through an SSH tunnel." : "This page reloads when it is back."}</p>
                 </div>
               ) : (
                 <>
@@ -148,6 +156,23 @@ export function FactoryReset({ home, boot }: { home?: string; boot?: string }) {
                           </button>
                         </div>
                       </div>
+                      {network && (
+                        <label className="fr-keep">
+                          <input type="checkbox" checked={keepNetwork} onChange={(e) => setKeepNetwork(e.target.checked)} />
+                          <span>
+                            <b>
+                              <Network size={13} /> Keep the network settings
+                            </b>
+                            <small>
+                              Start again on <code>{network.host.includes(":") ? `[${network.host}]` : network.host}:{network.port}</code>, as now.{" "}
+                              {network.remote
+                                ? "Without it, KIQR listens on 127.0.0.1:4040 only and this page can't be reached from here any more: you'd need this machine or an SSH tunnel."
+                                : "Without it, KIQR starts on the default port, 4040."}{" "}
+                              Everything else is still erased.
+                            </small>
+                          </span>
+                        </label>
+                      )}
                       <p>
                         Then type <code className="fr-phrase">{phrase}</code> and hold the button.
                       </p>

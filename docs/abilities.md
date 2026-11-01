@@ -141,7 +141,7 @@ List the same fields (`kind`, `name`, `icon`, `profile_hosts`) under `channels` 
 ```yaml
 fits:
   goals: [customers]                 # the welcome question's goals it serves: customers, repeat, known, launch
-  html: ["/wp-content/"]             # text in the site's HTML that shows the business already uses the service
+  html: ["/wp-content/"]             # text in the site's HTML that shows the business already uses the service; when given, it must match (a goal alone is not enough)
 ```
 
 A network the owner names in that conversation matches the ability's `channels` (kind or name) without any `fits`. Put the same `fits` in the marketplace index entry, so it works before the ability is installed. HTML is matched case-insensitively against the pages the crawl kept; pick text only that service puts there (a script URL, a generator tag), never a common word.
