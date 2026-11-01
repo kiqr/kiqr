@@ -77,6 +77,8 @@ export function stateOf(a: Ability): State {
   if (a.program_found === false) return { id: "noprogram", text: "program missing", tone: "warn" };
   if (!a.ready) return { id: a.missing.length ? "missing" : "setup", text: isService(a) && !(a.accounts?.length ?? 0) ? "needs an account" : a.missing.length ? "not connected" : "needs setup", tone: "warn" };
   const n = a.accounts?.length ?? 0;
+  // A core ability with accounts of its own (the browser and its sites) is on with or without them.
+  if (a.core && isService(a)) return n > 0 ? { id: "own", text: n === 1 ? "1 account" : `${n} accounts`, tone: "ok" } : { id: "on", text: "on", tone: "ok" };
   if (n > 0) return { id: "own", text: isService(a) ? (n === 1 ? `via your ${serviceName(a)} account` : `via ${n} ${serviceName(a)} accounts`) : n === 1 ? "connected" : `${n} accounts`, tone: "ok" };
   if (a.signed_in) return { id: "own", text: a.signed_in === "project" ? "signed in here" : "signed in", tone: "ok" };
   if (a.auth.length) return { id: "machine", text: "machine key", tone: "ok" };
@@ -104,7 +106,12 @@ export function partsOf(a: Ability, full = false): Part[] {
 /** What an ability needs before it works: keys and where each is set, a program on this computer, the hosts it calls. */
 export function needsOf(a: Ability): Part[] {
   const out: Part[] = [];
-  if (a.auth.length && a.core) {
+  if (a.core && isService(a)) {
+    // Part of KIQR, with accounts of its own (the browser's sites): on without any, each connected under Accounts.
+    const n = a.accounts?.length ?? 0;
+    const ready = (a.accounts ?? []).filter((x) => x.missing.length === 0).length;
+    out.push({ icon: KeyRound, label: "Its accounts", detail: n === 0 ? "none yet; connect a site under Accounts and Seemo browses it" : `${ready} of ${n} ready`, tone: "" });
+  } else if (a.auth.length && a.core) {
     // Signed in to the service (`signed_in`), its key is not needed: the sign-in stands in for it.
     const signedIn = a.signed_in ? `not needed: signed in for ${a.signed_in === "project" ? "this project" : "every project"}` : null;
     for (const k of a.auth) {

@@ -530,7 +530,11 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
     let home = ctx.app.store.home();
     let auth: Vec<&AuthKey> = m.map(|m| m.auth.iter().collect()).unwrap_or_else(|| item.auth.iter().collect());
     // A core ability's keys are KIQR's own (the machine's); an installed one's live on the project's accounts of it.
+    // A core folder with a service (the browser) stands on its own: it needs no account to be on, and each
+    // account's own gaps show on the account.
+    let core_service = e.is_some_and(|e| e.is_core()) && m.is_some_and(|m| !m.service_card().group.is_empty());
     let missing: Vec<String> = match (m, core) {
+        (Some(_), None) if core_service => vec![],
         (Some(m), None) => crate::ext::missing_in(ctx.app, ctx.slug, m),
         _ => auth.iter().filter(|a| !a.optional && !crate::signins::has_core_key(home, ctx.slug, &a.env)).map(|a| a.env.clone()).collect(),
     };

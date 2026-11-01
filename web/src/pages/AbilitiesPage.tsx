@@ -228,7 +228,11 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
                   <BookOpen size={11} /> instructions
                 </button>
               )}
-              {service ? (
+              {service && a.core ? (
+                <button className="part" title="Part of KIQR; the accounts it works through (a site behind a login) are connected under Accounts" onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
+                  <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? `${a.accounts!.length} ${a.accounts!.length === 1 ? "account" : "accounts"}` : "no accounts yet"}
+                </button>
+              ) : service ? (
                 <button className={`part ${a.missing.length ? "warn" : ""}`} title={`Every ability of ${serviceName(a)} shares this project's ${serviceName(a)} account`} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
                   <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? `via your ${serviceName(a)} account` : "needs an account"}
                 </button>

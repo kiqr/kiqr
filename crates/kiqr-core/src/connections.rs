@@ -719,8 +719,39 @@ pub fn move_old(store: &Store, m: &Manifest) -> Result<Vec<String>> {
                 }
             }
             if c.service() != m.service() {
+                let card = m.service_card().name;
+                // An older KIQR named the account after the one ability it was made for; on the service it takes the service's name.
+                if c.label == m.name {
+                    c.label = card.clone();
+                }
+                let others = Connection::of(store, slug, m.service());
+                // Back then the same person signed in once per ability. An account of the service that came the same way
+                // (it carries the service's name, not one the user gave) is the one to join, not to stand beside: its
+                // places and keys move over, and a key both hold with different values (a token with one ability's scope)
+                // is cleared, so that one sign-in sets the joined account for every ability of the service.
+                if let Some(mut other) = others.iter().find(|o| o.id != c.id && o.label == card && c.label == card).cloned() {
+                    let other_env = other.env_file(home, slug);
+                    let have = secrets::read_env_file(&other_env);
+                    for (k, v) in secrets::read_env_file(&env_path) {
+                        match have.get(&k) {
+                            None => secrets::write_env(&other_env, &k, &v)?,
+                            Some(w) if w != &v => secrets::write_env(&other_env, &k, "")?,
+                            _ => {}
+                        }
+                    }
+                    for p in std::mem::take(&mut c.places) {
+                        other.put_place(p);
+                    }
+                    for (role, a) in &c.allow {
+                        other.allow.entry(role.clone()).or_insert(*a);
+                    }
+                    other.save(store, slug)?;
+                    Connection::delete(store, slug, &c.id)?;
+                    out.push(format!("{slug}/{}", other.id));
+                    continue;
+                }
                 // Joining a service with accounts already: not the default there.
-                if Connection::of(store, slug, m.service()).iter().any(|o| o.default) {
+                if others.iter().any(|o| o.default) {
                     c.default = false;
                 }
                 c.service = m.service().to_string();
@@ -770,6 +801,44 @@ mod tests {
 
     fn manifest(yaml: &str) -> Manifest {
         crate::extensions::parse_manifest(yaml).unwrap()
+    }
+
+    /// Two abilities that each had an account of their own become one service: the
+    /// accounts join as one, with both places, one set of keys, and a token that
+    /// differed (one scope each) cleared for one new sign-in.
+    #[test]
+    fn one_ability_accounts_join_as_one_service_account() {
+        let dir = std::env::temp_dir().join(format!("kiqr-join-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(Home::at(&dir)).unwrap();
+        let home = store.home().clone();
+        let p = crate::project::Project { slug: "acme".into(), name: "Acme".into(), url: "https://acme.test".into(), created_at: Utc::now(), crawl: Default::default(), last_crawl: None, abilities_off: vec![], suggestions_dismissed: vec![] };
+        p.save(&store).unwrap();
+        let ga = manifest("id: ga\nname: Read Numbers\ntransport: http\nservice: { id: g, name: G, group: numbers }\nauth:\n  - { env: G_TOKEN, optional: true }\nplaces:\n  property: { label: Property }\nmoved:\n  keys: { GA_TOKEN: G_TOKEN }\n  places: { GA_PROPERTY: property }\nhosts: [api.g.test]\nallow: { measure: \"on\" }\n");
+        let gs = manifest("id: gs\nname: Read Search\ntransport: http\nservice: { id: g, name: G, group: numbers }\nauth:\n  - { env: G_TOKEN, optional: true }\nplaces:\n  site: { label: Site }\nmoved:\n  keys: { GS_TOKEN: G_TOKEN }\n  places: { GS_SITE: site }\nhosts: [api.g.test]\nallow: { measure: \"on\" }\n");
+        for (id, label, ability, token, place) in [("read-numbers", "Read Numbers", "ga", ("GA_TOKEN", "ta"), ("GA_PROPERTY", "4242")), ("read-search", "Read Search", "gs", ("GS_TOKEN", "ts"), ("GS_SITE", "sc-domain:acme.test"))] {
+            let c = Connection { id: id.into(), label: label.into(), ability: ability.into(), default: true, created_by: "kiqr".into(), ..Default::default() };
+            c.save(&store, "acme").unwrap();
+            secrets::write_env(&c.env_file(&home, "acme"), token.0, token.1).unwrap();
+            secrets::write_env(&c.env_file(&home, "acme"), place.0, place.1).unwrap();
+        }
+        assert_eq!(move_old(&store, &ga).unwrap(), vec!["acme/read-numbers".to_string()]);
+        let a = Connection::load(&store, "acme", "read-numbers").unwrap();
+        assert_eq!((a.label.as_str(), a.service.as_str()), ("G", "g"));
+        assert_eq!(a.keys(&home, "acme").get("G_TOKEN").map(String::as_str), Some("ta"));
+        assert_eq!(move_old(&store, &gs).unwrap(), vec!["acme/read-numbers".to_string()]);
+        let all = Connection::of(&store, "acme", "g");
+        assert_eq!(all.len(), 1, "one account of the service");
+        let a = &all[0];
+        assert!(a.default && a.label == "G");
+        assert_eq!(a.places.iter().map(|p| p.kind.as_str()).collect::<Vec<_>>(), vec!["ga", "gs"]);
+        assert_eq!(a.place_of_kind("gs", None).and_then(|p| p.fields.get("site").cloned()), Some(Value::String("sc-domain:acme.test".into())));
+        // The two tokens differed (one scope each): neither is kept, one sign-in sets the joined account.
+        assert!(!a.keys(&home, "acme").contains_key("G_TOKEN"));
+        assert!(Connection::load(&store, "acme", "read-search").is_err());
+        // Running again moves nothing more.
+        assert!(move_old(&store, &gs).unwrap().is_empty() && move_old(&store, &ga).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

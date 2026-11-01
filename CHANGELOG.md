@@ -4,6 +4,7 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+- Accounts an older KIQR made for one ability each (Read Google Analytics, Read Google Search Console) join as one account of the service when their abilities update: one Google card with both places; where the two sign-ins held different tokens (one scope each) the token is cleared, and one Connect with Google sets both. "Browse with a real browser" has the on/off switch like every core ability: it needs no account to be on, and the sites it browses are its accounts, connected under Accounts.
 - Programs KIQR installs (the browser's) are asked about first: the connect wizard names them and where they go, and nothing downloads before "Install now"; installing an ability no longer fetches them on its own. The install shows its log as it runs (what KIQR did, what uv printed), in the wizard and in the ability's window, and a page opened again while an install runs picks it up. An ability that runs on another's program (X, Reddit on the browser) installs that program's requirements, which left the wizard waiting before.
 - Account cards and the connect wizard show the service's own mark (the ability's avatar) in place of a generic icon; X and Reddit got theirs.
 - The marketplace shelf lists every ability not installed yet, a service's abilities (X, Reddit, email, WordPress…) with Connect in place of Install: it showed nothing when everything left in the index connected an account.
