@@ -376,7 +376,8 @@ export const SERVICE_GROUPS: { id: string; label: string }[] = [
   { id: "tools", label: "Tools" },
 ];
 /** How an ability signs in with one button (its manifest's `connect`): what to ask first, what comes back. */
-export type ConnectInfo = { label: string; flow: "redirect" | "oauth2" | "cloud"; needs: string[]; returns: string[]; https_only: boolean; /** kiqr.cloud finishes this sign-in (it holds the provider's app). */ via_cloud?: boolean; provider?: string | null };
+export type ConnectInfo = { label: string; flow: "redirect" | "oauth2" | "cloud"; needs: string[]; returns: string[]; https_only: boolean; /** kiqr.cloud finishes this sign-in (it holds the provider's app). */ via_cloud?: boolean; provider?: string | null; /** A page at the service where access to more of it is granted (an app installed on a repository), shown when a picked list lacks what the person looks for. */ grant?: ConnectGrant | null };
+export type ConnectGrant = { label: string; url: string; help?: string };
 /** One instructions file of an ability, and where its text is overridden. */
 export type InstructionFile = { file: string; label: string; project_copy: boolean; machine_copy: boolean };
 /** One ability: what Seemo can do. Core ones are code; the rest are folders with instructions (SKILL.md), a connection (extension.yaml), or both. */

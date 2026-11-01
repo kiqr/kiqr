@@ -175,6 +175,7 @@ connect:
   callback: https                # the service only calls back over https
   returns: { WP_SITE: site_url, WP_USER: user_login, WP_APP_PASSWORD: password }
   denied: { param: success, equals: "false" }
+  grant: { label: Install KIQR on your repositories, url: "https://...", help: "..." }   # optional: a page at the service where the person grants access to more of it after signing in (a GitHub App installed on a repository); shown under a key picked from the account's list when what they look for is not in it, with "look again"
 ```
 
 - **redirect**: the browser opens `url`; the service comes back to KIQR's callback (`/api/connect/callback`, under the address the UI runs on) with the values as query parameters, mapped by `returns`. `callback: https` means the service refuses a plain-http callback. When KIQR is signed in to kiqr.cloud, the callback is a single-use relay there (`https://kiqr.cloud/r/<id>`) that sends the browser straight on to KIQR, and nothing is pasted; otherwise KIQR opens the page without a callback and the user pastes what it shows.

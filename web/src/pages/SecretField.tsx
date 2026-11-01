@@ -1,7 +1,7 @@
 // A secret by name: typed once, saved to .env (one account's, or KIQR's own keys on the machine), never shown again.
 import { useEffect, useState } from "react";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
-import { api } from "../api";
+import { api, type ConnectGrant } from "../api";
 import { FieldInput } from "./FieldInput";
 
 /** A help line: a bare URL becomes "where to get it"; a sentence keeps its words, with any URL in it linked. */
@@ -28,7 +28,7 @@ export function Hint({ text }: { text: string }) {
   );
 }
 
-export function SecretField({ name, label, help, placeholder, set, optional, options, choices, slug, account, onSaved }: { name: string; label: string; help?: string; placeholder?: string; set: boolean | string | null; optional?: boolean; options?: string[]; /** Read its values through the account (a signed-in service's list). */ choices?: boolean; slug?: string; account?: string; onSaved?: () => void }) {
+export function SecretField({ name, label, help, placeholder, set, optional, options, choices, grant, slug, account, onSaved }: { name: string; label: string; help?: string; placeholder?: string; set: boolean | string | null; optional?: boolean; options?: string[]; /** Read its values through the account (a signed-in service's list). */ choices?: boolean; /** Where the person grants access to more of the service when the list lacks what they look for. */ grant?: ConnectGrant | null; slug?: string; account?: string; onSaved?: () => void }) {
   const [value, setValue] = useState("");
   const [read, setRead] = useState<{ value: string; label: string }[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -40,10 +40,11 @@ export function SecretField({ name, label, help, placeholder, set, optional, opt
     setEditing(!set);
   }, [set]);
   // A list read through the account: shown as a select; typing stays possible when it cannot be read.
+  const [again, setAgain] = useState(0);
   useEffect(() => {
     if (!choices || !slug || !account || !editing) return;
     api.accountChoices(slug, account, name).then((r) => setRead(r.choices)).catch(() => setRead([]));
-  }, [choices, slug, account, name, editing]);
+  }, [choices, slug, account, name, editing, again]);
   const listed = read && read.length > 0 ? read : null;
   const save = async () => {
     setBusy(true);
@@ -88,6 +89,19 @@ export function SecretField({ name, label, help, placeholder, set, optional, opt
             Change
           </button>
         </span>
+      )}
+      {editing && choices && read !== null && grant && (
+        <p className="set-grant">
+          {listed ? "Not in the list?" : "Nothing to pick from yet."}{" "}
+          <a href={grant.url} target="_blank" rel="noreferrer">
+            {grant.label}
+          </a>
+          {grant.help ? ` (${grant.help})` : ""}, then{" "}
+          <button className="lnk-btn" onClick={() => (setRead(null), setAgain((n) => n + 1))}>
+            look again
+          </button>
+          .
+        </p>
       )}
       {error && <span className="err">{error}</span>}
     </div>

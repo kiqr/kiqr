@@ -61,6 +61,19 @@ pub struct Denied {
     pub equals: String,
 }
 
+/// `grant: { label, url, help }`: where access to more of the service is granted, in the person's own browser.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Grant {
+    /// The link: "Install KIQR on your repositories".
+    pub label: String,
+    /// An https page at the service.
+    pub url: String,
+    /// One line under it: what happens there.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub help: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Connect {
@@ -88,6 +101,10 @@ pub struct Connect {
     /// into the token response, beside the token itself.
     pub returns: BTreeMap<String, String>,
     pub denied: Option<Denied>,
+    /// A page at the service where the person grants access to more of it after signing in
+    /// (a GitHub App installed on a repository, a workspace added): shown beside a key picked
+    /// from the account's list when what they look for is not in it.
+    pub grant: Option<Grant>,
     /// oauth2: the variable that holds the access token (stored); service_account:
     /// the variable a request reads it from (minted at call time, never stored).
     pub token_env: String,
@@ -183,6 +200,7 @@ pub fn view(all: &[Connect]) -> Value {
             "https_only": c.callback == Callback::Https,
             "via_cloud": c.flow == Flow::Cloud,
             "provider": (!c.provider.is_empty()).then(|| c.provider.clone()),
+            "grant": c.grant.as_ref().filter(|g| g.url.starts_with("https://") && !g.label.is_empty()),
         }),
         None => Value::Null,
     }

@@ -583,7 +583,7 @@ export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Acco
       {open ? (
         <div className="set-keys">
           {shown.map((k) => (
-            <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} placeholder={k.placeholder} set={k.set} optional={k.optional} options={k.options} choices={k.choices && signedIn} slug={slug} account={a.id} onSaved={onChange} />
+            <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} placeholder={k.placeholder} set={k.set} optional={k.optional} options={k.options} choices={k.choices && signedIn} grant={a.connect?.grant} slug={slug} account={a.id} onSaved={onChange} />
           ))}
         </div>
       ) : null}
