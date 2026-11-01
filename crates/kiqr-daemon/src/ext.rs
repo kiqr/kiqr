@@ -506,7 +506,10 @@ pub(crate) async fn set_connection_secret(app: &App, slug: &str, conn: &str, nam
         }
     }
     kiqr_core::secrets::write_env(&c.env_file(app.store.home(), slug), name, &value).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    app.mcp.stop_connection(&slug, &c.id).await;
+    // A program runs with the account's keys, so a changed key restarts it; a login key is the runner's alone and the program never saw it.
+    if !login_key {
+        app.mcp.stop_connection(&slug, &c.id).await;
+    }
     app.bus.emit(Some(slug), EventKind::SecretSet { name: name.to_string(), set: !value.is_empty(), project: Some(slug.to_string()) });
     Ok(!value.is_empty())
 }

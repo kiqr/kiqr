@@ -84,7 +84,8 @@ impl McpHost {
             *slot = None;
         }
         let s = Server::spawn(home, m, launch).await?;
-        for (tool, args) in &launch.warmup {
+        // The warmup opens what an account owns (its browser with its profile): with no account there is nothing to open, and a bare server answers tool lists.
+        for (tool, args) in launch.warmup.iter().filter(|_| launch.dir.is_some()) {
             let r = s.request("tools/call", json!({ "name": tool, "arguments": args }), CALL_TIMEOUT).await.with_context(|| format!("{}: warming up with {tool}", m.name))?;
             let out = read_result(&r);
             if out.is_error {
@@ -189,6 +190,9 @@ impl Server {
         let _ = std::fs::create_dir_all(&cwd);
         cmd.current_dir(&cwd);
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+        // Its own process group, so that stopping it reaches what it started (a browser) and not only the program.
+        #[cfg(unix)]
+        cmd.process_group(0);
         let mut child = cmd.spawn().with_context(|| format!("starting {} ({})", m.name, m.command))?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
@@ -295,9 +299,35 @@ impl Server {
         Ok(self.tools.read().await.clone())
     }
 
+    /// Stop the server: its input is closed first, so that the program ends on its own and closes
+    /// what it opened (a browser, whose profile lock goes with it); only one that lingers is killed.
+    /// A browser killed under the program keeps the profile locked for a while, and the next start
+    /// for the same account is refused.
     async fn kill(&self) {
+        use tokio::io::AsyncWriteExt;
         self.alive.store(false, Ordering::SeqCst);
-        let _ = self.child.lock().await.start_kill();
+        {
+            let mut stdin = self.stdin.lock().await;
+            let _ = stdin.shutdown().await;
+        }
+        let mut child = self.child.lock().await;
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            // The whole group, politely: the program and its browser end on their own and the browser lets go of its profile.
+            unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
+            if tokio::time::timeout(Duration::from_secs(6), child.wait()).await.is_ok() {
+                return;
+            }
+            tracing::warn!(id = %self.id, "the program did not end when asked; killing it");
+            unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+            let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+            return;
+        }
+        if tokio::time::timeout(Duration::from_secs(6), child.wait()).await.is_err() {
+            tracing::warn!(id = %self.id, "the program did not end after its input closed; killing it");
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+        }
     }
 }
 
