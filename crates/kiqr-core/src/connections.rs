@@ -230,24 +230,38 @@ impl Connection {
         }
     }
 
-    /// Add or replace a place; the first one is the default.
+    /// The place of one kind a call means: the one named when it is of that
+    /// kind, else that kind's default, else its only one.
+    pub fn place_of_kind(&self, kind: &str, named: Option<&str>) -> Option<&Place> {
+        let of_kind: Vec<&Place> = self.places.iter().filter(|p| p.kind == kind).collect();
+        match named.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => of_kind.into_iter().find(|p| p.id == n || p.label.eq_ignore_ascii_case(n)),
+            None => of_kind.iter().copied().find(|p| p.default).or_else(|| (of_kind.len() == 1).then(|| of_kind[0])),
+        }
+    }
+
+    /// Add or replace a place; the first one of its kind is that kind's default.
     pub fn put_place(&mut self, mut p: Place) {
         if p.id.is_empty() {
             p.id = crate::assets::slugify(&p.label);
         }
-        if self.places.is_empty() {
+        if !self.places.iter().any(|o| o.kind == p.kind && o.id != p.id) {
             p.default = true;
         }
+        let kind = p.kind.clone();
         if let Some(i) = self.places.iter().position(|o| o.id == p.id) {
             p.default = p.default || self.places[i].default;
             self.places[i] = p;
         } else {
             self.places.push(p);
         }
-        if self.places.iter().filter(|p| p.default).count() > 1 {
-            let keep = self.places.iter().rposition(|p| p.default).unwrap_or(0);
+        // One default per kind: the last one made default wins.
+        if self.places.iter().filter(|p| p.kind == kind && p.default).count() > 1 {
+            let keep = self.places.iter().rposition(|p| p.kind == kind && p.default).unwrap_or(0);
             for (i, o) in self.places.iter_mut().enumerate() {
-                o.default = i == keep;
+                if o.kind == kind {
+                    o.default = i == keep;
+                }
             }
         }
     }
@@ -256,7 +270,7 @@ impl Connection {
         let i = self.places.iter().position(|p| p.id == id)?;
         let gone = self.places.remove(i);
         if gone.default {
-            if let Some(first) = self.places.first_mut() {
+            if let Some(first) = self.places.iter_mut().find(|p| p.kind == gone.kind) {
                 first.default = true;
             }
         }
@@ -593,6 +607,55 @@ pub fn migrate(store: &Store, manifests: &[Manifest]) -> Result<Option<Migrated>
     Ok(Some(done))
 }
 
+/// An ability changed shape (`moved` in its manifest, or a new `service`):
+/// every account made with it moves along. Keys are renamed in its `.env`, a
+/// key whose value is now a place field becomes a place of the ability's
+/// kind, and the account joins the manifest's service. Returns the accounts
+/// changed, as `slug/id`.
+pub fn move_old(store: &Store, m: &Manifest) -> Result<Vec<String>> {
+    let home = store.home();
+    let mut out = vec![];
+    for p in crate::project::Project::list(store).unwrap_or_default() {
+        let slug = p.slug.as_str();
+        for mut c in Connection::list(store, slug)?.into_iter().filter(|c| c.ability == m.id) {
+            let mut changed = false;
+            let env_path = c.env_file(home, slug);
+            let keys = secrets::read_env_file(&env_path);
+            for (old, new) in &m.moved.keys {
+                if let Some(v) = keys.get(old) {
+                    if !keys.contains_key(new) {
+                        secrets::write_env(&env_path, new, v)?;
+                    }
+                    secrets::write_env(&env_path, old, "")?;
+                    changed = true;
+                }
+            }
+            for (old, field) in &m.moved.places {
+                if let Some(v) = keys.get(old).filter(|v| !v.trim().is_empty()) {
+                    if c.place_of_kind(&m.id, None).is_none() {
+                        c.put_place(Place { id: String::new(), kind: m.id.clone(), label: v.trim().to_string(), fields: [(field.clone(), Value::String(v.trim().to_string()))].into_iter().collect(), default: true });
+                    }
+                    secrets::write_env(&env_path, old, "")?;
+                    changed = true;
+                }
+            }
+            if c.service() != m.service() {
+                // Joining a service with accounts already: not the default there.
+                if Connection::of(store, slug, m.service()).iter().any(|o| o.default) {
+                    c.default = false;
+                }
+                c.service = m.service().to_string();
+                changed = true;
+            }
+            if changed {
+                c.save(store, slug)?;
+                out.push(format!("{slug}/{}", c.id));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// After an install: a project whose own `.env` still holds every key the
 /// ability needs (from before connections, or typed by hand) gets them as its
 /// first account, and they leave the `.env`. Returns the projects that did.
@@ -786,6 +849,27 @@ mod tests {
         assert!(!text.contains("asks_first") && !text.contains("destination:") && !text.contains("learns") && text.contains("allow:") && text.contains("places:"), "{text}");
         let again = Connection::load(&store, "acme", "legacy").unwrap();
         assert_eq!(again.allow("publish"), Allow::Auto);
+        // An ability that changed shape: its accounts move along (keys renamed, a key into a place, a new service).
+        let ga_old = manifest("id: ga\nname: Analytics\ntransport: http\nauth:\n  - { env: GA_PROPERTY }\n  - { env: GA_TOKEN, optional: true }\nhosts: [api.g.test]\ntools:\n  - name: read\n    request: { method: GET, url: \"https://api.g.test/${GA_PROPERTY}\" }\n");
+        let ga = Connection { id: "ga".into(), label: "GA".into(), ability: "ga".into(), default: true, ..Default::default() };
+        ga.save(&store, "acme").unwrap();
+        secrets::write_env(&ga.env_file(&home, "acme"), "GA_PROPERTY", "123").unwrap();
+        secrets::write_env(&ga.env_file(&home, "acme"), "GA_TOKEN", "t").unwrap();
+        let _ = ga_old;
+        let ga_new = manifest("id: ga\nname: Analytics\nservice: { id: google, name: Google, group: numbers }\ntransport: http\nauth:\n  - { env: G_TOKEN, optional: true }\nhosts: [api.g.test]\nplaces:\n  property: { label: Property }\nmoved:\n  keys: { GA_TOKEN: G_TOKEN }\n  places: { GA_PROPERTY: property }\ntools:\n  - name: read\n    request: { method: GET, url: \"https://api.g.test/{{property}}\" }\n");
+        assert_eq!(move_old(&store, &ga_new).unwrap(), vec!["acme/ga".to_string()]);
+        let moved = Connection::load(&store, "acme", "ga").unwrap();
+        assert_eq!(moved.service(), "google");
+        let keys = moved.keys(&home, "acme");
+        assert_eq!((keys.get("G_TOKEN").map(String::as_str), keys.get("GA_TOKEN"), keys.get("GA_PROPERTY")), (Some("t"), None, None));
+        let place = moved.place_of_kind("ga", None).unwrap();
+        assert_eq!((place.label.as_str(), place.fields["property"].as_str(), place.default), ("123", Some("123"), true));
+        assert!(move_old(&store, &ga_new).unwrap().is_empty(), "moving is idempotent");
+        // Defaults are per kind: a place of another kind on the same account is a default too.
+        let mut two = moved.clone();
+        two.put_place(Place { label: "acme.com".into(), kind: "gsc".into(), ..Default::default() });
+        assert!(two.place_of_kind("gsc", None).unwrap().default && two.place_of_kind("ga", None).unwrap().default);
+        assert!(crate::extensions::parse_manifest("id: bad\nname: Bad\ntransport: http\nhosts: [a.test]\nmoved:\n  places: { OLD: nowhere }\n").is_err());
         // One that never said: learning stays on by default, publishing asks.
         std::fs::write(old.join("connection.yaml"), "id: legacy\nlabel: Legacy\nability: blog\nkind: blog\n").unwrap();
         let plain = Connection::load(&store, "acme", "legacy").unwrap();

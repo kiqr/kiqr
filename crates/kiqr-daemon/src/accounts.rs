@@ -106,6 +106,14 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
         pv
     }).collect::<Vec<_>>());
     v["takes_lists"] = json!(c.is_channel() && crate::publish::takes_lists(app, slug, c).await);
+    // Who the account is, for the card: the first key that is an identity, not a secret (an
+    // address, a site, a repository), a URL reduced to its host. Secrets never leave the daemon.
+    v["identity"] = json!(m.as_ref().and_then(|m| {
+        let secret = |n: &str| { let u = n.to_ascii_uppercase(); ["TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "FILE"].iter().any(|w| u.contains(w)) };
+        m.auth.iter().filter(|a| !secret(&a.env)).find_map(|a| keys.get(&a.env).map(|v| v.trim()).filter(|v| !v.is_empty())).map(|v| url::Url::parse(v).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_else(|| v.to_string()))
+    }));
+    // The label was the user's, not the one the daemon gave it after the service.
+    v["label_set"] = json!(m.as_ref().is_none_or(|m| { let s = m.service_card().name; c.label != s && !(c.label.starts_with(&s) && c.label[s.len()..].trim().chars().all(|ch| ch.is_ascii_digit())) }));
     if c.is_channel() {
         let p = connections::pick_publisher(c, &on);
         v["publisher"] = json!(p.map(|(pm, _)| pm.id.clone()));
@@ -135,6 +143,21 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
                 v["needs_place"] = json!(crate::publish::needs_place(m, k));
             }
             v["service_card"] = json!(m.service_card());
+            // Every kind of place this account can have: the publishing kind's, and one per ability of
+            // the service that works on a place of its own (a property, a site), with what it needs.
+            let mut kinds: Vec<Value> = Vec::new();
+            if let Some(k) = m.channels.iter().find(|k| k.kind == c.kind) {
+                kinds.push(json!({ "kind": k.kind, "label": k.label, "verb": "Publishes to", "fields": k.place, "needs": crate::publish::needs_place(m, k) && c.place_of_kind(&k.kind, None).is_none(), "lists": crate::publish::kind_takes_lists(k) }));
+            }
+            {
+                let reg = app.registry.read().await;
+                let off = crate::ext::project_off(app, slug);
+                for (_, o) in reg.connections(slug).into_iter().filter(|(_, o)| o.service() == c.service() && !off.contains(&o.id) && !o.places.is_empty()) {
+                    let required = o.places.values().any(|s| !s["optional"].as_bool().unwrap_or(false));
+                    kinds.push(json!({ "kind": o.id, "label": o.name, "verb": if o.sources.is_empty() { "Works on" } else { "Measures" }, "fields": o.places, "needs": required && c.place_of_kind(&o.id, None).is_none() }));
+                }
+            }
+            v["place_kinds"] = json!(kinds);
         }
         None => {
             v["ability_name"] = json!(c.ability);
@@ -234,7 +257,8 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
     };
     let siblings = Connection::of(&app.store, slug, m.service());
     let base = b.label.trim().to_string();
-    let base = if base.is_empty() { m.name.clone() } else { base };
+    // An account is named after its service ("Google", "Email"), never after one of its abilities.
+    let base = if base.is_empty() { m.service_card().name } else { base };
     // Labels name accounts in Seemo's tools, so they stay unique per ability.
     let mut label = base.clone();
     let mut n = 2;
@@ -394,12 +418,48 @@ pub struct PlaceBody {
     pub default: bool,
     /// A mailing list (by id or name) as the place, on a mail account.
     pub list: String,
+    /// The kind of place: an ability of the service that works on places of its own (its id),
+    /// else the account's publishing kind.
+    pub kind: String,
 }
 
 /// Add a place to an account: the kind's fields checked, or a list of people
 /// to email. The first place is the default.
 pub async fn create_place(app: &App, slug: &str, id: &str, b: PlaceBody) -> Result<(Connection, Place), ApiError> {
     let mut c = Connection::load(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    // A place of an ability's own kind (a property, a site): its fields checked against that ability's `places`.
+    let own = match b.kind.trim() {
+        "" => None,
+        k if c.is_channel() && k == c.kind => None,
+        k => {
+            let reg = app.registry.read().await;
+            let found = reg.connections(slug).into_iter().find(|(_, o)| o.id == k && o.service() == c.service() && !o.places.is_empty()).map(|(_, o)| o.clone());
+            Some(found.ok_or_else(|| bad(format!("'{k}' is not something that works on places of {}", c.label)))?)
+        }
+    };
+    if let Some(o) = own {
+        let mut fields = BTreeMap::new();
+        for (name, spec) in &o.places {
+            let required = !spec["optional"].as_bool().unwrap_or(false);
+            match b.fields.get(name).and_then(|v| if v.is_string() { v.as_str().map(|s| s.trim().to_string()) } else { Some(v.to_string()) }).filter(|s| !s.is_empty()) {
+                Some(v) => {
+                    fields.insert(name.clone(), Value::String(v));
+                }
+                None if required => return Err(bad(format!("a place for {} needs '{}'", o.name, spec["label"].as_str().unwrap_or(name)))),
+                None => {}
+            }
+        }
+        let place = Place { id: String::new(), kind: o.id.clone(), label: if b.label.trim().is_empty() { place_label(&fields, &o.name) } else { b.label.trim().to_string() }, fields, default: b.default };
+        if c.places.iter().any(|p| p.kind == place.kind && p.id != place.id && p.label.eq_ignore_ascii_case(&place.label)) {
+            return Err(bad(format!("'{}' already has {} for {}", c.label, place.label, o.name)));
+        }
+        c.put_place(place.clone());
+        let saved = c.places.iter().find(|p| p.kind == place.kind && p.label == place.label).cloned().unwrap_or(place);
+        c.save(&app.store, slug)?;
+        app.store.commit(&format!("account({slug}): {} reads {} for {}", c.label, saved.label, o.name)).await?;
+        app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+        return Ok((c, saved));
+    }
     if !c.is_channel() {
         return Err(bad(format!("'{}' does not publish, so it has no places", c.label)));
     }
@@ -441,8 +501,22 @@ async fn update_place(State(app): State<App>, Path((slug, id, pid)): Path<(Strin
         p.label = b.label.trim().to_string();
     }
     if !b.fields.is_empty() && !p.is_list() {
-        let (_, _, checked) = crate::publish::place_check(&app, &slug, &c.kind, Some(&c.ability), &b.fields).await?;
-        p.fields = checked;
+        if c.is_channel() && p.kind == c.kind {
+            let (_, _, checked) = crate::publish::place_check(&app, &slug, &c.kind, Some(&c.ability), &b.fields).await?;
+            p.fields = checked;
+        } else {
+            // A place of an ability's own kind: its fields against that ability's `places`.
+            let spec = { let reg = app.registry.read().await; reg.connections(&slug).into_iter().find(|(_, o)| o.id == p.kind).map(|(_, o)| o.places.clone()) }.ok_or_else(|| bad(format!("nothing on here works on places of kind '{}'", p.kind)))?;
+            let mut fields = BTreeMap::new();
+            for (name, fs) in &spec {
+                match b.fields.get(name).and_then(|v| if v.is_string() { v.as_str().map(|s| s.trim().to_string()) } else { Some(v.to_string()) }).filter(|s| !s.is_empty()) {
+                    Some(v) => { fields.insert(name.clone(), Value::String(v)); }
+                    None if !fs["optional"].as_bool().unwrap_or(false) => return Err(bad(format!("the place needs '{}'", fs["label"].as_str().unwrap_or(name)))),
+                    None => {}
+                }
+            }
+            p.fields = fields;
+        }
     }
     if b.default {
         p.default = true;

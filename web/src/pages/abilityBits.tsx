@@ -37,7 +37,7 @@ export function serviceIcon(icon?: string, group?: string): LucideIcon {
 
 /** An ability that works through an account of its service (keys, a sign-in, places to publish, numbers to read): plumbing behind the Accounts page. */
 export function isService(a: Ability): boolean {
-  return !a.core && (a.auth.length > 0 || !!a.connect || a.channels.length > 0 || a.sources.length > 0);
+  return !a.core && (a.auth.length > 0 || !!a.connect || a.channels.length > 0 || a.sources.length > 0 || Object.keys(a.places ?? {}).length > 0);
 }
 
 /** The ability's mark: its avatar when it has one, else its icon. */

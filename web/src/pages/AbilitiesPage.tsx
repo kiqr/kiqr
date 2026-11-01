@@ -2,9 +2,9 @@
 // project. Core abilities (code, switch off but never leave), what is
 // installed from the marketplace, what you taught it; each opens in its own
 // modal. "Teach Seemo something" adds one in plain words. Abilities of a
-// service (WordPress, GitHub, analytics) are plumbing behind an account: they
-// show as "via your X account" and Connect opens the connect wizard. The
-// marketplace sits below. Installing is for the machine; switches and copies
+// service (WordPress, Google, email: anything that needs an account) are not
+// here at all, installed or in the marketplace: they come with the account,
+// under Setup → Accounts. The marketplace of the rest sits below. Installing is for the machine; switches and copies
 // of the instructions are per project.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
@@ -38,10 +38,11 @@ export function AbilitiesPage() {
   const guide = data.data?.guide ?? null;
   const yours = useMemo(() => abilities.filter((a) => (a.source === "yours" || a.source === "local") && !isService(a)).sort(byName), [abilities]);
   const fromMarket = useMemo(() => abilities.filter((a) => !a.core && (a.source === "marketplace" || a.source === "shipped") && !isService(a)).sort(byName), [abilities]);
-  // Through an account of their service: signed in on the Accounts page, not here.
-  const services = useMemo(() => abilities.filter((a) => isService(a)).sort(byName), [abilities]);
   const builtin = useMemo(() => abilities.filter((a) => a.core), [abilities]);
-  const on = abilities.filter(isOn).length;
+  // What this page lists: a service's abilities come with its account under Accounts, and its window opens from there.
+  const listed = useMemo(() => abilities.filter((a) => a.core || !isService(a)), [abilities]);
+  const shelf = useMemo(() => market.filter((a) => !isService(a)), [market]);
+  const on = listed.filter(isOn).length;
   const opened = useMemo(() => (openId ? [...abilities, ...market, ...(guide ? [guide] : [])].find((a) => a.id === openId) ?? null : null), [openId, abilities, market, guide]);
 
   const open = useCallback(
@@ -81,11 +82,13 @@ export function AbilitiesPage() {
         <div>
           <p className="cap">Setup</p>
           <h1 className="d2">Abilities</h1>
-          <p className="muted">Everything Seemo knows how to do here. What works through one of your accounts (your blog, your analytics) is connected under Accounts; the rest is switched on and taught here. Click one to see what it includes.</p>
+          <p className="muted">
+            Everything Seemo knows how to do here, switched on and taught here. Click one to see what it includes. What works through one of your accounts (your blog, your analytics, your mail) comes with the account under <Link to={`/p/${slug}/accounts`}>Accounts</Link>.
+          </p>
         </div>
         <div className="cm-acts">
           <span className="chip">
-            {on} of {abilities.length} on
+            {on} of {listed.length} on
           </span>
           {!draft && (
             <button className="btn p" onClick={() => setDraft({ name: "", description: "", text: "", everywhere: false, editing: null })}>
@@ -122,7 +125,7 @@ export function AbilitiesPage() {
 
       <section className="mk-sec">
         <h2>
-          What Seemo can do here <span className="n">{abilities.length}</span>
+          What Seemo can do here <span className="n">{listed.length}</span>
         </h2>
         {data.data && yours.length === 0 && !draft && (
           <div className="pcard none ab-none">
@@ -136,11 +139,10 @@ export function AbilitiesPage() {
         )}
         {yours.length > 0 && <Group label="Yours" items={yours} slug={slug} onOpen={open} onChange={data.reload} />}
         {fromMarket.length > 0 && <Group label="Installed" items={fromMarket} slug={slug} onOpen={open} onChange={data.reload} />}
-        {services.length > 0 && <Group label="With your accounts" sub="What Seemo can do on the accounts you connect under Setup → Accounts. Connect one and these switch on." items={services} slug={slug} onOpen={open} onChange={data.reload} />}
         {builtin.length > 0 && <Group label="Built in" items={builtin} slug={slug} cols={2} onOpen={open} onChange={data.reload} />}
       </section>
 
-      <Marketplace slug={slug} items={market} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a, tab) => open(a, tab)} onChange={data.reload} />
+      <Marketplace slug={slug} items={shelf} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a, tab) => open(a, tab)} onChange={data.reload} />
 
       <Advanced slug={slug} broken={data.data?.broken ?? []} envFile={data.data?.env_file ?? "~/.kiqr/.env"} projectEnvFile={data.data?.project_env_file ?? null} index={data.data?.index ?? ""} machineFolder={(data.data?.env_file ?? "~/.kiqr/.env").replace(/\/\.env$/, "/abilities")} onDone={data.reload} onGuide={() => guide && open(guide, "instructions")} />
 

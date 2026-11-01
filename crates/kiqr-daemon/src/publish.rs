@@ -296,7 +296,7 @@ pub async fn save_channel(app: &App, slug: &str, preview: &Value, by: &str, secr
     let place_label = preview["place_label"].as_str().unwrap_or("").to_string();
     let list = preview["list"].as_str().unwrap_or("").to_string();
     if let Some(id) = preview["account"].as_str().filter(|a| !a.is_empty()) {
-        let (c, p) = crate::accounts::create_place(app, slug, id, crate::accounts::PlaceBody { label: place_label, fields, default: false, list }).await?;
+        let (c, p) = crate::accounts::create_place(app, slug, id, crate::accounts::PlaceBody { label: place_label, fields, default: false, list, kind: String::new() }).await?;
         let mut v = channel_view(app, slug, &c).await;
         v["place"] = json!(p);
         v["note"] = json!(format!("{} now has the place {}. Publishing there asks the user unless they let you publish on your own.", c.label, p.label));

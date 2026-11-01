@@ -419,6 +419,18 @@ pub struct Manifest {
     /// not named has its default: acting asks, the rest is on.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub allow: BTreeMap<String, crate::connections::Allow>,
+    /// The fields of a place this ability works on inside an account of its
+    /// service (an analytics property, a Search Console site): name → {label,
+    /// help, placeholder, optional, enum, choices}. Such a place has the
+    /// ability's id as its kind; its fields fill the ability's calls
+    /// (`{{property}}`). A field with `choices` is picked from a list read
+    /// through the account. Empty: the account itself is the place.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub places: BTreeMap<String, Value>,
+    /// What older accounts of this ability called things, so they move along
+    /// when the ability changes shape (`connections::move_old`).
+    #[serde(skip_serializing_if = "Moved::is_empty")]
+    pub moved: Moved,
     /// One call at a time per account, across every ability of the service
     /// that says so: a browser session that two callers must not drive at once.
     pub exclusive: bool,
@@ -484,6 +496,32 @@ impl Manifest {
     }
 }
 
+/// What older accounts of an ability called things: keys renamed
+/// (`GA4_TOKEN` → `GOOGLE_TOKEN`), and keys whose value is now a place field
+/// (`GA4_PROPERTY_ID` → the `property` of a place of this ability's kind).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Moved {
+    pub keys: BTreeMap<String, String>,
+    pub places: BTreeMap<String, String>,
+}
+
+impl Moved {
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty() && self.places.is_empty()
+    }
+}
+
+/// The list a field is picked from, when it has one: an `auth` key's
+/// `choices`, or a place field's (the ability's own `places`, or a kind's `place`).
+pub fn choices_of(m: &Manifest, name: &str) -> Option<Choices> {
+    if let Some(c) = m.auth.iter().find(|a| a.env == name).and_then(|a| a.choices.clone()) {
+        return Some(c);
+    }
+    let spec = m.places.get(name).or_else(|| m.channels.iter().find_map(|k| k.place.get(name)))?;
+    serde_json::from_value(spec.get("choices")?.clone()).ok()
+}
+
 /// A service in the grid of things a project can connect: its id (what
 /// accounts are keyed by), its name and icon as shown, the group it sits in
 /// (`SERVICE_GROUPS`) and the hosts its profiles live on. In a manifest,
@@ -540,6 +578,8 @@ impl Default for Manifest {
             transport: Transport::Http,
             service: Service::default(),
             allow: BTreeMap::new(),
+            places: BTreeMap::new(),
+            moved: Moved::default(),
             exclusive: false,
             daily_cap: None,
             auth: vec![],
@@ -881,6 +921,27 @@ pub fn validate(m: &Manifest) -> Result<()> {
             bail!("service: profile_hosts holds '{h}', which is not a host name");
         }
     }
+    for (name, spec) in &m.places {
+        if !valid_env_name(&name.to_ascii_uppercase()) || name.contains(char::is_uppercase) {
+            bail!("places: '{name}' is not a field name (lowercase letters, digits, _)");
+        }
+        if let Some(ch) = spec.get("choices") {
+            let ch: Choices = serde_json::from_value(ch.clone()).map_err(|e| anyhow::anyhow!("places: the choices of {name} do not parse: {e}"))?;
+            if ch.request.url.trim().is_empty() || ch.list.trim().is_empty() || ch.value.trim().is_empty() {
+                bail!("places: the choices of {name} need a request, a list and a value");
+            }
+        }
+    }
+    for (old, new) in m.moved.keys.iter() {
+        if !valid_env_name(old) || !valid_env_name(new) {
+            bail!("moved.keys: '{old}' → '{new}' are not variable names");
+        }
+    }
+    for (old, field) in m.moved.places.iter() {
+        if !valid_env_name(old) || !m.places.contains_key(field) {
+            bail!("moved.places: '{old}' → '{field}', which is not one of this ability's place fields");
+        }
+    }
     for (role, a) in &m.allow {
         if !crate::connections::PERMISSIONS.contains(&role.as_str()) {
             bail!("allow names '{role}', which is not one of {}", crate::connections::PERMISSIONS.join(", "));
@@ -1182,6 +1243,8 @@ fn fill_with(template: &str, args: &Value, env: &dyn Fn(&str) -> Option<String>)
                     Some(x) => out.push_str(&x.to_string()),
                     None => out.push_str("null"),
                 },
+                // `{{site|urlencode}}`: a value inside a URL path.
+                Some(Value::String(s)) if default == Some("urlencode") => out.extend(url::form_urlencoded::byte_serialize(s.trim().as_bytes())),
                 Some(Value::String(s)) if !s.is_empty() => out.push_str(s),
                 // The default may hold placeholders of its own: `{{repo|${GITHUB_REPO}}}`, `{{title|{{tag}}}}`.
                 Some(Value::String(_)) | None => out.push_str(&fill_with(default.unwrap_or(""), args, env)),

@@ -333,7 +333,13 @@ export type Permission = { role: string; allow: Allow; acts: boolean };
 /** Somewhere inside an account content can go: a subreddit, a branch, a list of people (`kind: "list"`, `fields.list`). */
 export type Place = { id: string; kind: string; label: string; fields?: Record<string, unknown>; default?: boolean };
 /** One field a place has, as its kind declares it. */
-export type PlaceField = { type?: string; label?: string; help?: string; optional?: boolean; enum?: string[]; placeholder?: string };
+export type PlaceField = { type?: string; label?: string; help?: string; optional?: boolean; enum?: string[]; placeholder?: string; /** Picked from a list read through the account (`GET …/choices/{field}`), not typed. */ choices?: Record<string, unknown> | boolean | null };
+/**
+ * One kind of place an account can have: the kind it publishes as ("Publishes to"), or an ability of
+ * its service that works on a place of its own (a GA4 property, a Search Console site: "Measures",
+ * "Works on"; `kind` is that ability's id). `needs`: a required field is missing and no place of it exists yet.
+ */
+export type PlaceKind = { kind: string; label: string; verb: string; fields: Record<string, PlaceField>; needs: boolean; lists?: boolean };
 /** A service as the grid of things to connect shows it. `group` is one of SERVICE_GROUPS. */
 export type ServiceCard = { id: string; name?: string; icon?: string; group?: string; profile_hosts?: string[] };
 /** Where a service sits in the grid of things to connect, in the order shown. */
@@ -403,6 +409,8 @@ export type Ability = {
   accounts?: AccountSummary[];
   /** The kinds it publishes as. */
   kinds?: KindInfo[];
+  /** The place of its own it works on (a property, a site), field by field, when it has one. */
+  places?: Record<string, PlaceField>;
   /** The service it is an ability of: its id, and when the daemon sends it, the card the grid shows. */
   service?: string | null;
   service_card?: ServiceCard | null;
@@ -444,6 +452,10 @@ export type Account = {
   /** The fields a place here has, and whether one is needed before anything goes out. */
   place_fields?: Record<string, PlaceField>;
   needs_place?: boolean;
+  /** Every kind of place it can have, with what each needs. */
+  place_kinds?: PlaceKind[];
+  /** Who it is out there (a mail address, a site's host), when the daemon tells. */
+  identity?: string;
   /** Its places are lists of people (a mail account), when the daemon says so. */
   takes_lists?: boolean;
   service_card?: ServiceCard;
@@ -636,7 +648,7 @@ export const api = {
   /** What Seemo may do here: role → auto, ask or off (on/off for roles that never act). */
   setAllow: (slug: string, id: string, allow: Record<string, Allow>) => req<Account>(`/api/projects/${slug}/connections/${id}/allow`, { method: "PUT", body: JSON.stringify(allow) }),
   /** A place inside an account: the kind's fields, or a list of people (`list`, its id) on a mail account. */
-  addPlace: (slug: string, id: string, b: { label?: string; fields?: Record<string, string>; default?: boolean; list?: string }) => req<Account & { place: Place }>(`/api/projects/${slug}/connections/${id}/places`, { method: "POST", body: JSON.stringify(b) }),
+  addPlace: (slug: string, id: string, b: { kind?: string; label?: string; fields?: Record<string, string>; default?: boolean; list?: string }) => req<Account & { place: Place }>(`/api/projects/${slug}/connections/${id}/places`, { method: "POST", body: JSON.stringify(b) }),
   updatePlace: (slug: string, id: string, place: string, b: { label?: string; fields?: Record<string, string>; default?: boolean }) => req<Account>(`/api/projects/${slug}/connections/${id}/places/${encodeURIComponent(place)}`, { method: "PUT", body: JSON.stringify(b) }),
   removePlace: (slug: string, id: string, place: string) => req<Account>(`/api/projects/${slug}/connections/${id}/places/${encodeURIComponent(place)}`, { method: "DELETE" }),
   deleteAccount: (slug: string, id: string) => req<void>(`/api/projects/${slug}/connections/${id}`, { method: "DELETE" }),

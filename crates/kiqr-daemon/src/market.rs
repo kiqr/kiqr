@@ -643,6 +643,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "service": m.map(|m| m.service().to_string()).or_else(|| item.service.as_ref().map(|s| s.id.clone())),
         // How the grid of things to connect shows it, and what an account of it allows at first.
         "service_card": m.map(|m| json!(m.service_card())).unwrap_or_else(|| json!(item.service)),
+        "places": m.map(|m| json!(m.places)).unwrap_or(Value::Null),
         "allow": m.map(|m| json!(m.allow)).unwrap_or_else(|| json!(item.allow)),
         // An account of it can be a source: what the Source switch says.
         "learn": m.map(crate::accounts::learn_view),
@@ -887,6 +888,17 @@ async fn adopt_keys(app: &App, id: &str) -> Result<(), ApiError> {
         reg.installed(id).into_iter().find_map(|e| e.manifest.clone())
     };
     let Some(m) = m else { return Ok(()) };
+    let moved = kiqr_core::connections::move_old(&app.store, &m)?;
+    if !moved.is_empty() {
+        app.store.commit(&format!("[auto] accounts: {} moved along with {}", moved.join(", "), m.name)).await?;
+        for key in &moved {
+            if let Some((slug, id)) = key.split_once('/') {
+                if let Ok(c) = kiqr_core::connections::Connection::load(&app.store, slug, id) {
+                    app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id, label: c.label, ability: c.ability, kind: c.kind });
+                }
+            }
+        }
+    }
     let adopted = kiqr_core::connections::adopt(&app.store, &m)?;
     if !adopted.is_empty() {
         app.store.commit(&format!("[auto] accounts: {} keeps the {} keys it had", adopted.join(", "), m.name)).await?;
@@ -977,6 +989,8 @@ async fn update(State(app): State<App>, Path(id): Path<String>, Query(q): Query<
     app.store.commit(&format!("{label}: update {}", e.name)).await?;
     crate::ext::reload(&app).await;
     app.mcp.stop(&id).await;
+    // The ability may have changed shape: its accounts move along (`moved`, a new service).
+    adopt_keys(&app, &id).await?;
     app.bus.emit(None, EventKind::ExtensionInstalled { id: id.clone(), name: e.manifest.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| id.clone()) });
     Ok(Json(json!({ "id": id, "updated": true, "detail": detail })))
 }

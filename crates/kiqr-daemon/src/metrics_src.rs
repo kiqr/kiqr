@@ -57,12 +57,26 @@ pub async fn pull(app: &App, slug: &str, source: &str) -> Result<Snapshot> {
 /// executor as any other call: hosts, keys and sign-in tokens included.
 async fn read_source(app: &App, slug: &str, m: &Manifest, source: &str, from: NaiveDate, to: NaiveDate) -> Result<Vec<Row>> {
     let spec = m.sources.get(source).filter(|s| !s.requests.is_empty()).ok_or_else(|| anyhow!("{} does not say how to read {source}; update it under Setup → Abilities", m.name))?;
-    let args = kiqr_core::sources::args(from, to);
+    let mut args = kiqr_core::sources::args(from, to);
     let mut answers = Vec::with_capacity(spec.requests.len());
     // Through the first account of the service that may measure (the default first); none means the default.
     let account = kiqr_core::connections::Connection::of(&app.store, slug, m.service()).into_iter().find(|c| c.allow("measure") != kiqr_core::connections::Allow::Off).map(|c| c.id);
     if account.is_none() && !kiqr_core::connections::Connection::of(&app.store, slug, m.service()).is_empty() {
         anyhow::bail!("no account of {} may measure here; the user can allow it on the account", m.name);
+    }
+    // The ability's place on the account (the property, the site) names what is read.
+    if !m.places.is_empty() {
+        let c = account.as_deref().and_then(|id| kiqr_core::connections::Connection::load(&app.store, slug, id).ok());
+        match c.as_ref().and_then(|c| c.place_of_kind(&m.id, None)) {
+            Some(p) => {
+                if let Some(o) = args.as_object_mut() {
+                    for (k, v) in &p.fields {
+                        o.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            None => anyhow::bail!("{} has nothing picked to read yet ({}); the user picks it on the account", m.name, m.places.values().filter_map(|s| s["label"].as_str()).collect::<Vec<_>>().join(", ")),
+        }
     }
     for r in &spec.requests {
         let provide = Provide { request: Some(r.request.clone()), ..Default::default() };

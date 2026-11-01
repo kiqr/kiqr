@@ -8,8 +8,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, ChevronDown, ChevronRight, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Users, X } from "lucide-react";
-import { api, useEvents, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type Allow, type MailList, type Permission, type PlaceField, type ServiceCard } from "../api";
+import { AlertCircle, Check, ChevronDown, ChevronRight, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Users, X } from "lucide-react";
+import { api, useEvents, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type Allow, type MailList, type Permission, type PlaceField, type PlaceKind, type ServiceCard } from "../api";
 import { Switch } from "./Switch";
 import { ago } from "./Project";
 import { ConnectButton } from "./ConnectButton";
@@ -277,25 +277,150 @@ export function placeText(p: { kind: string; label: string; fields?: Record<stri
   return l ? `${p.label} (${l.contacts - l.unsubscribed})` : p.label;
 }
 
-/** The places inside an account, with add and remove: "Publishes to: r/rust, r/selfhosted", or for a mail account "Sends to: Newsletter (412)". */
+/** Every kind of place the account can have. The daemon sends them; an older one only the publishing kind's fields. */
+export function placeKinds(a: Account): PlaceKind[] {
+  const lists = takesLists(a);
+  const own = (k: PlaceKind) => (k.lists || (lists && k.kind === a.kind) ? { ...k, lists: true, verb: "Sends to" } : k);
+  if (a.place_kinds) return a.place_kinds.map(own);
+  if (!a.channel) return [];
+  return [own({ kind: a.kind, label: a.kind_label ?? "", verb: "Publishes to", fields: a.place_fields ?? {}, needs: !!a.needs_place && !(a.places ?? []).length, lists })];
+}
+
+/** What to call a place of a kind: its first field's label ("GA4 property"), else the kind's own label. */
+export function placeNoun(k: PlaceKind): string {
+  return Object.values(k.fields ?? {})[0]?.label || k.label;
+}
+
+/** The places of one kind on the account; a list belongs to the kind that sends. */
+export function placesOf(a: Account, k: PlaceKind) {
+  return (a.places ?? []).filter((p) => p.kind === k.kind || (k.lists && p.kind === "list"));
+}
+
+/** A kind that is not where the account publishes: its places say what they are ("Acme site (GA4 property)"). */
+function ownKind(k: PlaceKind) {
+  return !k.lists && k.verb !== "Publishes to";
+}
+
+/** Whether the account's name is one somebody gave it, not the service's or an ability's name the daemon fell back on. */
+export function ownLabel(a: Account): boolean {
+  const label = a.label.trim().toLowerCase();
+  const given = [a.ability_name, a.connection_name, accountService(a).name, ...(a.used_by ?? []).map((u) => u.name)].filter(Boolean).map((s) => s.toLowerCase());
+  return !!label && !given.includes(label);
+}
+
+/** Who the account is: the name the user gave it, else its places, else what the daemon says it is (a mail address, a host). Never an ability's name. */
+export function accountIdentity(a: Account, lists: MailList[] = []): string {
+  if (ownLabel(a)) return a.label.trim();
+  const places = (a.places ?? []).map((p) => placeText(p, lists));
+  if (places.length) return places.join(" · ");
+  return a.identity || a.destination_text || "";
+}
+
+/** A place field read from a list through the account, or with a fixed set of values, or typed. */
+export function PlaceFieldsForm({ slug, account, fields, values, onChange, onChoices }: { slug: string; account: string; fields: Record<string, PlaceField>; values: Record<string, string>; onChange: (k: string, v: string) => void; onChoices?: (k: string, c: { value: string; label: string }[]) => void }) {
+  return (
+    <>
+      {Object.entries(fields).map(([k, f]) =>
+        f.choices ? (
+          <ChoiceField key={k} slug={slug} account={account} name={k} f={f} value={values[k] ?? ""} onChange={(v) => onChange(k, v)} onLoaded={(c) => onChoices?.(k, c)} />
+        ) : (
+          <Fields key={k} fields={placeFields({ [k]: f })} values={values} onChange={onChange} />
+        ),
+      )}
+    </>
+  );
+}
+
+/** One field picked from what the account has (its properties, its sites): read once, a search field when long. */
+function ChoiceField({ slug, account, name, f, value, onChange, onLoaded }: { slug: string; account: string; name: string; f: PlaceField; value: string; onChange: (v: string) => void; onLoaded: (c: { value: string; label: string }[]) => void }) {
+  const [list, setList] = useState<{ value: string; label: string }[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setList(null);
+    setError(null);
+    api.accountChoices(slug, account, name).then(
+      (r) => (setList(r.choices), onLoaded(r.choices), r.choices.length === 1 && !value && onChange(r.choices[0].value)),
+      (e) => (setError((e as Error).message), setList([])),
+    );
+  }, [slug, account, name]);
+  return (
+    <label className="acc-field">
+      <span className="nm">
+        {f.label || name}
+        {f.optional && <small className="dim"> optional</small>}
+      </span>
+      {list === null ? (
+        <span className="muted sm">
+          <Loader2 size={12} className="spin" /> Reading what the account has…
+        </span>
+      ) : list.length ? (
+        <FieldInput options={list.map((c) => c.value)} labels={Object.fromEntries(list.map((c) => [c.value, c.label]))} search={list.length > 12} optional={f.optional} value={value} onChange={onChange} ariaLabel={f.label || name} />
+      ) : (
+        <>
+          <FieldInput value={value} onChange={onChange} placeholder={f.placeholder ?? ""} ariaLabel={f.label || name} />
+          <span className="muted sm">{error ? `The list could not be read (${error}); type it instead.` : "Nothing to choose from; type it instead."}</span>
+        </>
+      )}
+      {f.help && (
+        <span className="ds">
+          <Hint text={f.help} />
+        </span>
+      )}
+    </label>
+  );
+}
+
+/** The label a new place is saved with: the picked option's label when a field was picked from a list. */
+export function chosenLabel(fields: Record<string, PlaceField>, values: Record<string, string>, read: Record<string, { value: string; label: string }[]>): string | undefined {
+  for (const [k, f] of Object.entries(fields)) {
+    if (!f.choices || !values[k]) continue;
+    const hit = read[k]?.find((c) => c.value === values[k]);
+    if (hit) return hit.label;
+  }
+  return undefined;
+}
+
+/** Whether every required field has a value, and at least one is given. */
+export function placeReady(fields: Record<string, PlaceField>, values: Record<string, string>) {
+  const e = Object.entries(fields);
+  return e.every(([k, f]) => f.optional || (values[k] ?? "").trim()) && e.some(([k]) => (values[k] ?? "").trim());
+}
+
+/**
+ * The places inside an account, one line per verb: "Publishes to: r/rust, r/selfhosted", "Sends to:
+ * Newsletter (412)", "Measures: Acme site (GA4 property) · sc-domain:acme.test (Search Console property)",
+ * each with add and remove; a kind that still needs one says "Pick a …".
+ */
 function Places({ slug, a, lists, onChange }: { slug: string; a: Account; lists: MailList[]; onChange: () => void }) {
-  const isMail = takesLists(a);
-  const fields = placeFields(a.place_fields);
-  const [adding, setAdding] = useState(false);
+  // Only a kind with somewhere inside it to choose, or places already, shows.
+  const kinds = placeKinds(a).filter((k) => k.lists || Object.keys(k.fields ?? {}).length > 0 || placesOf(a, k).length > 0);
+  const verbs = [...new Set(kinds.map((k) => k.verb))];
+  if (!kinds.length) return null;
+  return (
+    <>
+      {verbs.map((v) => (
+        <PlaceRow key={v} slug={slug} a={a} verb={v} kinds={kinds.filter((k) => k.verb === v)} lists={lists} onChange={onChange} />
+      ))}
+    </>
+  );
+}
+
+function PlaceRow({ slug, a, verb, kinds, lists, onChange }: { slug: string; a: Account; verb: string; kinds: PlaceKind[]; lists: MailList[]; onChange: () => void }) {
+  const [adding, setAdding] = useState<PlaceKind | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [read, setRead] = useState<Record<string, { value: string; label: string }[]>>({});
   const [list, setList] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const places = a.places ?? [];
-  // Only a service with somewhere inside it to choose has places.
-  if (!a.channel || (!isMail && fields.length === 0 && places.length === 0)) return null;
+  const places = kinds.flatMap((k) => placesOf(a, k).map((p) => ({ p, k })));
   const run = async (what: string, f: () => Promise<unknown>) => {
     setBusy(what);
     setError(null);
     try {
       await f();
-      setAdding(false);
+      setAdding(null);
       setValues({});
+      setRead({});
       setList("");
       onChange();
     } catch (e) {
@@ -304,17 +429,23 @@ function Places({ slug, a, lists, onChange }: { slug: string; a: Account; lists:
       setBusy(null);
     }
   };
-  const free = lists.filter((l) => !places.some((p) => p.fields?.list === l.id));
-  const ok = isMail ? !!list : fields.every((f) => f.optional || (values[f.key] ?? "").trim()) && fields.some((f) => (values[f.key] ?? "").trim());
-  const verb = isMail ? "Sends to" : "Publishes to";
+  const open = (k: PlaceKind) => (setAdding(k), setValues({}), setRead({}), setList(""), setError(null));
+  const free = lists.filter((l) => !(a.places ?? []).some((p) => p.fields?.list === l.id));
+  const ok = adding ? (adding.lists ? !!list : placeReady(adding.fields, values)) : false;
+  const add = (k: PlaceKind) =>
+    run("add", () => api.addPlace(slug, a.id, k.lists ? { list } : { kind: k.kind, fields: values, label: chosenLabel(k.fields, values, read) }));
+  const needs = kinds.filter((k) => k.needs && !placesOf(a, k).length);
+  const addable = kinds.filter((k) => (k.lists ? free.length > 0 || lists.length === 0 : Object.keys(k.fields ?? {}).length > 0) && !needs.includes(k));
+  const several = kinds.length > 1;
   return (
     <div className="acx-places">
       <span className="lb">{verb}:</span>
-      {places.length === 0 && <span className="muted sm">{a.needs_place ? "nowhere yet; add a place before anything goes out" : isMail ? "the people named on each send" : "the account itself"}</span>}
-      {places.map((p) => (
-        <span key={p.id} className={`acx-place ${p.default ? "def" : ""}`} title={p.default ? "Used when nothing names another" : undefined}>
+      {places.length === 0 && !needs.length && <span className="muted sm">{kinds.some((k) => k.lists) ? "the people named on each send" : verb === "Publishes to" ? "the account itself" : "nothing chosen yet"}</span>}
+      {places.map(({ p, k }) => (
+        <span key={p.id} className={`acx-place ${p.default ? "def" : ""}`} title={p.default && !ownKind(k) ? "Used when nothing names another" : undefined}>
           {placeText(p, lists)}
-          {!p.default && places.length > 1 && (
+          {ownKind(k) && <span className="of">({placeNoun(k)})</span>}
+          {!ownKind(k) && !p.default && placesOf(a, k).length > 1 && (
             <button className="x" title="Make it the default" aria-label="Make it the default" disabled={!!busy} onClick={() => void run(`def-${p.id}`, () => api.updatePlace(slug, a.id, p.id, { default: true }))}>
               <Star size={10} />
             </button>
@@ -324,15 +455,22 @@ function Places({ slug, a, lists, onChange }: { slug: string; a: Account; lists:
           </button>
         </span>
       ))}
-      {!adding && (isMail ? free.length > 0 || lists.length === 0 : fields.length > 0) && (
-        <button className="lnk-btn" onClick={() => setAdding(true)}>
-          <Plus size={11} /> {isMail ? "Add a list" : "Add a place"}
-        </button>
-      )}
+      {!adding &&
+        needs.map((k) => (
+          <button key={k.kind} className="acx-need" onClick={() => open(k)} title={`Nothing goes out${ownKind(k) ? ` and nothing is read for ${k.label}` : ""} until one is chosen`}>
+            <AlertCircle size={12} /> Pick a {placeNoun(k)}
+          </button>
+        ))}
+      {!adding &&
+        addable.map((k) => (
+          <button key={k.kind} className="lnk-btn" onClick={() => open(k)}>
+            <Plus size={11} /> {k.lists ? "Add a list" : several || ownKind(k) ? `Add a ${placeNoun(k)}` : "Add a place"}
+          </button>
+        ))}
       <AnimatePresence>
         {adding && (
           <motion.div className="acx-add" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
-            {isMail ? (
+            {adding.lists ? (
               free.length ? (
                 <label className="acc-field">
                   <span className="nm">List</span>
@@ -344,13 +482,13 @@ function Places({ slug, a, lists, onChange }: { slug: string; a: Account; lists:
                 </p>
               )
             ) : (
-              <Fields fields={fields} values={values} onChange={(k, v) => setValues({ ...values, [k]: v })} />
+              <PlaceFieldsForm slug={slug} account={a.id} fields={adding.fields} values={values} onChange={(k, v) => setValues((cur) => ({ ...cur, [k]: v }))} onChoices={(k, c) => setRead((cur) => ({ ...cur, [k]: c }))} />
             )}
             <div className="acts">
-              <button className="btn p sm" disabled={!ok || !!busy} onClick={() => void run("add", () => api.addPlace(slug, a.id, isMail ? { list } : { fields: values }))}>
+              <button className="btn p sm" disabled={!ok || !!busy} onClick={() => void add(adding)}>
                 {busy === "add" ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Add
               </button>
-              <button className="btn t sm" onClick={() => setAdding(false)}>
+              <button className="btn t sm" onClick={() => setAdding(null)}>
                 Cancel
               </button>
             </div>
@@ -365,7 +503,7 @@ function Places({ slug, a, lists, onChange }: { slug: string; a: Account; lists:
 // ---- Smaller parts
 
 /** "Used by Read posts · Reply (reads, replies)": the abilities sharing it, when more than one does. */
-export function UsedBy({ a }: { a: Account }) {
+export function UsedBy({ a, slug }: { a: Account; slug?: string }) {
   const by = a.used_by ?? [];
   if (by.length < 2) return null;
   return (
@@ -374,7 +512,7 @@ export function UsedBy({ a }: { a: Account }) {
       {by.map((u, i) => (
         <span key={u.id}>
           {i > 0 && " · "}
-          {u.name}
+          {slug ? <Link to={`/p/${slug}/abilities#ability=${encodeURIComponent(u.id)}`}>{u.name}</Link> : u.name}
           {a.channel && u.does.length > 0 && <span className="dim"> ({u.does.map((d) => ROLE_WORDS[d] ?? d).join(", ")})</span>}
         </span>
       ))}
@@ -513,10 +651,13 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
   const svc = accountService(a);
   const Icon = serviceIcon(svc.icon, svc.group);
   const status = accountStatus(a);
+  const identity = accountIdentity(a, lists);
   const [details, setDetails] = useState(false);
   const [keys, setKeys] = useState(!a.ready);
   const [naming, setNaming] = useState(false);
-  const [name, setName] = useState(a.label);
+  // The name field starts on the user's own name, empty when the daemon named it after the service.
+  const own = ownLabel(a);
+  const [name, setName] = useState(own ? a.label : "");
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -544,19 +685,19 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
           <Icon size={17} />
         </span>
         <div className="min0">
-          <p className="svc">{svc.name}</p>
+          <h3>{svc.name}</h3>
           {naming ? (
             <span className="acc-name">
-              <input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && rename()} />
+              <input className="input" value={name} placeholder={identity || svc.name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && rename()} />
               <button className="btn t sm" disabled={busy || !name.trim()} onClick={rename} aria-label="Save the name">
                 <Check size={13} />
               </button>
-              <button className="btn t sm" onClick={() => (setNaming(false), setName(a.label))} aria-label="Keep the name">
+              <button className="btn t sm" onClick={() => (setNaming(false), setName(own ? a.label : ""))} aria-label="Keep the name">
                 <X size={13} />
               </button>
             </span>
           ) : (
-            <h3>{a.label}</h3>
+            identity && <p className="who" title={identity}>{identity}</p>
           )}
         </div>
         <span className={`chip sm ${status.tone}`}>
@@ -605,7 +746,7 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
             )}
             <section>
               <p className="cap">How it connects</p>
-              <UsedBy a={a} />
+              <UsedBy a={a} slug={slug} />
               {a.ready && !keys ? (
                 <button className="lnk-btn" onClick={() => setKeys(true)}>
                   Keys and sign-in

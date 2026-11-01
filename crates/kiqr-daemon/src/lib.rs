@@ -278,6 +278,12 @@ async fn migrate_to_connections(store: &kiqr_core::Store, config: &Config) -> an
     use kiqr_core::extensions::{Registry, Scope};
     let reg = Registry::load(store.home(), &config.core_off);
     let manifests: Vec<kiqr_core::extensions::Manifest> = reg.entries.iter().filter(|e| e.error.is_none()).filter_map(|e| e.manifest.clone()).collect();
+    // Abilities that changed shape since the accounts were made: their accounts move along.
+    let moved: Vec<String> = manifests.iter().flat_map(|m| kiqr_core::connections::move_old(store, m).unwrap_or_default()).collect();
+    if !moved.is_empty() {
+        tracing::info!(accounts = moved.len(), "accounts moved along with their abilities");
+        store.commit(&format!("[auto] accounts: {} moved along with their abilities", moved.join(", "))).await?;
+    }
     let Some(done) = kiqr_core::connections::migrate(store, &manifests)? else { return Ok(()) };
     let paused: Vec<&kiqr_core::extensions::Entry> = reg.entries.iter().filter(|e| e.paused && e.scope == Scope::Global && !e.is_core()).collect();
     if !paused.is_empty() {

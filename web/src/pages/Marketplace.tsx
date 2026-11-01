@@ -1,8 +1,9 @@
 // The marketplace: what Seemo could do, from the index kiqr.cloud hosts plus
-// what ships with KIQR and is not installed yet. Installing is for the
-// machine. An ability of a service (one that signs in to an account) is not
-// installed here: Connect opens the connect wizard, which installs it and
-// adds the account. Advanced: a folder or git URL, broken folders.
+// what ships with KIQR and is not installed yet: abilities that need no
+// account. Installing is for the machine. A service's abilities (one that
+// signs in to an account) are not listed here: the connect wizard under
+// Accounts installs them with the account. Advanced: a folder or git URL,
+// broken folders.
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Link } from "react-router-dom";
@@ -46,7 +47,9 @@ export function Marketplace({ slug, items, index, indexFetched, loaded, onOpen, 
       <h2>
         Marketplace <span className="n">{items.length}</span>
       </h2>
-      <p className="cm-sec-ds">More abilities, by KIQR and by others. Installed once for this machine and switched on per project; one that works through an account is connected under Accounts.</p>
+      <p className="cm-sec-ds">
+        More abilities, by KIQR and by others. Installed once for this machine and switched on per project. Services you connect (WordPress, Google, email…) are under <Link to={`/p/${slug}/accounts`}>Setup → Accounts</Link>.
+      </p>
       <div className="mk-bar">
         <label className="mk-search">
           <Search size={15} />
@@ -81,7 +84,7 @@ export function Marketplace({ slug, items, index, indexFetched, loaded, onOpen, 
       )}
       {loaded && shown.length === 0 && (
         <p className="muted set-note">
-          {q || shelf !== "all" || author !== "all" ? "Nothing here matches." : indexFetched === false ? `The marketplace index at ${index || "the configured URL"} could not be reached, so only what ships with KIQR is listed.` : "Everything in the index is installed."} {indexFetched === false ? "Check the URL under Settings → General, or install from a folder or git URL under Advanced." : `The index at ${index || "kiqr.cloud"} grows over time; your own folders install under Advanced.`}
+          {q || shelf !== "all" || author !== "all" ? "Nothing here matches." : indexFetched === false ? `The marketplace index at ${index || "the configured URL"} could not be reached, so only what ships with KIQR is listed.` : "Everything else in the index is installed."} {indexFetched === false ? "Check the URL under Settings → General, or install from a folder or git URL under Advanced." : `The index at ${index || "kiqr.cloud"} grows over time; your own folders install under Advanced.`}
         </p>
       )}
       <div className="mk-grid">

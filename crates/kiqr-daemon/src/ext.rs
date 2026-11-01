@@ -836,16 +836,25 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
     let conn = pick_connection(app, slug, m, conn)?;
     let mut args = args.clone();
     if let Some(o) = args.as_object_mut() {
-        // Through an account of a kind this ability declares (any ability of its service, not only
-        // the one that publishes): the place named (`place`), else the default one, fills what the call left out.
-        if let Some(c) = conn.as_ref().filter(|c| c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind)) {
+        // The place this call works on fills what it left out: the ability's own place on the
+        // account (`places` in its manifest: a property, a site), else, through an account that
+        // publishes a kind this ability declares, the publishing place. `place` names one; else the default.
+        if let Some(c) = conn.as_ref() {
             let named = o.get("place").and_then(Value::as_str).map(str::to_string);
-            if let Some(p) = c.place(named.as_deref()).filter(|p| !p.is_list()) {
-                for (k, v) in &p.fields {
-                    o.entry(k.clone()).or_insert_with(|| v.clone());
+            let own = (!m.places.is_empty()).then(|| c.place_of_kind(&m.id, named.as_deref())).flatten();
+            let publishing = if own.is_none() && c.is_channel() && m.channels.iter().any(|k| k.kind == c.kind) { c.place_of_kind(&c.kind, named.as_deref()) } else { None };
+            match own.or(publishing) {
+                Some(p) if !p.is_list() => {
+                    for (k, v) in &p.fields {
+                        o.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
                 }
-            } else if let Some(n) = named {
-                bail!("'{}' has no place '{n}'", c.label);
+                None if named.is_some() => bail!("'{}' has no place '{}'", c.label, named.unwrap_or_default()),
+                None if !m.places.is_empty() && m.places.values().any(|s| !s["optional"].as_bool().unwrap_or(false)) => {
+                    let what: Vec<&str> = m.places.iter().map(|(_, s)| s["label"].as_str().unwrap_or("")).collect();
+                    bail!("'{}' has no {} picked yet for {}; the user picks it on the account", c.label, what.join(", ").to_lowercase(), m.name)
+                }
+                _ => {}
             }
             o.remove("place");
         }
@@ -884,7 +893,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
 pub(crate) async fn key_choices(app: &App, slug: &str, conn: &Connection, name: &str) -> Result<Vec<Value>> {
     let (m, ch) = {
         let reg = app.registry.read().await;
-        let found = reg.of_service(slug, conn.service()).into_iter().find_map(|m| m.auth.iter().find(|a| a.env == name).and_then(|a| a.choices.clone()).map(|ch| (m.clone(), ch)));
+        let found = reg.of_service(slug, conn.service()).into_iter().find_map(|m| extensions::choices_of(m, name).map(|ch| (m.clone(), ch)));
         found.ok_or_else(|| anyhow!("{name} has no list to choose from"))?
     };
     if m.transport != Transport::Http {
