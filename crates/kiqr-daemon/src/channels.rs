@@ -13,7 +13,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use kiqr_core::accounts::Account;
+use kiqr_core::vault::Credential;
 use kiqr_core::channels::{self, host_of, Channel, Mode, Ownership, LIST};
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{Kind, Manifest};
@@ -41,22 +41,26 @@ pub async fn kinds(app: &App, slug: &str) -> Vec<(Manifest, Kind)> {
     reg.connections(slug).into_iter().filter(|(_, m)| !off.contains(&m.id)).flat_map(|(_, m)| m.kinds.iter().map(move |k| (m.clone(), k.clone()))).collect()
 }
 
-/// The kinds of one service, the ones that publish first.
-pub async fn kinds_of(app: &App, slug: &str, service: &str) -> Vec<(Manifest, Kind)> {
-    let mut v: Vec<(Manifest, Kind)> = crate::accounts::manifests_of(app, slug, service).await.into_iter().flat_map(|m| m.kinds.clone().into_iter().map(move |k| (m.clone(), k))).collect();
-    v.sort_by_key(|(_, k)| !k.publishes());
-    v
-}
-
 /// A kind by name, with the ability that publishes it (or declares it).
 pub async fn kind(app: &App, slug: &str, kind: &str) -> Option<(Manifest, Kind)> {
     let all = kinds(app, slug).await;
     all.iter().find(|(_, k)| k.kind == kind && k.publishes()).or_else(|| all.iter().find(|(_, k)| k.kind == kind)).cloned()
 }
 
-/// Whether accounts of a service send email to lists: one of its kinds lists people.
-pub async fn sends_to_lists(app: &App, slug: &str, service: &str) -> bool {
-    kinds_of(app, slug, service).await.iter().any(|(_, k)| k.section() == "list")
+/// The ability on here that sends email to a list: one that provides `email`.
+pub async fn list_sender(app: &App, slug: &str) -> Option<Manifest> {
+    let cfg = app.config.read().await.clone();
+    let reg = app.registry.read().await;
+    let off = crate::ext::project_off(app, slug);
+    reg.provider(slug, "email", cfg.abilities.get("email").map(String::as_str), |m| !off.contains(&m.id)).map(|(_, m)| m.clone())
+}
+
+/// The ability that publishes to a channel: a list's mail sender, else the ability of its kind.
+pub async fn publishing_ability(app: &App, slug: &str, ch: &Channel) -> Option<Manifest> {
+    if ch.is_list() {
+        return list_sender(app, slug).await;
+    }
+    kind_for(app, slug, ch).await.filter(|(_, k)| k.publishes()).map(|(m, _)| m)
 }
 
 /// The site a kind is on: its link's host, else the ability's first fixed host.
@@ -100,23 +104,14 @@ pub async fn kind_for(app: &App, slug: &str, ch: &Channel) -> Option<(Manifest, 
     found.first().map(|x| (*x).clone())
 }
 
-/// The accounts that could publish to a channel: of a service whose kind it is (a list: that sends email).
-pub async fn publishers(app: &App, slug: &str, ch: &Channel) -> Vec<Account> {
-    let mut out = Vec::new();
-    let kind = kind_for(app, slug, ch).await;
-    for c in Account::list(&app.store, slug).unwrap_or_default() {
-        let ok = if ch.is_list() {
-            sends_to_lists(app, slug, &c.service).await
-        } else if let Some((_, k)) = &kind {
-            kinds_of(app, slug, &c.service).await.iter().any(|(_, x)| x.kind == k.kind && x.publishes())
-        } else {
-            false
-        };
-        if ok {
-            out.push(c);
-        }
+/// The credentials that could publish to a channel: those in the Vault that
+/// fit what its publishing ability asks for (a login for x.com, a mail server).
+pub async fn publishers(app: &App, slug: &str, ch: &Channel) -> Vec<Credential> {
+    let Some(m) = publishing_ability(app, slug, ch).await else { return vec![] };
+    match m.needs().into_iter().next() {
+        Some(need) => crate::creds::fitting(app, slug, &m, &need),
+        None => vec![],
     }
-    out
 }
 
 /// Where a call happens: the kind, the target fields, how it reads, and the
@@ -146,23 +141,23 @@ impl Spot {
 
 /// The channel for a spot of a kind reached through an account: the same kind
 /// (or a channel on the kind's site that names no kind yet) and fields; when
-/// the profile itself is the spot, the one this account publishes as.
-pub fn matching(store: &kiqr_core::Store, slug: &str, account: &str, kind: &Kind, domain: &str, fields: &BTreeMap<String, Value>) -> Option<Channel> {
+/// the profile itself is the spot, the one this credential publishes as.
+pub fn matching(store: &kiqr_core::Store, slug: &str, publisher: &str, kind: &Kind, domain: &str, fields: &BTreeMap<String, Value>) -> Option<Channel> {
     Channel::all(store, slug).unwrap_or_default().into_iter().find(|ch| {
         !ch.suggested
             && !ch.is_list()
             && (ch.kind == kind.kind || (ch.kind.is_empty() && !domain.is_empty() && same_site(&ch.domain, domain)))
             && channels::same_fields(&fields_for(ch, kind), fields)
-            && (!fields.is_empty() || ch.publisher == account)
+            && (!fields.is_empty() || ch.publisher == publisher)
     })
 }
 
-/// The spot a call through an account means, out of the kinds of its
-/// service: the kind whose publish tool it is, else one whose target fields
+/// The spot a call as a credential means, out of the ability's kinds: the kind whose publish tool it is, else one whose target fields
 /// (or a URL `target_from` reads) the call carries, else the only kind when
 /// the tool acts. Its fields come from the arguments, checked. None when no
 /// kind is involved (a repository tool).
-pub fn spot_of(store: &kiqr_core::Store, slug: &str, c: &Account, kinds: &[(Manifest, Kind)], tool: &str, args: &Value, acts: bool) -> anyhow::Result<Option<Spot>> {
+#[allow(clippy::too_many_arguments)]
+pub fn spot_of(store: &kiqr_core::Store, slug: &str, publisher: &str, who: &str, kinds: &[(Manifest, Kind)], tool: &str, args: &Value, acts: bool) -> anyhow::Result<Option<Spot>> {
     let has = |k: &Kind| k.target.keys().any(|f| args.get(f).is_some_and(|v| !v.is_null())) || k.target_from.keys().any(|a| args.get(a).and_then(Value::as_str).is_some_and(|u| k.target_of_url(a, u).is_some()));
     let found = kinds.iter().find(|(_, k)| k.publishes() && k.publish == tool).or_else(|| kinds.iter().find(|(_, k)| has(k))).or_else(|| (acts && kinds.len() == 1).then(|| &kinds[0]));
     let Some((m, k)) = found else { return Ok(None) };
@@ -177,23 +172,23 @@ pub fn spot_of(store: &kiqr_core::Store, slug: &str, c: &Account, kinds: &[(Mani
         }
         k.check_target(&f)?
     };
-    let label = channels::spot_label(k, &c.label, &fields);
-    let channel = matching(store, slug, &c.id, k, &kind_domain(m, k), &fields);
+    let label = channels::spot_label(k, who, &fields);
+    let channel = matching(store, slug, publisher, k, &kind_domain(m, k), &fields);
     Ok(Some(Spot { kind: k.clone(), fields, label, channel }))
 }
 
-/// A spot the user said yes to becomes a channel, published to through the
-/// account the yes was for; the channel when it is there already.
-pub async fn add_spot(app: &App, slug: &str, c: &Account, spot: &Value, by: &str) -> Option<Channel> {
+/// A spot the user said yes to becomes a channel, published to as the
+/// credential the yes was for; the channel when it is there already.
+pub async fn add_spot(app: &App, slug: &str, m: &Manifest, c: &Credential, spot: &Value, by: &str) -> Option<Channel> {
     let kind = spot["kind"].as_str()?;
     let fields: BTreeMap<String, Value> = spot["fields"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-    let (m, k) = kinds_of(app, slug, &c.service).await.into_iter().find(|(_, k)| k.kind == kind)?;
-    if let Some(found) = matching(&app.store, slug, &c.id, &k, &kind_domain(&m, &k), &fields) {
+    let k = m.kinds.iter().find(|k| k.kind == kind)?.clone();
+    if let Some(found) = matching(&app.store, slug, &c.id, &k, &kind_domain(m, &k), &fields) {
         return Some(found);
     }
-    let mut ch = Channel::for_spot(&k, &crate::accounts::name_of(app, slug, c).await, fields, by).ok()?;
+    let mut ch = Channel::for_spot(&k, &crate::creds::name_of(c), fields, by).ok()?;
     if ch.domain.is_empty() {
-        ch.domain = kind_domain(&m, &k);
+        ch.domain = kind_domain(m, &k);
     }
     ch.publisher = c.id.clone();
     // Suggested once, said yes to now: the suggestion becomes the channel.
@@ -226,64 +221,38 @@ pub fn added(app: &App, slug: &str, ch: &Channel) {
     }
 }
 
-/// An account whose kind makes the profile itself the spot (an X profile) is
-/// that channel's publisher: the channel waiting for one on its site gets it,
-/// else a new owned channel is made.
-pub async fn channels_for_account(app: &App, slug: &str, c: &Account) {
-    for (m, k) in kinds_of(app, slug, &c.service).await.into_iter().filter(|(_, k)| k.account_is_target) {
-        let domain = kind_domain(&m, &k);
-        let all = Channel::all(&app.store, slug).unwrap_or_default();
-        if all.iter().any(|ch| ch.publisher == c.id && (ch.kind == k.kind || same_site(&ch.domain, &domain))) {
-            continue;
-        }
-        let waiting = all.into_iter().find(|ch| ch.owned() && ch.publisher.is_empty() && ch.fields.is_empty() && (ch.kind == k.kind || (ch.kind.is_empty() && same_site(&ch.domain, &domain))));
-        let (ch, what) = match waiting {
-            Some(mut ch) => {
-                ch.publisher = c.id.clone();
-                (ch, "publisher")
-            }
-            None => {
-                let Ok(mut ch) = Channel::for_spot(&k, &c.label, BTreeMap::new(), "account") else { continue };
-                ch.id = Channel::new_id(&app.store, slug, &format!("{} {}", c.label, k.kind));
-                if ch.domain.is_empty() {
-                    ch.domain = domain;
-                }
-                ch.publisher = c.id.clone();
-                (ch, "add")
-            }
-        };
-        if ch.save(&app.store, slug).is_ok() {
-            let _ = app.store.commit(&format!("[auto] channels({slug}): {what} {} as {}", ch.label, c.label)).await;
-            if what == "add" {
-                added(app, slug, &ch);
-            } else {
-                emit(app, slug, &ch, None);
-            }
-        }
-    }
-}
-
 /// Whether a channel can be published to, in one word, a line, and the one fix.
-pub async fn readiness(app: &App, slug: &str, ch: &Channel, kind: Option<&(Manifest, Kind)>, publisher: Option<&Account>) -> Value {
+pub async fn readiness(app: &App, slug: &str, ch: &Channel, kind: Option<&(Manifest, Kind)>, publisher: Option<&Credential>) -> Value {
+    let ability = publishing_ability(app, slug, ch).await;
+    let needs_publisher = ability.as_ref().is_none_or(|m| !m.needs().is_empty());
     let (state, text, fix) = if ch.suggested {
         ("suggested", "Suggested by Seemo: add it, or dismiss it".to_string(), json!({ "action": "add", "label": "Add" }))
     } else if !ch.is_list() && kind.is_none_or(|(_, k)| !k.publishes()) {
         let site = if ch.domain.is_empty() { "this site".to_string() } else { ch.domain.clone() };
-        ("no_ability", format!("No ability here publishes to {site}"), json!({ "action": "abilities", "label": "Find one" }))
+        // The marketplace ability that publishes there, when one does.
+        let fix = match crate::networks::ability_for_site(app, &ch.domain).await {
+            Some((id, name)) => json!({ "action": "install", "label": format!("Install {name}"), "ability": id }),
+            None => json!({ "action": "abilities", "label": "Find one" }),
+        };
+        ("no_ability", format!("No ability here publishes to {site}"), fix)
     } else if ch.publish == Mode::Off {
         ("publish_off", "Publishing is off".to_string(), Value::Null)
+    } else if ch.is_list() && ability.is_none() {
+        ("no_ability", "Nothing here sends email yet".to_string(), json!({ "action": "abilities", "label": "Find one" }))
+    } else if ch.publisher.is_empty() && !needs_publisher {
+        ("ready", String::new(), Value::Null)
     } else if ch.publisher.is_empty() {
-        let who = if ch.is_list() { "No mail account to send from".to_string() } else { format!("No publisher: pick who Seemo posts as on {}", if ch.domain.is_empty() { "it".to_string() } else { ch.domain.clone() }) };
+        let who = if ch.is_list() { "No mail server to send from".to_string() } else { format!("No publisher: pick who Seemo posts as on {}", if ch.domain.is_empty() { "it".to_string() } else { ch.domain.clone() }) };
         ("no_publisher", who, json!({ "action": "publisher", "label": "Pick a publisher" }))
     } else if let Some(c) = publisher {
-        let st = crate::accounts::state(app, slug, c).await;
+        let st = crate::creds::state(app, slug, c).await;
         if st.ready() {
             ("ready", String::new(), Value::Null)
         } else {
-            ("publisher_not_ready", crate::accounts::state_text(c, &st), json!({ "action": "account", "label": "See to it", "account": c.id }))
+            ("publisher_not_ready", crate::creds::state_text(&c.label, &st), json!({ "action": "credential", "label": "See to it", "credential": c.id }))
         }
     } else {
-        ("publisher_gone", "The account it published as is gone".to_string(), json!({ "action": "publisher", "label": "Pick another" }))
+        ("publisher_gone", "The credential it published as is gone".to_string(), json!({ "action": "publisher", "label": "Pick another" }))
     };
     json!({ "state": state, "ready": state == "ready", "text": text, "fix": fix })
 }
@@ -294,15 +263,14 @@ pub async fn view(app: &App, slug: &str, ch: &Channel) -> Value {
     let mut v = json!(ch);
     v["suggested"] = json!(ch.suggested);
     let kind = kind_for(app, slug, ch).await;
-    let publisher = (!ch.publisher.is_empty()).then(|| Account::load(&app.store, slug, &ch.publisher).ok()).flatten();
+    let publisher = (!ch.publisher.is_empty()).then(|| app.vault.get(&ch.publisher).ok().flatten()).flatten();
     v["publisher_view"] = match &publisher {
-        Some(c) => {
-            let st = crate::accounts::state(app, slug, c).await;
-            let name = crate::accounts::name_of(app, slug, c).await;
-            json!({ "account": c.id, "label": name, "service": c.service, "state": st.word(), "ready": st.ready() })
-        }
+        Some(c) => publisher_view(app, slug, c).await,
         None => Value::Null,
     };
+    // What a publisher must be, for the Add panel: the publishing ability's first need.
+    let ability = publishing_ability(app, slug, ch).await;
+    v["publisher_need"] = ability.as_ref().and_then(|m| m.needs().into_iter().next().map(|n| json!({ "ability": m.id, "ability_name": m.name, "describe": n.describe(), "template": n.template, "hosts": n.hosts.iter().filter(|h| !h.contains('$')).collect::<Vec<_>>(), "provider": n.provider, "scopes": n.scopes }))).unwrap_or(Value::Null);
     // The profile itself is the channel and kept the name it was made with: who it is now.
     if let Some(p) = v["publisher_view"]["label"].as_str().map(str::to_string) {
         if ch.fields.is_empty() && !ch.is_list() && ch.added_by == "account" {
@@ -311,8 +279,7 @@ pub async fn view(app: &App, slug: &str, ch: &Channel) -> Value {
     }
     let mut candidates = Vec::new();
     for c in publishers(app, slug, ch).await {
-        let st = crate::accounts::state(app, slug, &c).await;
-        candidates.push(json!({ "account": c.id, "label": crate::accounts::name_of(app, slug, &c).await, "state": st.word(), "ready": st.ready() }));
+        candidates.push(publisher_view(app, slug, &c).await);
     }
     v["publishers"] = json!(candidates);
     v["readiness"] = readiness(app, slug, ch, kind.as_ref(), publisher.as_ref()).await;
@@ -336,9 +303,15 @@ pub async fn view(app: &App, slug: &str, ch: &Channel) -> Value {
             v["options"] = json!(crate::publish::publish_options(m, k));
             v["prepared"] = json!(crate::publish::prepared_inputs(m, k));
         }
-        v["can_learn"] = json!(ch.owned() && publisher.is_some() && crate::learn::learnable_service(app, slug, publisher.as_ref().map(|c| c.service.as_str()).unwrap_or_default()).await);
+        v["can_learn"] = json!(ch.owned() && m.learn.is_some());
     }
     v
+}
+
+/// A credential as a channel shows it: who it is and whether it works.
+async fn publisher_view(app: &App, slug: &str, c: &Credential) -> Value {
+    let st = crate::creds::state(app, slug, c).await;
+    json!({ "credential": c.id, "label": crate::creds::name_of(c), "domain": c.default_domain(), "template": c.template, "state": st.word(), "ready": st.ready() })
 }
 
 /// What can be added: each kind with its site and target fields, and a list.
@@ -436,15 +409,21 @@ fn mode(s: Option<&String>, default: Mode, what: &str) -> Result<Mode, ApiError>
     }
 }
 
-/// The account a channel publishes as, checked: it exists here and can publish there.
+/// The credential a channel publishes as, checked: it fits what the
+/// publishing ability asks for. Picking it is the one grant made for the
+/// user: that ability may use it in this project from now on.
 async fn check_publisher(app: &App, slug: &str, ch: &Channel, id: &str) -> Result<String, ApiError> {
     let id = id.trim();
     if id.is_empty() {
         return Ok(String::new());
     }
-    let c = Account::load(&app.store, slug, id).or_else(|_| Account::list(&app.store, slug).unwrap_or_default().into_iter().find(|c| c.label.eq_ignore_ascii_case(id)).ok_or(())).map_err(|_| bad(format!("there is no account '{id}' here")))?;
-    if !publishers(app, slug, ch).await.iter().any(|p| p.id == c.id) {
-        return Err(bad(if ch.is_list() { format!("{} does not send email", c.label) } else { format!("{} cannot publish to {}", c.label, ch.label) }));
+    let all = publishers(app, slug, ch).await;
+    let c = all.iter().find(|c| c.id == id || c.label.eq_ignore_ascii_case(id)).cloned().ok_or_else(|| {
+        let what = app.vault.get(id).ok().flatten().map(|c| c.label).unwrap_or_else(|| format!("'{id}'"));
+        bad(if ch.is_list() { format!("{what} is not a mail server") } else { format!("{what} cannot publish to {}", ch.label) })
+    })?;
+    if let Some(m) = publishing_ability(app, slug, ch).await {
+        crate::access::grant(app, slug, &m.id, &c.id, "publisher").await?;
     }
     Ok(c.id)
 }
@@ -490,7 +469,7 @@ pub async fn create(app: &App, slug: &str, b: NewChannel, by: &str) -> Result<Ch
         }
         if !b.label.trim().is_empty() {
             ch.label = b.label.trim().to_string();
-        } else if ch.label.is_empty() || ch.label == ch.kind {
+        } else if ch.label.is_empty() || ch.label == ch.kind || (ch.fields.is_empty() && !url.is_empty()) {
             ch.label = if url.is_empty() { ch.domain.clone() } else { label_of_url(url) };
         }
         ch.description = b.description.trim().to_string();
@@ -506,10 +485,10 @@ pub async fn create(app: &App, slug: &str, b: NewChannel, by: &str) -> Result<Ch
     ch.publish = mode(b.publish.as_ref(), Mode::Ask, "publish")?;
     ch.reply = mode(b.reply.as_ref(), Mode::Ask, "reply")?;
     ch.publisher = check_publisher(app, slug, &ch, &b.publisher).await?;
-    // A list with nobody to send from yet takes the first account here that sends email.
+    // A list with nobody to send from yet takes the mail server, when there is exactly one.
     if ch.is_list() && ch.publisher.is_empty() {
-        if let Some(c) = publishers(app, slug, &ch).await.into_iter().next() {
-            ch.publisher = c.id;
+        if let [c] = &publishers(app, slug, &ch).await[..] {
+            ch.publisher = check_publisher(app, slug, &ch, &c.id).await?;
         }
     }
     ch.suggested = b.suggested;
@@ -525,7 +504,7 @@ pub async fn create(app: &App, slug: &str, b: NewChannel, by: &str) -> Result<Ch
 /// Seemo's: a spot it found goes in as a suggestion, for the user's Review; nothing goes there on its own.
 async fn suggest_route(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewChannel>) -> Result<(StatusCode, Json<Value>), ApiError> {
     if b.kind.trim() == LIST {
-        return Err(bad("a list is proposed with create_list"));
+        return Err(bad("a list is proposed with create_channel"));
     }
     if b.reason.trim().is_empty() {
         return Err(bad("say in one line why the business's people are there"));
@@ -594,8 +573,7 @@ async fn update_route(State(app): State<App>, Path((slug, id)): Path<(String, St
         if l && !ch.owned() {
             return Err(bad("Seemo learns only from the business's own channels"));
         }
-        let svc = Account::load(&app.store, &slug, &ch.publisher).map(|c| c.service).unwrap_or_default();
-        if l && !crate::learn::learnable_service(&app, &slug, &svc).await {
+        if l && !kind_for(&app, &slug, &ch).await.is_some_and(|(m, _)| m.learn.is_some()) {
             return Err(bad(format!("nothing to learn from on {}", ch.label)));
         }
         ch.learn = l;
@@ -629,6 +607,14 @@ async fn learn_now(State(app): State<App>, Path((slug, id)): Path<(String, Strin
 
 async fn delete_route(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> Result<StatusCode, ApiError> {
     let ch = Channel::delete(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    // A profile the crawl added and the user removed is never added again.
+    if ch.added_by == "crawl" && !ch.url.is_empty() {
+        if let Ok(mut p) = kiqr_core::project::Project::load(&app.store, &slug) {
+            let bare = ch.url.trim().trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("www.").trim_end_matches('/').to_ascii_lowercase();
+            p.suggestions_dismissed.push(format!("channel:{bare}"));
+            let _ = p.save(&app.store);
+        }
+    }
     let what = if ch.suggested { "dismiss" } else { "remove" };
     app.store.commit(&format!("channels({slug}): {what} {}", ch.label)).await?;
     app.bus.emit(Some(&slug), EventKind::ChannelDeleted { channel: ch.id });
@@ -645,10 +631,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let store = kiqr_core::Store::open(kiqr_core::Home::at(&dir)).unwrap();
         let m = kiqr_core::extensions::parse_manifest("id: rb\nname: R\ntransport: http\nhosts: [r.test]\ntools:\n  - { name: post, label: Posting, description: Post., role: publish, request: { method: POST, url: \"https://r.test/{{subreddit}}\" } }\n  - { name: reply, label: Replying, description: Reply., role: reply, request: { method: POST, url: \"https://r.test/x\" } }\n  - { name: search, label: Searching, description: Search., request: { method: GET, url: \"https://r.test/s\" } }\nkinds:\n  - kind: reddit\n    label: Subreddit\n    section: community\n    publish: post\n    url: \"https://reddit.com/r/{{subreddit}}\"\n    target: { subreddit: { label: Subreddit, pattern: \"^[A-Za-z0-9_]{2,21}$\" } }\n    target_from: { post_url: \"reddit.com/r/{subreddit}/\" }\n").unwrap();
-        let c = Account { id: "u-acme".into(), label: "u/acme".into(), service: "rb".into(), ..Default::default() };
         let kinds: Vec<(Manifest, Kind)> = m.kinds.iter().map(|k| (m.clone(), k.clone())).collect();
         // A reply by its post's link is in that subreddit; no channel yet, so it asks.
-        let s = spot_of(&store, "acme", &c, &kinds, "reply", &json!({ "post_url": "https://old.reddit.com/r/homelab/comments/abc/x/", "text": "hi" }), true).unwrap().unwrap();
+        let s = spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "reply", &json!({ "post_url": "https://old.reddit.com/r/homelab/comments/abc/x/", "text": "hi" }), true).unwrap().unwrap();
         assert_eq!((s.label.as_str(), s.channel.is_none(), s.mode("reply")), ("r/homelab", true, Mode::Ask));
         // A channel, whatever the case; its modes decide.
         let mut ch = Channel::for_spot(&kinds[0].1, "", [("subreddit".to_string(), json!("homelab"))].into_iter().collect(), "user").unwrap();
@@ -656,23 +641,23 @@ mod tests {
         ch.publish = Mode::Auto;
         ch.reply = Mode::Off;
         ch.save(&store, "acme").unwrap();
-        let s = spot_of(&store, "acme", &c, &kinds, "post", &json!({ "subreddit": "HomeLab", "title": "t", "text": "x" }), true).unwrap().unwrap();
+        let s = spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "post", &json!({ "subreddit": "HomeLab", "title": "t", "text": "x" }), true).unwrap().unwrap();
         assert_eq!((s.channel.as_ref().map(|e| e.id.as_str()), s.mode("publish"), s.mode("reply")), (Some("r-homelab"), Mode::Auto, Mode::Off));
         // A channel added before any ability knew the site (no kind yet) is found by its site.
         let mut bare = Channel { id: "r-rust".into(), label: "r/rust".into(), domain: "reddit.com".into(), fields: [("subreddit".to_string(), json!("rust"))].into_iter().collect(), ..Default::default() };
         bare.publish = Mode::Off;
         bare.save(&store, "acme").unwrap();
-        let s = spot_of(&store, "acme", &c, &kinds, "post", &json!({ "subreddit": "rust" }), true).unwrap().unwrap();
+        let s = spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "post", &json!({ "subreddit": "rust" }), true).unwrap().unwrap();
         assert_eq!(s.mode("publish"), Mode::Off);
         // Added by its link alone: the link names the subreddit.
         Channel { id: "r-golang".into(), label: "r/golang".into(), domain: "reddit.com".into(), url: "https://www.reddit.com/r/golang/".into(), reply: Mode::Auto, ..Default::default() }.save(&store, "acme").unwrap();
-        let s = spot_of(&store, "acme", &c, &kinds, "reply", &json!({ "post_url": "https://reddit.com/r/golang/comments/x/y/" }), true).unwrap().unwrap();
+        let s = spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "reply", &json!({ "post_url": "https://reddit.com/r/golang/comments/x/y/" }), true).unwrap().unwrap();
         assert_eq!((s.mode("reply"), s.channel.map(|c| c.id)), (Mode::Auto, Some("r-golang".to_string())));
         // A post with no subreddit is refused; a value that is not a subreddit too.
-        assert!(spot_of(&store, "acme", &c, &kinds, "post", &json!({ "title": "t" }), true).unwrap_err().to_string().contains("needs subreddit"));
-        assert!(spot_of(&store, "acme", &c, &kinds, "post", &json!({ "subreddit": "a/../b" }), true).is_err());
+        assert!(spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "post", &json!({ "title": "t" }), true).unwrap_err().to_string().contains("needs subreddit"));
+        assert!(spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "post", &json!({ "subreddit": "a/../b" }), true).is_err());
         // Reading names no spot.
-        assert!(spot_of(&store, "acme", &c, &kinds, "search", &json!({ "query": "backups" }), false).unwrap().is_none());
+        assert!(spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "search", &json!({ "query": "backups" }), false).unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

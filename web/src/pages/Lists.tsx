@@ -107,7 +107,7 @@ export function ListPage({ slug, id }: { slug: string; id: string }) {
             <p className="muted sm">
               {via ? (
                 <>
-                  Sent from <Link to={`/p/${slug}/accounts#account=${encodeURIComponent(via.account)}`}>{via.label}</Link>
+                  Sent from <Link to={`/p/${slug}/vault#credential=${encodeURIComponent(via.credential)}`}>{via.label}</Link>
                   {!via.ready && <span className="warn"> · it does not work right now</span>}
                 </>
               ) : (

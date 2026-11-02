@@ -386,21 +386,23 @@ async fn setup_summary(app: &App, slug: &str) -> String {
             not_ready.push(name);
         }
     }
+    // The credentials used here, by label and site, never a value.
     let mut accounts: Vec<String> = Vec::new();
-    for c in kiqr_core::accounts::Account::list(&app.store, slug).unwrap_or_default() {
-        let st = crate::accounts::state(app, slug, &c).await;
-        accounts.push(format!("{} ({}; {})", c.label, c.service, if st.ready() { "ready".to_string() } else { st.word().replace('_', " ") }));
+    for id in kiqr_core::access::Access::load(&app.store, slug).unwrap_or_default().credentials() {
+        let Some(c) = app.vault.get(&id).ok().flatten() else { continue };
+        let st = crate::creds::state(app, slug, &c).await;
+        accounts.push(format!("{} ({}; {})", crate::creds::name_of(&c), c.default_domain().unwrap_or(&c.template), if st.ready() { "ready".to_string() } else { st.word().replace('_', " ") }));
     }
     // Where the business's people are: each channel, who I post as there and what I may do.
     let mut aud: Vec<String> = Vec::new();
     for e in kiqr_core::channels::Channel::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| !e.suggested) {
-        let who = kiqr_core::accounts::Account::load(&app.store, slug, &e.publisher).map(|c| format!("as {}", c.label)).unwrap_or_else(|_| "no publisher".into());
+        let who = app.vault.get(&e.publisher).ok().flatten().map(|c| format!("as {}", crate::creds::name_of(&c))).unwrap_or_else(|| "no publisher".into());
         let owner = if e.owned() { "owned" } else { "third-party" };
         aud.push(format!("{} ({owner}, {who}; publish {}, reply {}{})", e.label, e.publish.word(), e.reply.word(), if e.read { "" } else { ", no reading" }));
     }
     let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
     format!(
-        "- Abilities on and ready: {}\n- Installed but not set up: {}\n- Off here: {}\n- Accounts, who I sign in as: {}\n- Channels, where the people are (auto: on my own; ask: after a yes; off: never; anywhere else asks): {}",
+        "- Abilities on and ready: {}\n- Installed but not set up: {}\n- Off here: {}\n- Credentials, who I act as here: {}\n- Channels, where the people are (auto: on my own; ask: after a yes; off: never; anywhere else asks): {}",
         list(&ready),
         list(&not_ready),
         list(&off),

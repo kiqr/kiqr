@@ -8,9 +8,10 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence } from "motion/react";
-import { AlertTriangle, Check, ChevronDown, ChevronUp, ExternalLink, Loader2, Mail, Plus, Radio, Sparkles, Trash2, Users, X } from "lucide-react";
-import { api, CHANNEL_EVENTS, useEvents, type Channel, type ChannelKind, type ChannelMode, type ChannelPatch, type ChannelsView, type Ownership, type SpecField } from "../api";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, ExternalLink, KeyRound, Loader2, Mail, Plus, Radio, Sparkles, Trash2, Users, X } from "lucide-react";
+import { api, CHANNEL_EVENTS, useAsync, useEvents, type Channel, type ChannelKind, type ChannelMode, type ChannelPatch, type ChannelsView, type Ownership, type SpecField } from "../api";
 import { FieldInput, enumOf } from "./FieldInput";
+import { CredentialForm } from "./CredentialForm";
 import { Favicon } from "./Favicon";
 import { ListPage } from "./Lists";
 import { Drawer } from "./Vault";
@@ -335,6 +336,18 @@ function ChannelDetails({ slug, c, onChange, onRemoved }: { slug: string; c: Cha
       setBusy(null);
     }
   };
+  const install = async (ability: string) => {
+    setBusy("install");
+    setError(null);
+    try {
+      await api.installAbility(ability);
+      onChange();
+    } catch (x) {
+      setError((x as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
   const learn = async () => {
     setBusy("learn-now");
     setError(null);
@@ -353,13 +366,18 @@ function ChannelDetails({ slug, c, onChange, onRemoved }: { slug: string; c: Cha
         <div className="ch-need">
           <AlertTriangle size={16} />
           <span className="grow">{r.text}</span>
+          {r.fix?.action === "install" && r.fix.ability && (
+            <button className="btn p sm" disabled={!!busy} onClick={() => void install(r.fix!.ability!)}>
+              {busy === "install" ? <Loader2 size={13} className="spin" /> : <Plus size={13} />} {r.fix.label}
+            </button>
+          )}
           {r.fix?.action === "abilities" && (
             <Link className="btn g sm" to={`/p/${slug}/abilities`}>
               {r.fix.label}
             </Link>
           )}
-          {r.fix?.action === "account" && r.fix.account && (
-            <Link className="btn g sm" to={`/p/${slug}/accounts#account=${encodeURIComponent(r.fix.account)}`}>
+          {r.fix?.action === "credential" && r.fix.credential && (
+            <Link className="btn g sm" to={`/p/${slug}/vault#credential=${encodeURIComponent(r.fix.credential)}`}>
               {r.fix.label}
             </Link>
           )}
@@ -479,42 +497,65 @@ function Perm({ title, help, value, choices, busy, onPick }: { title: string; he
   );
 }
 
-/** Who Seemo posts as: one of the accounts that can publish here, or nobody yet. */
+/**
+ * Who Seemo posts as: one of the Vault's credentials that fit what the
+ * publishing ability asks for (an x.com login, a mail server), or nobody yet.
+ * Picking one lets that ability use it in this project; the note says so.
+ * "Add" opens the Vault's own Add panel, prefilled, and picks what it made.
+ */
 function Publisher({ slug, c, busy, onPick }: { slug: string; c: Channel; busy: boolean; onPick: (id: string) => void }) {
   const options = c.publishers;
   const cur = c.publisher_view;
+  const need = c.publisher_need;
+  const [adding, setAdding] = useState(false);
+  const templates = useAsync(() => (adding ? api.vault().then((v) => v.templates) : Promise.resolve([])), [adding]);
+  const add = need && (
+    <button className="btn g sm" onClick={() => setAdding(true)}>
+      <Plus size={13} /> {options.length ? "Add another" : `Add ${need.describe}`}
+    </button>
+  );
+  const drawer = (
+    <AnimatePresence>
+      {adding && need && (
+        <Drawer key="add" title={`Add ${need.describe}`} iconNode={<KeyRound size={22} />} sub={`Seemo posts as it on ${c.label}`} onClose={() => setAdding(false)}>
+          {templates.data ? (
+            <CredentialForm templates={templates.data} domains={need.hosts} template={need.template[0]} forDomains={need.hosts.length ? need.hosts : undefined} grant={[{ project: slug, ability: need.ability }]} onSaved={(x) => (setAdding(false), onPick(x.id))} onCancel={() => setAdding(false)} />
+          ) : (
+            <Loader2 size={16} className="spin" />
+          )}
+        </Drawer>
+      )}
+    </AnimatePresence>
+  );
   if (!options.length && !cur)
     return (
       <div className="ch-pub none">
-        <span className="muted sm">
-          {c.readiness.state === "no_ability" ? (
-            <>Nobody to pick until an ability publishes here. The channel works for planning meanwhile.</>
-          ) : (
-            <>
-              Nobody to post as yet. <Link to={`/p/${slug}/accounts/connect`}>Add a {c.kind === "list" ? "mail account" : `${c.domain || "site"} account`}</Link> and pick it here.
-            </>
-          )}
-        </span>
+        <span className="muted sm grow">{c.readiness.state === "no_ability" || !need ? "Nobody to pick until an ability publishes here. The channel works for planning meanwhile." : `Nothing in the Vault fits yet: ${need.ability_name} needs ${need.describe}.`}</span>
+        {add}
+        {drawer}
       </div>
     );
   return (
     <div className="ch-pub">
       <select className="input" value={c.publisher} disabled={busy} aria-label="Posts as" onChange={(e) => onPick(e.target.value)}>
         <option value="">Nobody yet</option>
-        {cur && !options.some((o) => o.account === cur.account) && <option value={cur.account}>{cur.label}</option>}
+        {cur && !options.some((o) => o.credential === cur.credential) && <option value={cur.credential}>{cur.label}</option>}
         {options.map((o) => (
-          <option key={o.account} value={o.account}>
+          <option key={o.credential} value={o.credential}>
             {o.label}
             {o.ready ? "" : " (needs a look)"}
           </option>
         ))}
       </select>
       {busy && <Loader2 size={14} className="spin" />}
+      {add}
       {cur && !cur.ready && (
-        <Link className="sm" to={`/p/${slug}/accounts#account=${encodeURIComponent(cur.account)}`}>
+        <Link className="sm" to={`/p/${slug}/vault#credential=${encodeURIComponent(cur.credential)}`}>
           It does not work right now
         </Link>
       )}
+      {need && <p className="muted sm ch-grant">Picking one lets {need.ability_name} use it in this project.</p>}
+      {drawer}
     </div>
   );
 }

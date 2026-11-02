@@ -1726,6 +1726,7 @@ dependencies = [
  "hmac 0.12.1",
  "htmd",
  "iana-time-zone",
+ "imagesize",
  "keyring",
  "libc",
  "psl",

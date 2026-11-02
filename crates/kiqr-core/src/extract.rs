@@ -249,7 +249,14 @@ impl Extractor {
                 }
             }
         }
-        let prompt = serde_json::json!({ "brief": b, "networks": networks, "count": count }).to_string();
+        // The Library's pictures (Media): the model may give a post one it shows the subject of.
+        let media: Vec<serde_json::Value> = crate::media::pictures(&self.store, slug)
+            .unwrap_or_default()
+            .iter()
+            .take(crate::media::SITE_LIMIT)
+            .map(|(a, f)| serde_json::json!({ "id": a.id, "alt": a.source.get("alt").and_then(|v| v.as_str()).unwrap_or(&a.title), "page": a.source.get("page").and_then(|v| v.as_str()), "orientation": f.orientation() }))
+            .collect();
+        let prompt = serde_json::json!({ "brief": b, "networks": networks, "count": count, "media": media }).to_string();
         let text = prov.complete(&Request { system, prompt, model, json: true, max_tokens: 6_000 }).await?;
         let value = provider::extract_json(&text)?;
 
@@ -294,6 +301,8 @@ impl Extractor {
                 headline: a.title.clone(),
                 support: p.text.split(['.', '!', '?', '\n']).next().map(|s| s.trim().to_string()).filter(|s| s.len() <= 90).unwrap_or_default(),
                 style: ["dark", "light", "accent"][made.len() % 3].to_string(),
+                media: None,
+                layout: None,
             });
             made.push((a, Some(idea)));
         }
@@ -501,4 +510,12 @@ pub struct PostImage {
     pub support: String,
     /// `dark`, `light` or `accent`: which brand colour is the background.
     pub style: String,
+    /// A picture from the Library's Media (its asset id), when the post is
+    /// about something that picture shows. None: a card of words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<String>,
+    /// `card`, `photo` (the picture full bleed, words over it) or `split`
+    /// (the picture one side, words the other); the last two need `media`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
 }

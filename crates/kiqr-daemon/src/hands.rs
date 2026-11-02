@@ -1,11 +1,11 @@
-//! Remote hands: a person sees what an account's hosted program shows and
+//! Remote hands: a person sees what a credential's hosted program shows and
 //! drives it for a moment, to finish a sign-in the runner could not (a
 //! captcha, a device check). The manifest's `live_view` names the program's
 //! tools: one answers with an image of the page, the others click, press
 //! keys, type and open a URL. The daemon polls the image a few times a second
 //! while someone watches and sends each frame over the project's event
 //! stream, never keeping one; what the person types goes straight to the
-//! program and is never logged. The account's turn is held for the whole
+//! program and is never logged. The credential's turn is held for the whole
 //! time, so nothing else drives it. A session ends on "done", after ten idle
 //! minutes, or when the daemon stops. Only a person in KIQR's web UI can
 //! start one (the same guard as a factory reset), with a token per session.
@@ -19,7 +19,6 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use kiqr_core::accounts::Account;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{LiveView, Manifest, Step};
 use serde::Deserialize;
@@ -33,7 +32,7 @@ const FRAME_EVERY: Duration = Duration::from_millis(400);
 
 pub fn routes() -> Router<App> {
     Router::new()
-        .route("/api/projects/{slug}/accounts/{id}/hands", post(start_route))
+        .route("/api/projects/{slug}/credentials/{id}/hands", post(start_route))
         .route("/api/projects/{slug}/hands/{hands}/input", post(input_route))
         .route("/api/projects/{slug}/hands/{hands}/end", post(end_route))
 }
@@ -47,7 +46,7 @@ struct Hands {
     launch: crate::mcp_host::Launch,
     env: HashMap<String, String>,
     last_input: Mutex<Instant>,
-    /// Held for the whole session: nothing else drives the account meanwhile.
+    /// Held for the whole session: nothing else drives the credential meanwhile.
     _turn: tokio::sync::OwnedMutexGuard<()>,
     open: std::sync::atomic::AtomicBool,
 }
@@ -132,11 +131,11 @@ async fn stream(app: App, id: String, h: Arc<Hands>, view: LiveView) {
             Ok(out) => {
                 if let Some((bytes, mime)) = out.file {
                     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    app.bus.emit(Some(&h.slug), EventKind::HandsFrame { account: h.connection.clone(), hands: id.clone(), mime, data, url: String::new() });
+                    app.bus.emit(Some(&h.slug), EventKind::HandsFrame { credential: h.connection.clone(), hands: id.clone(), mime, data, url: String::new() });
                 }
             }
             Err(e) => {
-                tracing::warn!(account = %h.connection, "live view: {e:#}");
+                tracing::warn!(credential = %h.connection, "live view: {e:#}");
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
@@ -148,52 +147,47 @@ async fn end(app: &App, id: &str, why: &str) {
     let h = OPEN.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if let Some(h) = h {
         h.open.store(false, std::sync::atomic::Ordering::SeqCst);
-        app.bus.emit(Some(&h.slug), EventKind::HandsEnded { account: h.connection.clone(), hands: id.to_string(), message: why.to_string() });
+        app.bus.emit(Some(&h.slug), EventKind::HandsEnded { credential: h.connection.clone(), hands: id.to_string(), message: why.to_string() });
     }
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct StartBody {
-    /// A URL to open first (the site's sign-in page); the account's hosts only.
+    /// A URL to open first (the site's sign-in page); the ability's hosts only.
     url: String,
 }
 
-/// `POST …/accounts/{id}/hands`: take the controls. Answers the session id and its token.
+/// `POST …/credentials/{id}/hands`: take the controls. Answers the session id and its token.
 async fn start_route(State(app): State<App>, Path((slug, id)): Path<(String, String)>, headers: HeaderMap, Json(b): Json<StartBody>) -> ApiResult<Value> {
     from_browser(&headers)?;
-    let c = Account::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    let m = {
-        let reg = app.registry.read().await;
-        let off = crate::ext::project_off(&app, &slug);
-        reg.of_service(&slug, &c.service).into_iter().find(|m| m.live_view.is_some() && !off.contains(&m.id)).cloned()
+    let c = crate::session::load(&app, &slug, &id).await.map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let m = crate::session::session_manifest(&app, &slug, &c).await.filter(|m| m.live_view.is_some()).ok_or_else(|| bad(format!("{} has no live view", c.label())))?;
+    if let st @ (kiqr_core::conn::State::MissingFields { .. } | kiqr_core::conn::State::NeedsProgram { .. }) = crate::creds::state(&app, &slug, c.primary()).await {
+        return Err(bad(crate::creds::state_text(c.label(), &st)));
     }
-    .ok_or_else(|| bad(format!("{} has no live view", c.label)))?;
-    if let st @ (kiqr_core::accounts::State::MissingKeys { .. } | kiqr_core::accounts::State::NeedsProgram { .. }) = crate::accounts::state(&app, &slug, &c).await {
-        return Err(bad(crate::accounts::state_text(&c, &st)));
-    }
-    // One session per account.
-    let already: Option<String> = OPEN.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(_, h)| h.slug == slug && h.connection == c.id).map(|(k, _)| k.clone());
+    // One session per credential.
+    let already: Option<String> = OPEN.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(_, h)| h.connection == c.id()).map(|(k, _)| k.clone());
     if let Some(open) = already {
         end(&app, &open, "someone else took the controls").await;
     }
     let view = m.live_view.clone().expect("live_view");
     let program = crate::ext::program_of(&app, Some(&slug), &m).await.map_err(|e| bad(e.to_string()))?;
-    let env_fn = kiqr_core::accounts::env_for(app.store.home(), &slug, Some(&c), &m, Default::default());
+    let env_fn = kiqr_core::conn::env_for(app.store.home(), &slug, Some(&c), &m, &crate::creds::settings_of(&app, &slug, &m.id));
     let launch = crate::ext::mcp_env(&app, &slug, &m, Some(&c), &env_fn);
-    let env: HashMap<String, String> = kiqr_core::accounts::key_names(&m).into_iter().filter_map(|k| env_fn(&k).map(|v| (k, v))).collect();
-    let turn = crate::ext::account_turn(&slug, &c.id).await;
+    let env: HashMap<String, String> = m.credential_env().into_iter().filter_map(|k| env_fn(&k).map(|v| (k, v))).collect();
+    let turn = crate::ext::turn(c.id()).await;
     let hands_id = token();
-    let h = Arc::new(Hands { slug: slug.clone(), connection: c.id.clone(), token: token(), manifest: m.clone(), program, launch, env, last_input: Mutex::new(Instant::now()), _turn: turn, open: std::sync::atomic::AtomicBool::new(true) });
+    let h = Arc::new(Hands { slug: slug.clone(), connection: c.id().to_string(), token: token(), manifest: m.clone(), program, launch, env, last_input: Mutex::new(Instant::now()), _turn: turn, open: std::sync::atomic::AtomicBool::new(true) });
     OPEN.lock().unwrap_or_else(|e| e.into_inner()).insert(hands_id.clone(), h.clone());
     // Open the page asked for, else the one the sign-in check starts from.
     let first = Some(b.url.trim().to_string()).filter(|u| !u.is_empty()).or_else(|| crate::session::start_url(&app, &slug, &c, &m));
     if let Some(u) = first {
         if let Err(e) = h.step(&app, &view.navigate, json!({ "url": u })).await {
-            tracing::warn!(account = %c.id, "live view: could not open the first page: {e:#}");
+            tracing::warn!(credential = %c.id(), "live view: could not open the first page: {e:#}");
         }
     }
-    app.bus.emit(Some(&slug), EventKind::HandsStarted { account: c.id.clone(), hands: hands_id.clone() });
+    app.bus.emit(Some(&slug), EventKind::HandsStarted { credential: c.id().to_string(), hands: hands_id.clone() });
     tokio::spawn(stream(app.clone(), hands_id.clone(), h.clone(), view.clone()));
     Ok(Json(json!({ "hands": hands_id, "token": h.token, "can": { "click": !view.click.call.is_empty(), "key": !view.key.call.is_empty(), "type": !view.type_.call.is_empty(), "navigate": !view.navigate.call.is_empty() } })))
 }
@@ -307,7 +301,7 @@ async fn end_route(State(app): State<App>, Path((slug, hands)): Path<(String, St
         let (app2, slug2, id2) = (app.clone(), slug.clone(), connection.clone());
         tokio::spawn(async move {
             if let Err(e) = crate::session::signed_in_by_hand(&app2, &slug2, &id2).await {
-                tracing::warn!(account = %id2, "check after hands: {e:#}");
+                tracing::warn!(credential = %id2, "check after hands: {e:#}");
             }
         });
     }

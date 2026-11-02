@@ -6,6 +6,8 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use resvg::{tiny_skia, usvg};
+/// The raster library behind the renderer, for callers that make a test picture.
+pub use resvg::tiny_skia as raster;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use usvg::fontdb;

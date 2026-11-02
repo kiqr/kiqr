@@ -41,11 +41,13 @@ pub struct Launch {
 }
 
 impl Launch {
-    /// The key for an account's server of a program.
-    pub fn key_for(slug: &str, connection: Option<&str>, program: &str) -> String {
-        match connection {
-            Some(c) => format!("{slug}/{c}@{program}"),
-            None => format!("@{program}"),
+    /// The key for a credential's server of a program: machine-wide, so two
+    /// projects that use one login share its one browser. Without a credential, one per project.
+    pub fn key_for(slug: &str, credential: Option<&str>, program: &str) -> String {
+        match credential {
+            Some(c) => format!("{c}@{program}"),
+            None if slug.is_empty() => format!("@{program}"),
+            None => format!("{slug}/@{program}"),
         }
     }
 }
@@ -130,10 +132,9 @@ impl McpHost {
         }
     }
 
-    /// Stop every program's server for one account of a project: an account is
-    /// shared by the abilities of its service, and its keys just changed or it is gone.
-    pub async fn stop_account(&self, slug: &str, connection: &str) {
-        let prefix = format!("{slug}/{connection}@");
+    /// Stop every program's server running as one credential: its values just changed, or it is gone.
+    pub async fn stop_credential(&self, credential: &str) {
+        let prefix = format!("{credential}@");
         for s in self.take(|k| !k.starts_with(&prefix)).await {
             s.kill().await;
         }

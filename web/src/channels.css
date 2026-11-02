@@ -69,3 +69,5 @@ a.au-via:hover { color: var(--fg); text-decoration: none; }
 .vt-detail .cap { margin: 0; }
 .au-sugg + .acx-groups, .au-sugg ~ .acx-groups { margin-top: 22px; }
 .acc-field > .seg { align-self: flex-start; }
+.ch-pub .ch-grant { flex-basis: 100%; margin: 0; }
+.ch-pub.none .grow { flex: 1; min-width: 200px; }

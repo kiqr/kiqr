@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, Bot, Download, FileText, Library as LibraryIcon, Maximize2, SearchX, Send, Trash2, User, X } from "lucide-react";
-import { api, useAsync, useEvents, type Asset, type AssetStatus, type AssetType } from "../api";
+import { ArrowLeft, Bot, Check, Download, FileText, Folder, Globe, Images, Library as LibraryIcon, Loader2, Maximize2, Plus, RefreshCw, SearchX, Send, Trash2, User, X, type LucideIcon } from "lucide-react";
+import { api, useAsync, useEvents, type Asset, type AssetStatus, type AssetType, type MediaItem, type MediaSource } from "../api";
 import { PostCard } from "./PostCard";
 import { AssetActions, StatusChip, STATUSES, STATUS_LABEL } from "./AssetActions";
 import { Markdown } from "../markdown";
@@ -44,6 +44,15 @@ export function LibraryPage() {
   useEffect(() => setStatus(null), [type]);
   const t = types.find((x) => x.id === type);
   const all = assets.data ?? [];
+  // Media: where the pictures come from. Loaded on the Media page, and wherever a media card needs its origin's name.
+  const media = type === "media";
+  const wantSources = media || all.some((a) => a.type === "media");
+  const sources = useAsync(() => (wantSources ? api.mediaSources(slug).then((r) => r.sources) : Promise.resolve(null)), [slug, wantSources]);
+  useEvents(slug, (e) => e.type === "asset_saved" && e.asset_type === "media" && sources.reload(), { demo: false });
+  const origin = (id: string) => {
+    const src = sources.data?.find((x) => x.id === id);
+    return { name: id === "website" ? "Website" : (src?.name ?? id), Icon: sourceIcon(id === "website" ? "globe" : src?.icon) };
+  };
   // Archived assets show only in the Archive, never under All.
   const live = all.filter((a) => a.status !== "archived");
   const list = status ? all.filter((a) => a.status === status) : live;
@@ -78,8 +87,9 @@ export function LibraryPage() {
       </div>
 
       {!t && live.length > 0 && <TypeStrip slug={slug} types={types} assets={live} />}
+      {media && <MediaSources slug={slug} sources={sources} onChange={assets.reload} />}
 
-      {all.length > 0 && (
+      {all.length > 0 && !media && (
         <div className="filters">
           <button className={`chip ${status === null ? "acc" : ""}`} onClick={() => setStatus(null)}>
             All {live.length}
@@ -100,7 +110,7 @@ export function LibraryPage() {
       ) : (
         <div className="lib-grid">
           {list.map((a, i) => (
-            <AssetCard key={`${a.type}/${a.id}`} slug={slug} a={a} whereTo={placeName} t={types.find((x) => x.id === a.type)} i={i} showType={!t} accent={accent} onOpen={types.find((x) => x.id === a.type)?.preview === "post" ? () => setOpen({ type: a.type, id: a.id }) : undefined} />
+            <AssetCard key={`${a.type}/${a.id}`} slug={slug} a={a} whereTo={placeName} origin={origin} t={types.find((x) => x.id === a.type)} i={i} showType={!t} accent={accent} onOpen={types.find((x) => x.id === a.type)?.preview === "post" ? () => setOpen({ type: a.type, id: a.id }) : undefined} />
           ))}
         </div>
       )}
@@ -158,6 +168,188 @@ function PostModal({ slug, a, brand, accent, onClose, onChange }: { slug: string
   );
 }
 
+/** A source's lucide icon: the website is a globe, a connected folder a folder, anything else pictures. */
+function sourceIcon(icon?: string): LucideIcon {
+  return icon === "globe" ? Globe : icon === "folder" ? Folder : Images;
+}
+
+/** Where the media comes from: the website first, then every ability that offers pictures, then where to add one. */
+function MediaSources({ slug, sources, onChange }: { slug: string; sources: { data?: MediaSource[] | null; error?: string; reload: () => void }; onChange: () => void }) {
+  const [fetching, setFetching] = useState(false);
+  const [fetchNote, setFetchNote] = useState<string | null>(null);
+  const [pick, setPick] = useState<MediaSource | null>(null);
+  const fetchSite = async () => {
+    setFetching(true);
+    setFetchNote(null);
+    try {
+      const r = await api.mediaImportSite(slug);
+      setFetchNote(r.imported ? `${r.imported} new` : "Nothing new");
+      sources.reload();
+      onChange();
+    } catch (e) {
+      setFetchNote(String((e as Error).message ?? e));
+    } finally {
+      setFetching(false);
+    }
+  };
+  const list = sources.data ?? [];
+  return (
+    <>
+      <div className="media-sources">
+        {list.map((src) => {
+          const Icon = sourceIcon(src.icon);
+          const site = src.id === "website";
+          return (
+            <div key={src.id} className={`media-src ${src.ready ? "" : "off"}`}>
+              <span className="ic">
+                <Icon size={15} />
+              </span>
+              <div className="min0">
+                <p className="nm">{src.name}</p>
+                <p className="ct">{site && src.found !== undefined ? `${src.imported} of ${src.found}` : `${src.imported} imported`}</p>
+                {!src.ready && src.note && <p className="note">{src.note}</p>}
+                {site && fetchNote && <p className="note">{fetchNote}</p>}
+              </div>
+              <div className="acts">
+                {site && (
+                  <button className="btn t" onClick={fetchSite} disabled={fetching}>
+                    {fetching ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} {fetching ? "Fetching…" : "Fetch again"}
+                  </button>
+                )}
+                {src.ready && (
+                  <button className="btn g" onClick={() => setPick(src)}>
+                    Browse
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {sources.error && <p className="muted sm">{sources.error}</p>}
+        <Link className="media-src add" to={`/p/${slug}/abilities`} title="Abilities that connect a folder, a drive or a bucket">
+          <Plus size={14} /> Add a source
+        </Link>
+      </div>
+      <AnimatePresence>
+        {pick && (
+          <MediaPicker
+            slug={slug}
+            source={pick}
+            onClose={() => setPick(null)}
+            onImported={() => {
+              sources.reload();
+              onChange();
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
+/** A source's pictures in a modal: import one at a time; the grid behind follows. Esc or the backdrop closes it. */
+function MediaPicker({ slug, source, onClose, onImported }: { slug: string; source: MediaSource; onClose: () => void; onImported: () => void }) {
+  const loaded = useAsync(() => api.mediaItems(slug, source.id).then((r) => r.items), [slug, source.id]);
+  // What was imported from here just now (item id → asset id), so a card flips without another round trip.
+  const [done, setDone] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<Record<string, "pending" | { error: string }>>({});
+  const items = loaded.data?.map((x) => (done[x.id] ? { ...x, imported: done[x.id] } : x)) ?? null;
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", key);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", key);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+  const Icon = sourceIcon(source.icon);
+  const bring = async (it: MediaItem) => {
+    setBusy((b) => ({ ...b, [it.id]: "pending" }));
+    try {
+      const r = await api.mediaImport(slug, { source: source.id, id: it.id });
+      setDone((d) => ({ ...d, [it.id]: r.asset.id }));
+      setBusy((b) => {
+        const n = { ...b };
+        delete n[it.id];
+        return n;
+      });
+      onImported();
+    } catch (e) {
+      setBusy((b) => ({ ...b, [it.id]: { error: String((e as Error).message ?? e) } }));
+    }
+  };
+  const empty = source.id === "website" && !source.found ? "Crawl the site first; its pictures come from the crawl." : "Nothing here yet";
+  return createPortal(
+    <motion.div className="lib-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }} onClick={onClose} role="dialog" aria-modal aria-label={source.name}>
+      <motion.div className="media-modal" initial={{ opacity: 0, y: 14, scale: 0.985 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.99 }} transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }} onClick={(e) => e.stopPropagation()}>
+        <div className="head">
+          <span className="lib-ic">
+            <Icon size={16} />
+          </span>
+          <div className="min0">
+            <p className="cap">Media</p>
+            <h2>{source.name}</h2>
+          </div>
+          <button className="x" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="body">
+          {loaded.error ? (
+            <p className="muted sm err">{loaded.error}</p>
+          ) : !items ? (
+            <p className="muted sm">
+              <Loader2 size={13} className="spin" /> Reading {source.name}…
+            </p>
+          ) : items.length === 0 ? (
+            <p className="muted sm">{empty}</p>
+          ) : (
+            <div className="media-pick">
+              {items.map((it) => {
+                const state = busy[it.id];
+                const thumb = it.url && (it.mime.startsWith("image/") || IMAGE.test(it.url.split("?")[0])) ? it.url : "";
+                const dims = pictureSize(it);
+                return (
+                  <div key={it.id} className="media-pick-it">
+                    <div className="th">{thumb ? <img src={thumb} alt="" loading="lazy" /> : <Icon size={22} />}</div>
+                    <p className="nm" title={it.name}>
+                      {it.alt || it.name}
+                    </p>
+                    {(it.bytes !== null || dims) && (
+                      <p className="mono">
+                        {[dims, it.bytes !== null ? size(it.bytes) : null].filter(Boolean).join(" · ")}
+                      </p>
+                    )}
+                    {it.imported ? (
+                      <span className="chip ok">
+                        <Check size={11} /> In the Library
+                      </span>
+                    ) : (
+                      <button className="btn p" onClick={() => bring(it)} disabled={state === "pending"}>
+                        {state === "pending" ? <Loader2 size={13} className="spin" /> : <Download size={13} />} {state === "pending" ? "Importing…" : "Import"}
+                      </button>
+                    )}
+                    {state && state !== "pending" && <p className="err">{state.error}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>,
+    document.body,
+  );
+}
+
+/** A source item's pixel size, when the manifest put one in its name or the daemon knows it; otherwise nothing. */
+function pictureSize(it: MediaItem): string | null {
+  const m = /(\d{2,5})[x×](\d{2,5})/.exec(it.name);
+  return m ? `${m[1]}×${m[2]}` : null;
+}
+
 function TypeStrip({ slug, types, assets }: { slug: string; types: AssetType[]; assets: Asset[] }) {
   const counts = types.map((t) => ({ t, n: assets.filter((a) => a.type === t.id).length })).filter((x) => x.n > 0);
   return (
@@ -176,10 +368,14 @@ function TypeStrip({ slug, types, assets }: { slug: string; types: AssetType[]; 
   );
 }
 
-function AssetCard({ slug, a, whereTo, t, i, showType, accent, onOpen }: { slug: string; a: Asset; whereTo: (channel?: string) => string | undefined; t?: AssetType; i: number; showType: boolean; accent?: string; onOpen?: () => void }) {
+function AssetCard({ slug, a, whereTo, origin, t, i, showType, accent, onOpen }: { slug: string; a: Asset; whereTo: (channel?: string) => string | undefined; origin: (id: string) => { name: string; Icon: LucideIcon }; t?: AssetType; i: number; showType: boolean; accent?: string; onOpen?: () => void }) {
   const Icon = assetIcon(t?.icon);
   const visual = a.files.find((f) => IMAGE.test(f.path));
   const src = visual ? api.assetFile(slug, a, visual.path) : "";
+  // Media is the business's own: the card says where it came from, not what kind it is, and it has no status.
+  const media = a.type === "media";
+  const from = media ? origin(String(a.source?.origin ?? "website")) : null;
+  const dims = media && visual?.width && visual?.height ? `${visual.width}×${visual.height}` : null;
   const tint = !src && accent ? ({ "--brand": accent } as React.CSSProperties) : undefined;
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.035, duration: 0.3 }}>
@@ -196,22 +392,34 @@ function AssetCard({ slug, a, whereTo, t, i, showType, accent, onOpen }: { slug:
       >
         <div className={`lib-thumb ${src ? "img" : ""}`} style={tint}>
           {src ? <img src={src} alt="" loading="lazy" /> : <Icon size={26} />}
-          {showType && (
+          {from ? (
             <span className="lib-kind">
-              <Icon size={12} /> {t?.name ?? a.type}
+              <from.Icon size={12} /> {from.name}
             </span>
+          ) : (
+            showType && (
+              <span className="lib-kind">
+                <Icon size={12} /> {t?.name ?? a.type}
+              </span>
+            )
           )}
         </div>
         <div className="lib-body">
           <p className="nm">{a.title}</p>
           {a.summary && <p className="ds">{a.summary}</p>}
           <div className="lib-meta">
-            <StatusChip a={a} />
-            {a.publications.map((p, k) => (
-              <span key={k} className="chip ok" title={p.account}>
-                <Send size={11} /> {p.to ?? whereTo(p.channel) ?? p.account}
-              </span>
-            ))}
+            {media ? (
+              dims && <span className="dims">{dims}</span>
+            ) : (
+              <>
+                <StatusChip a={a} />
+                {a.publications.map((p, k) => (
+                  <span key={k} className="chip ok" title={p.account}>
+                    <Send size={11} /> {p.to ?? whereTo(p.channel) ?? p.account}
+                  </span>
+                ))}
+              </>
+            )}
             <span className="when">
               <Maker by={a.created.by} /> {ago(a.updated_at)}
             </span>
@@ -226,11 +434,13 @@ function AssetCard({ slug, a, whereTo, t, i, showType, accent, onOpen }: { slug:
 function Maker({ by, long }: { by: string; long?: boolean }) {
   const { slug = "" } = useParams();
   const seemo = by === "seemo" || by.startsWith("task:") || by.startsWith("chat:");
-  const label = by.startsWith("task:") ? `Seemo, in a task` : by.startsWith("chat:") ? "Seemo, in a chat" : by === "seemo" ? "Seemo" : "You";
+  // `kiqr`: the daemon itself, bringing the website's pictures in.
+  const kiqr = by === "kiqr";
+  const label = by.startsWith("task:") ? `Seemo, in a task` : by.startsWith("chat:") ? "Seemo, in a chat" : by === "seemo" ? "Seemo" : kiqr ? "KIQR, from your website" : "You";
   const to = by.startsWith("task:") ? `/p/${slug}/tasks#${by.slice(5)}` : by.startsWith("chat:") ? `/p/${slug}/chats/${by.slice(5)}` : null;
   const inner = (
     <>
-      {seemo ? <Bot size={12} /> : <User size={12} />}
+      {seemo || kiqr ? <Bot size={12} /> : <User size={12} />}
       {long && label}
     </>
   );
@@ -247,6 +457,15 @@ function Maker({ by, long }: { by: string; long?: boolean }) {
 
 function EmptyType({ slug, t }: { slug: string; t: AssetType }) {
   const Icon = assetIcon(t.icon);
+  // Media comes in from a source above, not from Seemo.
+  if (t.id === "media")
+    return (
+      <div className="pcard none">
+        <Images size={22} className="ac2" />
+        <p className="t">No media yet</p>
+        <p className="muted">Fetch your website's pictures above, or browse a source and import what you want Seemo to use.</p>
+      </div>
+    );
   return (
     <div className="pcard none">
       <Icon size={22} className="ac2" />
@@ -340,8 +559,8 @@ export function AssetPage() {
         )}
         <aside className="lib-side">
           <div className="pcard">
-            <p className="cap">Status</p>
-            <StatusChip a={a} />
+            <p className="cap">{a.type === "media" ? "Details" : "Status"}</p>
+            {a.type !== "media" && <StatusChip a={a} />}
             <dl className="lib-dl">
               <dt>Made by</dt>
               <dd>
@@ -377,7 +596,14 @@ export function AssetPage() {
                   <dd>
                     {Object.entries(a.source).map(([k, v]) => (
                       <span key={k} className="src">
-                        {k}: {String(v)}
+                        {k}:{" "}
+                        {typeof v === "string" && /^https?:\/\//.test(v) ? (
+                          <a href={v} target="_blank" rel="noreferrer">
+                            {v}
+                          </a>
+                        ) : (
+                          String(v)
+                        )}
                       </span>
                     ))}
                   </dd>
@@ -385,11 +611,13 @@ export function AssetPage() {
               )}
             </dl>
           </div>
-          <div className="pcard">
-            <p className="cap">{a.status === "published" ? "Published" : a.status === "draft" ? "Approve" : "Publish"}</p>
-            {a.status === "draft" && <p className="muted sm">Approve it for where it goes; then publish it now or pick a time. Seemo can ask to publish it too, and you say yes on its card.</p>}
-            <AssetActions slug={slug} a={a} onChange={asset.reload} />
-          </div>
+          {a.type !== "media" && (
+            <div className="pcard">
+              <p className="cap">{a.status === "published" ? "Published" : a.status === "draft" ? "Approve" : "Publish"}</p>
+              {a.status === "draft" && <p className="muted sm">Approve it for where it goes; then publish it now or pick a time. Seemo can ask to publish it too, and you say yes on its card.</p>}
+              <AssetActions slug={slug} a={a} onChange={asset.reload} />
+            </div>
+          )}
           <div className="pcard">
             <p className="cap">Files</p>
             {a.files.length === 0 ? (
@@ -424,6 +652,8 @@ function Preview({ slug, a, t }: { slug: string; a: Asset; t?: AssetType }) {
   const video = a.files.find((f) => VIDEO.test(f.path));
   const audio = a.files.find((f) => AUDIO.test(f.path));
   const text = a.files.find((f) => TEXT.test(f.path) && ["body", "caption", "script", "lyrics", "campaign"].includes(f.role)) ?? a.files.find((f) => TEXT.test(f.path));
+  // A media document (a PDF, a brochure) is not previewed; it is handed over.
+  const doc = kind === "media" ? a.files.find((f) => f.role === "document") : undefined;
   const [body, setBody] = useState<string | null>(null);
   useEffect(() => {
     setBody(null);
@@ -431,7 +661,7 @@ function Preview({ slug, a, t }: { slug: string; a: Asset; t?: AssetType }) {
   }, [slug, a.type, a.id, text?.path, text?.sha256]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const visual =
-    video && kind === "video" ? (
+    video && (kind === "video" || kind === "media") ? (
       <video src={api.assetFile(slug, a, video.path)} controls className="lib-media" />
     ) : image ? (
       <img src={api.assetFile(slug, a, image.path)} alt="" className={`lib-media ${kind === "article" ? "cover" : ""}`} />
@@ -441,6 +671,11 @@ function Preview({ slug, a, t }: { slug: string; a: Asset; t?: AssetType }) {
     <>
       {visual}
       {audio && <audio src={api.assetFile(slug, a, audio.path)} controls className="lib-audio" />}
+      {doc && (
+        <a className="btn g" href={api.assetFile(slug, a, doc.path)} target="_blank" rel="noreferrer" download>
+          <Download size={14} /> Download {doc.path}
+        </a>
+      )}
       {text && body ? (
         /\.md$/i.test(text.path) && kind !== "post" ? (
           <Markdown text={body} />
@@ -448,7 +683,7 @@ function Preview({ slug, a, t }: { slug: string; a: Asset; t?: AssetType }) {
           <div className={`lib-text ${kind === "post" ? "post" : ""} ${/\.(ya?ml|json)$/i.test(text.path) ? "mono" : ""}`}>{body}</div>
         )
       ) : null}
-      {!visual && !audio && !text && <p className="muted sm">Nothing to preview yet. Its files are listed beside it.</p>}
+      {!visual && !audio && !text && !doc && <p className="muted sm">Nothing to preview yet. Its files are listed beside it.</p>}
     </>
   );
 }

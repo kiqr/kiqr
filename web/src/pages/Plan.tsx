@@ -179,7 +179,7 @@ function PlanHero({ slug, period, version, summary, channels, progress }: { slug
             <p className="plan-chans">
               <span className="cap">Where</span>
               {channels.map((c) => (
-                <Link key={c} className="tk" to={`/p/${slug}/accounts`}>
+                <Link key={c} className="tk" to={`/p/${slug}/channels`}>
                   <Send size={11} /> {networkName(c, networks)}
                 </Link>
               ))}

@@ -300,6 +300,16 @@ pub struct ReadPage {
     pub obstacle: Option<String>,
     /// True when `markdown` was cut at the caller's limit.
     pub truncated: bool,
+    /// The pictures the page offers: its share image first, then large content pictures.
+    #[serde(default)]
+    pub images: Vec<PageImage>,
+}
+
+/// One picture on a page, as `read_url` lists it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PageImage {
+    pub url: String,
+    pub alt: String,
 }
 
 /// Read one page. `unblocking` is how to reach UnblockingAPI to escalate
@@ -338,7 +348,57 @@ pub async fn read_page(url: &Url, unblocking: Option<UnblockingAuth>, max_chars:
         markdown,
         obstacle: hit.map(|o| o.reason()),
         truncated,
+        images: crate::brand::page_images(&fetched.final_url, &fetched.body, 10).into_iter().map(|i| PageImage { url: i.url, alt: i.alt }).collect(),
     })
+}
+
+/// The media type of a file from its first bytes; `application/octet-stream` when unknown.
+pub fn sniff_mime(b: &[u8]) -> String {
+    if b.starts_with(b"\x89PNG") {
+        "image/png"
+    } else if b.starts_with(b"\xFF\xD8") {
+        "image/jpeg"
+    } else if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else if b.starts_with(b"GIF8") {
+        "image/gif"
+    } else if b.get(4..12) == Some(b"ftypavif") {
+        "image/avif"
+    } else if b.get(4..8) == Some(b"ftyp") {
+        "video/mp4"
+    } else if b.starts_with(b"ID3") || b.starts_with(b"\xFF\xFB") {
+        "audio/mpeg"
+    } else if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WAVE") {
+        "audio/wav"
+    } else if b.starts_with(b"%PDF") {
+        "application/pdf"
+    } else if b.starts_with(b"<svg") || b.starts_with(b"<?xml") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
+    }
+    .to_string()
+}
+
+/// The file extension for a media type; `bin` when unknown.
+pub fn extension_for(mime: &str) -> &'static str {
+    match mime.split(';').next().unwrap_or("").trim() {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/avif" => "avif",
+        "image/svg+xml" => "svg",
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/webm" => "webm",
+        "audio/mpeg" => "mp3",
+        "audio/wav" | "audio/x-wav" => "wav",
+        "audio/mp4" | "audio/x-m4a" => "m4a",
+        "audio/ogg" => "ogg",
+        "application/pdf" => "pdf",
+        _ => "bin",
+    }
 }
 
 /// Cut text at `max` characters on a line boundary where possible; 0 means no cut.

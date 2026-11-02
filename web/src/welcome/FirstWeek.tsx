@@ -6,7 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { motion, useReducedMotion } from "motion/react";
 import { ArrowRight, Cable, Check, Loader2, MessageSquare, Target } from "lucide-react";
 import { api, useEvents, type Brand, type Plan } from "../api";
-import { connectPath } from "../pages/Accounts";
+
 import { ASK_FOR_PLAN } from "../pages/Plan";
 import { openSeemo } from "../SeemoWidget";
 
@@ -120,7 +120,7 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
         </header>
         <p className="muted">Connect X, Reddit, your blog or your mail account, and I write the first posts for each of them, the way that place reads. Until then I write nothing for nowhere.</p>
         <div className="row">
-          <button className="btn g sm" onClick={() => navigate(connectPath(slug, { group: "social" }))}>
+          <button className="btn g sm" onClick={() => navigate(`/p/${slug}/channels`)}>
             <Cable size={13} /> Connect an account
           </button>
         </div>

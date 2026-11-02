@@ -54,11 +54,12 @@ pub fn router(app: App) -> Router {
         .merge(crate::signins::routes())
         .merge(crate::vault::routes())
         .merge(crate::access::routes())
-        .merge(crate::accounts::routes())
+        .merge(crate::creds::routes())
         .merge(crate::channels::routes())
         .merge(crate::networks::routes())
         .merge(crate::market::routes())
         .merge(crate::images::routes())
+        .merge(crate::media::routes())
         .merge(crate::publish::routes())
         .merge(crate::lists::routes())
         .merge(crate::session::routes())
@@ -459,8 +460,9 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
                     }
                 }
             }
-            // The profiles the brand found that an ability in the marketplace could publish to.
-            if let Some(line) = crate::networks::suggestion_line(&app, &project.slug).await {
+            // The business's own profiles the crawl found become owned channels, needing nothing yet.
+            let made = crate::networks::channels_from_brand(&app, &project.slug).await;
+            if let Some(line) = crate::networks::channels_line(&app, &made).await {
                 app.bus.emit(Some(&project.slug), EventKind::SeemoSays { text: line });
             }
             anyhow::Ok(())
@@ -502,6 +504,8 @@ async fn spawn_crawl(app: App, project: Project, key: String) {
                 tracing::warn!(slug = %project.slug, error = %e, "could not keep the crawl log");
             }
         }
+        // The site's pictures go to Library → Media, so Seemo has real ones to design with.
+        crate::media::import_site(&app, &project.slug, "kiqr").await;
         app.crawls.write().await.remove(&project.slug);
         app.jobs.write().await.remove(&key);
         app.bus.emit(Some(&project.slug), EventKind::JobFinished { job: "crawl".into() });
@@ -779,6 +783,8 @@ async fn draft_posts(app: &App, slug: &str, count: usize, network: &str) -> ApiR
         if !network.is_empty() {
             networks.retain(|k| k.kind == network);
         }
+        // Real pictures first: the site's, under Media, before the posts are written.
+        crate::media::pictures_or_import(&app2, &project.slug).await;
         let made = ex.social_posts(&project, count, networks).await?;
         crate::images::cards_for_posts(&app2, &project.slug, &made).await;
         Ok(())

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { BarChart3, Brain, CalendarDays, Check, ChevronsUpDown, Globe, Inbox, Library, ListChecks, MessagesSquare, Network, Plug, KeyRound, Plus, Sparkles, Settings, SlidersHorizontal, Swords, Target, type LucideIcon, Radio } from "lucide-react";
+import { BarChart3, Brain, CalendarDays, Check, ChevronsUpDown, Globe, Images, Inbox, Library, ListChecks, MessagesSquare, Network, KeyRound, Plus, Sparkles, Settings, SlidersHorizontal, Swords, Target, type LucideIcon, Radio } from "lucide-react";
 import { DEMO } from "./demo";
 import { api, useAsync, useEvents, type AssetType, type Project, type TypeCount } from "./api";
 import { assetIcon } from "./assetIcons";
@@ -17,12 +17,13 @@ type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number; h
  * Project-scoped navigation, grouped by what the user is doing: To do (what needs them) on
  * its own; Marketing (plan, performance, calendar); the Library plus one item per asset type
  * (types are data, so the group grows when Seemo makes a new kind of thing); Business (what
- * KIQR knows); Seemo (chats and tasks); Setup (abilities, accounts, project settings) last.
+ * KIQR knows); Seemo (chats and tasks); Setup (abilities, the Vault, project settings) last.
  */
 function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting: number): { label: string; items: NavItem[] }[] {
   const n = (id: string) => counts?.find((c) => c.type === id)?.count ?? 0;
-  // A type appears once the project has something of it; nothing is pinned.
-  const shown = types.filter((t) => n(t.id) > 0);
+  // A type appears once the project has something of it; nothing is pinned. Media is the one
+  // exception: its page is where sources are added, so it is there before anything is in it.
+  const shown = types.filter((t) => t.id !== "media" && n(t.id) > 0);
   const total = (counts ?? []).reduce((s, c) => s + c.count, 0);
   return [
     // What needs you, first and on its own.
@@ -42,6 +43,7 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
       label: "Library",
       items: [
         { sub: "library", label: "All", icon: Library, count: total || undefined },
+        { sub: "library/media", label: "Media", icon: Images, count: n("media") || undefined },
         ...shown.map((t) => ({ sub: `library/${t.id}`, label: t.plural, icon: assetIcon(t.icon), count: n(t.id) || undefined })),
       ],
     },
@@ -68,7 +70,6 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
       items: [
         { sub: "abilities", label: "Abilities", icon: Sparkles },
         { sub: "vault", label: "Vault", icon: KeyRound },
-        { sub: "accounts", label: "Accounts", icon: Plug },
         { sub: "settings", label: "Project settings", icon: SlidersHorizontal },
       ],
     },
@@ -130,7 +131,7 @@ export function Shell() {
                 {g.items.map((it) => {
                   const to = it.sub ? `/p/${current.slug}/${it.sub}` : `/p/${current.slug}`;
                   return (
-                    <NavLink key={it.sub} to={to} end={!it.sub.startsWith("library/") && it.sub !== "channels" && it.sub !== "accounts"}>
+                    <NavLink key={it.sub} to={to} end={!it.sub.startsWith("library/") && it.sub !== "channels"}>
                       {({ isActive }) => (
                         <>
                           {isActive && <motion.span layoutId="nav-active" className="hl" transition={{ type: "spring", stiffness: 500, damping: 40 }} />}

@@ -12,7 +12,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use kiqr_core::accounts::Account;
 use kiqr_core::channels::Channel;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{Manifest, Provide};
@@ -165,7 +164,8 @@ async fn sends(State(app): State<App>, Path((slug, id)): Path<(String, String)>)
 /// Start sending to everyone on the list through the account, one message
 /// each, in the background. People already in this send's log are skipped,
 /// so a stopped run picks up where it left. Returns how many are to go.
-pub async fn send(app: &App, slug: &str, c: &Account, m: &Manifest, provide: &Provide, l: &Channel, subject: &str, text_md: &str, asset: Option<crate::publish::AssetRef>, by: &str) -> Result<usize, ApiError> {
+#[allow(clippy::too_many_arguments)]
+pub async fn send(app: &App, slug: &str, conn: Option<kiqr_core::conn::Conn>, m: &Manifest, provide: &Provide, l: &Channel, subject: &str, text_md: &str, asset: Option<crate::publish::AssetRef>, by: &str) -> Result<usize, ApiError> {
     let home = app.store.home();
     let key = send_key(subject, asset.as_ref());
     let job = format!("list-send:{slug}/{}/{key}", l.id);
@@ -185,7 +185,7 @@ pub async fn send(app: &App, slug: &str, c: &Account, m: &Manifest, provide: &Pr
     let footer = format!("\n\n---\n\nYou get this because you are on the {} list of {}. Reply with \"unsubscribe\" to leave it.", l.label, business);
     let text = format!("{}{footer}", text_md.trim_end());
     let html = kiqr_core::publishing::markdown_to_html(&text);
-    let (app, slug, c, m, provide, list, subject, by) = (app.clone(), slug.to_string(), c.clone(), m.clone(), provide.clone(), l.clone(), subject.to_string(), by.to_string());
+    let (app, slug, m, provide, list, subject, by) = (app.clone(), slug.to_string(), m.clone(), provide.clone(), l.clone(), subject.to_string(), by.to_string());
     tokio::spawn(async move {
         let home = app.store.home().clone();
         let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new(".")));
@@ -193,7 +193,7 @@ pub async fn send(app: &App, slug: &str, c: &Account, m: &Manifest, provide: &Pr
         let asset_v = asset.as_ref().map(|a| json!({ "type": a.kind, "id": a.id })).unwrap_or(Value::Null);
         for (i, p) in people.iter().enumerate() {
             let args = json!({ "to": p.email, "subject": subject, "text": text, "html": html, "asset": asset_v });
-            let r = crate::ext::run_through(&app, &slug, &m, &provide, None, None, &args, Some(&c)).await;
+            let r = crate::ext::run_through(&app, &slug, &m, &provide, None, None, &args, conn.as_ref()).await;
             let line = match &r {
                 Ok(_) => { sent += 1; Sent { email: p.email.clone(), at: chrono::Utc::now(), ok: true, error: None } }
                 Err(e) => { failed += 1; Sent { email: p.email.clone(), at: chrono::Utc::now(), ok: false, error: Some(kiqr_core::profile::truncate_chars(&format!("{e:#}"), 200)) } }
@@ -210,9 +210,11 @@ pub async fn send(app: &App, slug: &str, c: &Account, m: &Manifest, provide: &Pr
                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
             }
         }
-        let a = kiqr_core::accounts::Activity { at: chrono::Utc::now(), ability: m.id.clone(), role: "publish".into(), tool: "email".into(), target: format!("list:{}:{}", list.id, send_key(&subject, asset.as_ref())), channel: list.id.clone(), url: None };
-        let _ = c.record(&home, &slug, &a);
-        app.bus.emit(Some(&slug), EventKind::AccountActed { account: c.id.clone(), ability: m.id.clone(), role: "publish".into(), target: a.target.clone(), channel: list.id.clone(), url: None });
+        if let Some(c) = &conn {
+            let a = kiqr_core::conn::Activity { at: chrono::Utc::now(), project: slug.clone(), ability: m.id.clone(), role: "publish".into(), tool: "email".into(), target: format!("list:{}:{}", list.id, send_key(&subject, asset.as_ref())), channel: list.id.clone(), url: None };
+            let _ = c.record(&home, &a);
+            app.bus.emit(Some(&slug), EventKind::CredentialActed { credential: c.id().to_string(), ability: m.id.clone(), role: "publish".into(), target: a.target.clone(), channel: list.id.clone(), url: None });
+        }
         let text = if failed == 0 { format!("\"{subject}\" went to all {sent} people on {}.", list.label) } else { format!("\"{subject}\" went to {sent} people on {}; {failed} could not be sent (the list page shows who).", list.label) };
         app.bus.emit(Some(&slug), EventKind::SeemoSays { text });
         tracing::info!(slug, list = %list.id, sent, failed, by = %by, "sent to a list");

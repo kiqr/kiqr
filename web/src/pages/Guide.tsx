@@ -12,7 +12,7 @@ import { useNetworks } from "../networks";
 import { openSeemo } from "../SeemoWidget";
 import { ASK_FOR_PLAN } from "./Plan";
 import { useSignIns } from "./SignIns";
-import { connectPath } from "./Accounts";
+import { abilityHref } from "./Access";
 
 type StepState = "done" | "now" | "skipped";
 type Step = {
@@ -95,7 +95,6 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
   const intake = useAsync(() => api.intake(slug).catch(() => null), [slug]);
   const assets = useAsync(() => api.assets(slug).catch(() => [] as Asset[]), [slug]);
   const planView = useAsync(() => api.plan(slug).catch(() => null), [slug]);
-  const accounts = useAsync(() => api.accounts(slug).catch(() => null), [slug]);
   const channels = useAsync(() => api.channels(slug).catch(() => null), [slug]);
   const signIns = useSignIns();
   const tasks = useAsync(() => api.tasks(slug).catch(() => []), [slug]);
@@ -115,7 +114,6 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       if (e.type === "job_finished" && e.job === "posts") setWriting(false);
       if (e.type === "plan_saved") planView.reload();
       if (e.type === "task_saved" || e.type === "task_deleted") tasks.reload();
-      if (e.type === "account_saved" || e.type === "account_deleted") accounts.reload();
       if (CHANNEL_EVENTS.includes(e.type)) channels.reload();
       if (e.type === "metrics_snapshot") perf.reload();
       if (e.type === "intake_saved") (intake.reload(), setup.reload());
@@ -272,8 +270,8 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
             why: toSetUp[0]?.why[0]?.kind === "site" ? "Seen on your site" : undefined,
             state: st("setup", toSetUp.length === 0),
             optional: true,
-            to: toSetUp[0] ? connectPath(slug, { service: toSetUp[0].id }) : `/p/${slug}/accounts`,
-            action: toSetUp.length ? "Set up" : "See accounts",
+            to: toSetUp[0] ? abilityHref(slug, toSetUp[0].id) : `/p/${slug}/vault`,
+            action: toSetUp.length ? "Set up" : "See the Vault",
           } satisfies Step,
         ]
       : []),
@@ -281,12 +279,12 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       id: "connect",
       icon: Cable,
       title: said.length ? `Connect ${list(said)}` : "Connect where you publish",
-      text: connected ? "Connected. Approved posts go out there on their own." : said.length ? "You're already there. Once connected, an approved post goes out on its own at the time you pick." : "Your blog, social accounts and ad accounts. Once connected, an approved post goes out on its own.",
+      text: connected ? "Connected. Approved posts go out there on their own." : said.length ? "You're already there. Pick who Seemo posts as on each channel, and an approved post goes out at the time you pick." : "Your blog and social profiles as channels, each with who Seemo posts as. Then an approved post goes out on its own.",
       why: said.length ? `You said: ${list(said)}` : undefined,
       state: st("connect", connected),
       optional: true,
-      to: connected ? `/p/${slug}/accounts` : connectPath(slug, { group: "social" }),
-      action: connected ? "See accounts" : "Connect",
+      to: `/p/${slug}/channels`,
+      action: connected ? "See channels" : "Connect",
     },
     {
       id: "posts",
@@ -303,7 +301,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
             : "Three posts from your profile, in your voice and your colours. Nothing goes out until you approve it.",
       state: st("posts", approved),
       optional: true,
-      to: approved ? `/p/${slug}/library/post` : !ch.length ? connectPath(slug, { group: "social" }) : undefined,
+      to: approved ? `/p/${slug}/library/post` : !ch.length ? `/p/${slug}/channels` : undefined,
       action: approved ? "See posts" : "Connect an account",
       run: approved || !ch.length ? undefined : drafts ? { label: "See the drafts", go: () => document.getElementById("todo-drafts")?.scrollIntoView({ behavior: "smooth", block: "start" }) } : { label: writing ? "Writing…" : "Write them", go: writePosts },
     },
@@ -324,7 +322,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       text: measured ? "Connected. Seemo reads them once a day and tells you how the plan is going." : objective ? `Your plan counts ${kpi!.toLowerCase()}. Connect where that number lives, and Seemo tells you how it's going.` : "Connect your analytics, and Seemo tells you what works.",
       state: st("numbers", measured),
       optional: true,
-      to: measured ? `/p/${slug}/performance` : connectPath(slug, { group: "numbers" }),
+      to: measured ? `/p/${slug}/performance` : abilityHref(slug),
       action: measured ? "See performance" : "Connect",
     },
     {

@@ -3,20 +3,21 @@
 // approved but not sent, publishes coming up, and scheduled publishes that
 // failed. The sidebar count is the approvals, drafts and failures.
 import { Link, useParams } from "react-router-dom";
-import { CalendarClock, CheckCircle2, ExternalLink, Hand, MessagesSquare, Plug, Send, Sparkles } from "lucide-react";
+import { CalendarClock, CheckCircle2, Hand, MessagesSquare, Send, Radio, Download, Loader2 } from "lucide-react";
 import { useState } from "react";
-import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card, type NeedsHand, type Suggestion } from "../api";
+import { api, useAsync, useEvents, useDemoSeemo, type Asset, type Card, type ChannelWaiting, type NeedsHand } from "../api";
 import { Guide } from "./Guide";
 import { ApprovalCard } from "../chat/Conversation";
 import { AssetEmbed } from "./AssetEmbed";
 import { AssetActions, StatusChip, whenAt } from "./AssetActions";
-import { connectPath, sentence } from "./Accounts";
+import { Favicon } from "./Favicon";
+import { abilityHref, sentence } from "./Access";
 import { assetIcon } from "../assetIcons";
 import "../profile.css";
 import "../chat.css";
 import "../library.css";
 
-export const TODO_EVENTS = ["suggestions_changed", "brand_updated", "extension_installed", "extension_removed", "asset_saved", "asset_deleted", "asset_published", "asset_approved", "asset_unpublished", "approval_requested", "approval_resolved", "chat_deleted", "session_changed", "account_state_changed", "account_deleted", "audience_saved", "audience_deleted"];
+export const TODO_EVENTS = ["channel_saved", "channel_deleted", "grant_changed", "credential_saved", "brand_updated", "extension_installed", "extension_removed", "asset_saved", "asset_deleted", "asset_published", "asset_approved", "asset_unpublished", "approval_requested", "approval_resolved", "chat_deleted", "session_changed", "account_state_changed", "account_deleted", "audience_saved", "audience_deleted"];
 
 export function TodoPage() {
   const { slug = "" } = useParams();
@@ -26,8 +27,8 @@ export function TodoPage() {
   useEvents(slug, onEvent, { demo: false });
   useDemoSeemo(onEvent);
   const d = todo.data;
-  // Accounts whose sign-in waits for a person; the field may be missing on an older daemon.
-  const hands: NeedsHand[] = (d?.accounts_needing_hand ?? d?.needs_hand ?? []).filter((x) => x && x.account);
+  // Logins whose sign-in waits for a person.
+  const hands: NeedsHand[] = (d?.credentials_needing_hand ?? []).filter((x) => x && x.credential);
   // The getting-started steps sit here until every one is done or skipped; the page is "Getting started" until then.
   const [guideDone, setGuideDone] = useState<boolean | undefined>(undefined);
   const starting = guideDone === false;
@@ -88,17 +89,17 @@ export function TodoPage() {
           </h2>
           <ul className="todo-rows">
             {hands.map((h) => (
-              <li key={h.account} className="todo-row">
-                <Link className="what" to={`/p/${slug}/accounts#account=${encodeURIComponent(h.account)}`}>
+              <li key={h.credential} className="todo-row">
+                <Link className="what" to={`/p/${slug}/vault#credential=${encodeURIComponent(h.credential)}`}>
                   <span className="ic">
                     <Hand size={15} />
                   </span>
                   <span className="min0">
-                    <b>{h.label || h.account} needs a hand to sign in</b>
+                    <b>{h.label || h.credential} needs a hand to sign in</b>
                     <small>{h.message ? `${sentence(h.message)}. ` : ""}Finish the sign-in in the live view.</small>
                   </span>
                 </Link>
-                <Link className="btn p sm" to={`/p/${slug}/accounts#hands=${encodeURIComponent(h.account)}`}>
+                <Link className="btn p sm" to={`/p/${slug}/vault#credential=${encodeURIComponent(h.credential)}&hands`}>
                   <Hand size={13} /> Take the controls
                 </Link>
               </li>
@@ -152,14 +153,14 @@ export function TodoPage() {
         </section>
       )}
 
-      {d && (d.suggestions?.length ?? 0) > 0 && (
+      {d && (d.channels_waiting?.length ?? 0) > 0 && (
         <section className="todo-sec">
           <h2>
-            <Sparkles size={15} /> Seemo suggests <span className="n">{d.suggestions!.length}</span>
+            <Radio size={15} /> Channels waiting <span className="n">{d.channels_waiting!.length}</span>
           </h2>
           <ul className="todo-rows">
-            {d.suggestions!.map((s) => (
-              <SuggestionRow key={s.kind} slug={slug} s={s} onChange={todo.reload} />
+            {d.channels_waiting!.map((c) => (
+              <ChannelRow key={c.id} slug={slug} c={c} onChange={todo.reload} />
             ))}
           </ul>
         </section>
@@ -168,31 +169,52 @@ export function TodoPage() {
   );
 }
 
-/** A profile the business has where an ability in the marketplace could publish. */
-function SuggestionRow({ slug, s, onChange }: { slug: string; s: Suggestion; onChange: () => void }) {
+/** A channel that cannot be published to yet: why, and its one fix. */
+function ChannelRow({ slug, c, onChange }: { slug: string; c: ChannelWaiting; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fix = c.readiness.fix;
+  const open = `/p/${slug}/channels#channel=${encodeURIComponent(c.id)}`;
+  const install = async () => {
+    if (!fix?.ability) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.installAbility(fix.ability);
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <li className="todo-row sugg">
-      <span className="what">
-        <span className="ic">
-          <Sparkles size={15} />
-        </span>
+    <li className="todo-row">
+      <Link className="what" to={open}>
+        <Favicon domain={c.domain || undefined} size={30} />
         <span className="min0">
-          <b>
-            I found your{" "}
-            <a href={s.profile_url} target="_blank" rel="noreferrer">
-              {s.name} page <ExternalLink size={11} />
-            </a>
-          </b>
-          <small>The marketplace has “{s.ability_name}”. With it I can write and publish there.</small>
+          <b>{c.label}</b>
+          <small>{c.readiness.text}</small>
         </span>
-      </span>
-      <Link className="btn p sm" to={connectPath(slug, { service: s.ability })}>
-        <Plug size={13} /> Connect
       </Link>
-      <button className="btn t sm" disabled={busy} onClick={() => (setBusy(true), api.dismissSuggestion(slug, s.kind).then(onChange, () => setBusy(false)))}>
-        Not now
-      </button>
+      {fix?.action === "install" ? (
+        <button className="btn p sm" disabled={busy} onClick={() => void install()}>
+          {busy ? <Loader2 size={13} className="spin" /> : <Download size={13} />} {fix.label}
+        </button>
+      ) : fix?.action === "credential" && fix.credential ? (
+        <Link className="btn g sm" to={`/p/${slug}/vault#credential=${encodeURIComponent(fix.credential)}`}>
+          {fix.label}
+        </Link>
+      ) : fix?.action === "abilities" ? (
+        <Link className="btn g sm" to={abilityHref(slug)}>
+          {fix.label}
+        </Link>
+      ) : (
+        <Link className="btn g sm" to={open}>
+          {fix?.label ?? "Open"}
+        </Link>
+      )}
+      {error && <p className="err sm">{error}</p>}
     </li>
   );
 }

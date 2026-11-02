@@ -156,8 +156,94 @@ fn resolve(base: &Url, href: &str) -> Option<String> {
     Some(u.to_string())
 }
 
-fn host_key(u: &Url) -> String {
+pub(crate) fn host_key(u: &Url) -> String {
     u.host_str().unwrap_or("").trim_start_matches("www.").to_ascii_lowercase()
+}
+
+/// The business's own hosts, as the brand crawl counts them: its site, and
+/// the hosts its logo, icon and share image live on (a shop platform's CDN).
+/// Subdomains of the site count too (`is_own_host`). This is narrower than
+/// `vault::same_site` on purpose: that one takes everything under one
+/// registrable domain as one site, which would make a whole platform the
+/// business's own; here only what the site itself points at is.
+pub fn own_hosts(site_url: &str, brand: &Brand) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut push = |u: &str| {
+        if let Ok(u) = Url::parse(u) {
+            let h = host_key(&u);
+            if !h.is_empty() && !out.contains(&h) {
+                out.push(h);
+            }
+        }
+    };
+    push(site_url);
+    for u in [&brand.logo, &brand.icon, &brand.cover].into_iter().flatten() {
+        push(u);
+    }
+    out
+}
+
+/// Is `host` the business's own: one of `own` (the site first), or a subdomain of the site?
+pub fn is_own_host(host: &str, own: &[String]) -> bool {
+    let h = host.trim_start_matches("www.").to_ascii_lowercase();
+    own.iter().any(|o| *o == h) || own.first().is_some_and(|site| h.ends_with(&format!(".{site}")))
+}
+
+/// The large content pictures on a page: outside the site's chrome, at least
+/// 400 px a side by their attributes, in a hero or banner, or with a srcset.
+fn content_images(base: &Url, doc: &Html) -> Vec<BrandImage> {
+    let mut out = vec![];
+    for img in doc.select(&sel("img")) {
+        if in_chrome(&img) {
+            continue;
+        }
+        let v = img.value();
+        let srcset = v.attr("srcset").or_else(|| v.attr("data-srcset"));
+        let src = v.attr("src").filter(|s| !s.trim_start().starts_with("data:")).or_else(|| v.attr("data-src"));
+        let best = srcset.and_then(|s| largest_srcset(base, s)).or_else(|| src.and_then(|s| resolve(base, s)));
+        let Some(url) = best else { continue };
+        let dim = |k: &str| v.attr(k).and_then(|x| x.trim().trim_end_matches("px").parse::<u32>().ok()).unwrap_or(0);
+        let big = dim("width") >= 400 || dim("height") >= 400;
+        let hero = ancestors_match(&img, 4, &["hero", "banner"]);
+        if !(big || hero || srcset.is_some()) || !image_ok(&url) {
+            continue;
+        }
+        if dim("width") > 0 && dim("width") < 120 && dim("height") > 0 && dim("height") < 120 {
+            continue;
+        }
+        out.push(BrandImage { url, alt: clean(v.attr("alt").unwrap_or("")), page: base.to_string() });
+    }
+    out
+}
+
+/// The pictures one page offers, for `read_url`: its share image first
+/// (og:image, else twitter:image, with its alt or the page title), then the
+/// large content pictures, each once, at most `max`.
+pub fn page_images(base: &Url, html: &str, max: usize) -> Vec<BrandImage> {
+    let doc = Html::parse_document(html);
+    let meta = |key: &str| -> Option<String> {
+        let s = sel(&format!("meta[property=\"{key}\"], meta[name=\"{key}\"]"));
+        doc.select(&s).find_map(|m| nonempty(m.value().attr("content")))
+    };
+    let og = meta("og:image").or_else(|| meta("og:image:url")).or_else(|| meta("og:image:secure_url")).or_else(|| meta("twitter:image")).or_else(|| meta("twitter:image:src")).and_then(|u| resolve(base, &u));
+    let title = doc.select(&sel("title")).next().map(|t| clean(&t.text().collect::<String>())).unwrap_or_default();
+    let mut out: Vec<BrandImage> = vec![];
+    let mut seen: Vec<String> = vec![];
+    if let Some(url) = og.filter(|u| image_ok(u)) {
+        seen.push(image_key(&url));
+        out.push(BrandImage { url, alt: meta("og:image:alt").unwrap_or(title), page: base.to_string() });
+    }
+    for img in content_images(base, &doc) {
+        let key = image_key(&img.url);
+        if out.len() >= max {
+            break;
+        }
+        if !seen.contains(&key) {
+            seen.push(key);
+            out.push(img);
+        }
+    }
+    out
 }
 
 /// Extract brand hints from one page's raw HTML.
@@ -252,28 +338,7 @@ pub fn hints(base: &Url, html: &str, profiles: &ProfileHosts) -> PageBrandHints 
     }
 
     h.img_logo = find_logo(base, &doc);
-
-    // Content images.
-    for img in doc.select(&sel("img")) {
-        if in_chrome(&img) {
-            continue;
-        }
-        let v = img.value();
-        let srcset = v.attr("srcset").or_else(|| v.attr("data-srcset"));
-        let src = v.attr("src").filter(|s| !s.trim_start().starts_with("data:")).or_else(|| v.attr("data-src"));
-        let best = srcset.and_then(|s| largest_srcset(base, s)).or_else(|| src.and_then(|s| resolve(base, s)));
-        let Some(url) = best else { continue };
-        let dim = |k: &str| v.attr(k).and_then(|x| x.trim().trim_end_matches("px").parse::<u32>().ok()).unwrap_or(0);
-        let big = dim("width") >= 400 || dim("height") >= 400;
-        let hero = ancestors_match(&img, 4, &["hero", "banner"]);
-        if !(big || hero || srcset.is_some()) || !image_ok(&url) {
-            continue;
-        }
-        if dim("width") > 0 && dim("width") < 120 && dim("height") > 0 && dim("height") < 120 {
-            continue;
-        }
-        h.images.push(BrandImage { url, alt: clean(v.attr("alt").unwrap_or("")), page: base.to_string() });
-    }
+    h.images = content_images(base, &doc);
 
     // Social links.
     for a in doc.select(&sel("a[href]")) {
@@ -429,7 +494,7 @@ fn largest_srcset(base: &Url, srcset: &str) -> Option<String> {
         .map(|(u, _)| u)
 }
 
-fn image_ok(url: &str) -> bool {
+pub fn image_ok(url: &str) -> bool {
     let l = url.to_ascii_lowercase();
     let path = l.split(['?', '#']).next().unwrap_or("");
     !(path.ends_with(".svg") || path.ends_with(".gif") || path.ends_with(".ico"))
@@ -926,19 +991,8 @@ pub fn build_from_hints(mut pages: Vec<(Url, PageBrandHints)>, css: &[String]) -
     // only from the business's own hosts: its domain and subdomains, and the
     // hosts its own logo, icon and share image live on (a shop platform's CDN).
     // Images a page embeds from other sites (partners' product photos) are theirs.
-    let site = host_key(home_url);
-    let mut own_hosts: Vec<String> = vec![site.clone()];
-    for u in [&b.logo, &b.icon, &home.og_image].into_iter().flatten() {
-        if let Ok(u) = Url::parse(u) {
-            own_hosts.push(host_key(&u));
-        }
-    }
-    let own = |url: &str| {
-        Url::parse(url).is_ok_and(|u| {
-            let h = host_key(&u);
-            own_hosts.contains(&h) || h.ends_with(&format!(".{site}"))
-        })
-    };
+    let hosts = own_hosts(home_url.as_str(), &b);
+    let own = |url: &str| Url::parse(url).is_ok_and(|u| is_own_host(&host_key(&u), &hosts));
     let mut seen: Vec<String> = b.logo.iter().map(|l| image_key(l)).collect();
     let mut add = |img: BrandImage, images: &mut Vec<BrandImage>| {
         let key = image_key(&img.url);
@@ -1013,6 +1067,11 @@ pub fn build_from_hints(mut pages: Vec<(Url, PageBrandHints)>, css: &[String]) -
 
 /// One image whatever its size: `photo-1024x712.webp`, `photo.webp?w=800` and
 /// `photo.webp` are the same picture (WordPress and CDN resizes).
+/// One picture under its resized copies' names (`photo-1200x800.jpg` is `photo.jpg`).
+pub fn image_key_of(url: &str) -> String {
+    image_key(url)
+}
+
 fn image_key(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
     let (stem, ext) = path.rsplit_once('.').unwrap_or((path.as_str(), ""));

@@ -10,6 +10,7 @@ You receive JSON with:
 - `brief`: the business brief: name, summary, offerings, audiences, tone of voice (description, traits, example sentences, things to avoid), brand terms, differentiators and content gaps.
 - `networks`: the networks this business can publish to from here, each with `id`, `name`, `text_limit` (characters, when the network has one), `writing` (how posts there are written, from the ability that publishes there) and `business_profile` (true when the business already has a profile there). May be empty.
 - `count`: how many posts to write.
+- `media`: the business's own pictures in its Library, each with `id`, `alt` (what it shows), `page` (where it was seen) and `orientation`. May be empty.
 
 Rules:
 
@@ -22,10 +23,10 @@ Rules:
 - No emoji unless the tone of voice clearly uses them. No exclamation marks unless the brand's own examples use them.
 - End with a clear, honest next step when it fits (visit the site, read more, get in touch), not on every post.
 - `title`: a short internal label for the library, 3 to 7 words, not the post's first line.
-- `image`: every post carries an image. Give each an image idea: `headline` (the post's point in at most 7 words, not its first line copied), `support` (one line of at most 12 words, from the post) and `style` (`dark`, `light` or `accent`: which brand colour is the background; vary it across the batch).
+- `image`: every post carries an image. Give each an image idea: `headline` (the post's point in at most 7 words, not its first line copied), `support` (one line of at most 12 words, from the post), `style` (`dark`, `light` or `accent`: which brand colour is the background; vary it across the batch), `media` (the `id` of a picture from `media` when the post is about something that picture shows, its subject or the business at work; else `null`: a picture is never decoration for a post about something else) and `layout` (`photo`: the picture full bleed with the words over it; `split`: the picture one side, the words the other; `card`: words on colour, when there is no picture). Vary the layout across the batch; a batch with pictures available has at least one picture-led post.
 
 Return only JSON:
 
 ```json
-{ "posts": [ { "network": "<an id from networks, or null>", "title": "Why we render only when needed", "text": "The post, exactly as it will be published.", "image": { "headline": "Render only when the page needs it", "support": "One credit per page, whatever the site throws at you.", "style": "dark" } } ] }
+{ "posts": [ { "network": "<an id from networks, or null>", "title": "Why we render only when needed", "text": "The post, exactly as it will be published.", "image": { "headline": "Render only when the page needs it", "support": "One credit per page, whatever the site throws at you.", "style": "dark", "media": null, "layout": "card" } } ] }
 ```

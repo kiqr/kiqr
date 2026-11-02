@@ -306,7 +306,7 @@ const listed = (xs: string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0,
 /**
  * Seemo's last word in the first conversation: what it would set up, from the
  * answers and what it saw on the site. Adding one installs it and opens it, on
- * its accounts, to sign in right there; one added but not signed in yet opens
+ * its Access, to give it a credential right there; one added but not signed in yet opens
  * the same way. Asked again as the crawl goes on, since the site tells it more
  * the further it reads.
  */
@@ -353,7 +353,7 @@ function SetUp({ slug, host, stage, onGrow, onDismiss }: { slug: string; host: s
   if (!setup || size === 0) return null;
   const sugs = setup.suggestions;
 
-  /** Install it when it isn't yet, then open it on its accounts (the modal falls back to its overview when it has none). */
+  /** Install it when it isn't yet, then open it on its Access (the modal falls back to its overview when it has none). */
   const setUp = async (id: string, installed: boolean) => {
     setBusy(id);
     setError(null);

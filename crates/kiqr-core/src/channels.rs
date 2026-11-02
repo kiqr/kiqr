@@ -159,6 +159,11 @@ impl Default for Channel {
     }
 }
 
+/// An id: lowercase letters, digits and dashes.
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && !id.starts_with('-')
+}
+
 /// Fields compared without case.
 pub fn same_fields(a: &BTreeMap<String, Value>, b: &BTreeMap<String, Value>) -> bool {
     let norm = |m: &BTreeMap<String, Value>| m.iter().map(|(k, v)| (k.clone(), v.as_str().map(str::to_lowercase).unwrap_or_else(|| v.to_string()))).collect::<BTreeMap<_, _>>();
@@ -232,7 +237,7 @@ impl Channel {
     }
 
     pub fn load(store: &Store, slug: &str, id: &str) -> Result<Channel> {
-        if !crate::accounts::valid_id(id) {
+        if !valid_id(id) {
             bail!("there is no channel '{id}'");
         }
         match store.read_yaml_opt::<Channel>(&store.home().channels_dir(slug).join(id).join("channel.yaml"))? {
@@ -248,7 +253,7 @@ impl Channel {
     }
 
     pub fn save(&self, store: &Store, slug: &str) -> Result<()> {
-        if !crate::accounts::valid_id(&self.id) {
+        if !valid_id(&self.id) {
             bail!("a channel id is letters, digits and dashes");
         }
         if self.label.trim().is_empty() {

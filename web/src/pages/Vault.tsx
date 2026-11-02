@@ -8,8 +8,11 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertTriangle, Check, KeyRound, Loader2, Lock, Plus, Star, Trash2, X } from "lucide-react";
-import { api, useAsync, useEvents, VAULT_EVENTS, type Credential, type CredentialTemplate } from "../api";
+import { AlertTriangle, Check, Hand, KeyRound, LogIn, LogOut, Loader2, Lock, Plus, Star, Trash2, X } from "lucide-react";
+import { api, SESSION_EVENTS, useAsync, useEvents, VAULT_EVENTS, type Credential, type CredentialTemplate } from "../api";
+import { credStateChip, sentence } from "./Access";
+import { CredentialAbilities } from "./Recommended";
+import { Hands } from "./Hands";
 import { CredentialForm, host } from "./CredentialForm";
 import { Favicon } from "./Favicon";
 import "../profile.css";
@@ -89,7 +92,7 @@ export function VaultPage() {
         )}
         {current && vault.data && (
           <Drawer key={current.id} title={current.label} icon={current.domains[0]} sub={current.identity ?? kindName(current, vault.data.templates)} onClose={() => setHash("")}>
-            <CredentialDetails c={current} templates={vault.data.templates} onChange={vault.reload} onDeleted={() => (setHash(""), vault.reload())} />
+            <CredentialDetails slug={slug} c={current} templates={vault.data.templates} handsFirst={/[#&]hands\b/.test(location.hash)} onChange={vault.reload} onDeleted={() => (setHash(""), vault.reload())} />
           </Drawer>
         )}
         {open && vault.data && !current && (
@@ -187,7 +190,7 @@ export function Drawer({ title, icon, iconNode, sub, onClose, children }: { titl
 }
 
 /** One credential: its fields (set or not, replaced but never shown), its domains, and delete. */
-function CredentialDetails({ c, templates, onChange, onDeleted }: { c: Credential; templates: CredentialTemplate[]; onChange: () => void; onDeleted: () => void }) {
+function CredentialDetails({ slug, c, templates, handsFirst, onChange, onDeleted }: { slug: string; c: Credential; templates: CredentialTemplate[]; handsFirst?: boolean; onChange: () => void; onDeleted: () => void }) {
   const [label, setLabel] = useState(c.label);
   const [editing, setEditing] = useState<string | null>(null);
   const [value, setValue] = useState("");
@@ -318,6 +321,15 @@ function CredentialDetails({ c, templates, onChange, onDeleted }: { c: Credentia
         </div>
       </section>
 
+      <CredentialSession slug={slug} c={c} handsFirst={handsFirst} />
+
+      <section>
+        <p className="cap">Abilities that can use it</p>
+        <CredentialAbilities slug={slug} credential={c.id} />
+      </section>
+
+      <CredentialLog id={c.id} />
+
       {error && (
         <p className="err">
           <AlertTriangle size={13} /> {error}
@@ -343,5 +355,89 @@ function CredentialDetails({ c, templates, onChange, onDeleted }: { c: Credentia
         )}
       </div>
     </div>
+  );
+}
+
+/** A login's sign-in on its browser, when an ability here signs it in: how it stands, Sign in now, the live view, Sign out. */
+function CredentialSession({ slug, c, handsFirst }: { slug: string; c: Credential; handsFirst?: boolean }) {
+  const st = useAsync(() => api.credentialSession(slug, c.id).catch(() => null), [slug, c.id]);
+  useEvents(slug, (e) => SESSION_EVENTS.includes(e.type) && e.credential === c.id && st.reload(), { demo: false });
+  const [hands, setHands] = useState(!!handsFirst);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const s = st.data;
+  if (!s?.has_session) return null;
+  const chip = credStateChip(s.session.state === "signed_in" ? "ready" : s.session.state || undefined);
+  const run = async (what: string, f: () => Promise<unknown>) => {
+    setBusy(what);
+    setError(null);
+    try {
+      await f();
+      st.reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section>
+      <p className="cap">Signed in on Seemo's browser</p>
+      <div className="vt-inline">
+        <span className={`chip sm ${chip.cls}`}>
+          {chip.spin ? <Loader2 size={11} className="spin" /> : <b />} {chip.text}
+        </span>
+        {s.session.message && <span className="muted sm">{sentence(s.session.message)}.</span>}
+      </div>
+      <div className="vt-inline">
+        {!s.by_hand && s.has_login && (
+          <button className="btn g sm" disabled={!!busy} onClick={() => void run("in", () => api.credentialSignIn(slug, c.id))}>
+            {busy === "in" ? <Loader2 size={13} className="spin" /> : <LogIn size={13} />} Sign in now
+          </button>
+        )}
+        {s.live_view && (
+          <button className="btn g sm" onClick={() => setHands(true)}>
+            <Hand size={13} /> Take the controls
+          </button>
+        )}
+        {s.session.state === "signed_in" && (
+          <button className="btn t sm" disabled={!!busy} onClick={() => void run("out", () => api.credentialSignOut(slug, c.id))}>
+            <LogOut size={13} /> Sign out
+          </button>
+        )}
+      </div>
+      {!s.has_login && !s.by_hand && <p className="muted sm">Add its password above to let Seemo sign in by itself, or sign in once with the controls.</p>}
+      {error && <p className="err sm">{error}</p>}
+      {hands && <Hands slug={slug} account={c.id} name={c.label} startUrl={s.start_url ?? undefined} onClose={() => (setHands(false), st.reload())} />}
+    </section>
+  );
+}
+
+/** What abilities did as it, newest first, in every project. */
+function CredentialLog({ id }: { id: string }) {
+  const log = useAsync(() => api.credentialActivity(id, 8).catch(() => null), [id]);
+  const items = log.data?.activity ?? [];
+  if (!items.length) return null;
+  return (
+    <section>
+      <p className="cap">What it did</p>
+      <ul className="vt-log">
+        {items.map((a, i) => (
+          <li key={i}>
+            <span className="mono dim">{new Date(a.at).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+            <span className="grow">
+              {a.role} by {a.ability}
+              {a.target ? ` on ${a.target}` : ""}
+              {a.project ? <span className="dim"> · {a.project}</span> : null}
+            </span>
+            {a.url && (
+              <a className="lnk sm" href={a.url} target="_blank" rel="noreferrer">
+                open
+              </a>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

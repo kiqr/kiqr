@@ -1,17 +1,15 @@
 // One ability, in full: what it is and what it includes, its instructions
-// (read, edit, edit a copy, restore), this project's accounts of its service,
-// and its switch for this project. Opened from any row or card on the
-// Abilities page. A service ability is plumbing behind an account: its
-// Accounts tab sends the user to the connect wizard rather than installing.
+// (read, edit, edit a copy, restore), its Access (what it asks for from the
+// Vault, and what this project allows it), and its switch for this project.
+// Opened from any row or card on the Abilities page.
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Download, FolderOpen, Globe, Loader2, Pencil, Plug, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Download, FolderOpen, Globe, Loader2, Pencil, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { api, type Ability, type Contract } from "../api";
 import { ProgramList } from "./Programs";
 import { Markdown } from "../markdown";
-import { AbilitySettings, serviceOf, ServiceAccounts } from "./Accounts";
+import { AbilityAccess, AbilitySettings } from "./Access";
 import { SecretField } from "./SecretField";
 import { SignInById } from "./SignIns";
 import { Switch } from "./Switch";
@@ -24,7 +22,7 @@ type Tab = "overview" | "instructions" | "connect";
 export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange, onPrefer }: { slug: string; a: Ability; contracts: Contract[]; initialTab?: Tab; onClose: () => void; onChange: () => void; onPrefer: (contract: string, id: string) => void }) {
   const state = stateOf(a);
   const service = isService(a);
-  const canConnect = service || (a.installed && a.auth.length > 0);
+  const canConnect = (a.access?.length ?? 0) > 0 || (a.installed && a.auth.length > 0);
   const [tab, setTab] = useState<Tab>(initialTab ?? "overview");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +52,7 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
     }
   };
   const rivals = contracts.filter((c) => a.provides.some((p) => p.ability === c.id) && c.candidates.length > 1);
-  const connectLabel = "Accounts";
+  const connectLabel = a.core && !a.access?.length ? "Key" : "Access";
   const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, ...(a.instructions.length ? [{ id: "instructions" as Tab, label: "Instructions" }] : []), ...(canConnect ? [{ id: "connect" as Tab, label: connectLabel }] : [])];
 
   return createPortal(
@@ -108,7 +106,7 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
                   run("install", async () => {
                     await api.installAbility(a.id);
                     setInstalling(false);
-                    if (a.auth.length) setTab("connect");
+                    if (a.auth.length || a.access?.length) setTab("connect");
                   })
                 }
               />
@@ -121,17 +119,13 @@ export function AbilityModal({ slug, a, contracts, initialTab, onClose, onChange
           )}
         </div>
         <footer className="ab-foot">
-          {!a.installed && service ? (
-            <button className="btn p sm" onClick={() => setTab("connect")}>
-              <Plug size={13} /> Connect your {serviceOf(a).name} account
-            </button>
-          ) : !a.installed ? (
+          {!a.installed ? (
             <button className="mk-install-btn" onClick={() => setInstalling((v) => !v)}>
               <Download size={14} /> {a.repo ? "Download and install" : "Install"}
             </button>
           ) : (
             <>
-              <label className="ab-sw" title={!a.ready ? (service ? `Connect your ${serviceOf(a).name} account first` : "Connect it first") : undefined}>
+              <label className="ab-sw" title={!a.ready ? (service ? "Allow it a credential first (Access)" : "Set it up first") : undefined}>
                 <Switch on={!a.paused && !a.machine_off && a.ready} disabled={!!busy || !a.ready} onChange={(on) => run("project", async () => {
                   // A core ability switched off in Settings for every project comes back on with this project.
                   if (on && a.machine_off) await api.resumeAbility(a.id);
@@ -277,7 +271,7 @@ function Overview({ slug, a, onConnect, onChange }: { slug: string; a: Ability; 
             What it needs
             {onConnect && (a.auth.length > 0 || service) && (
               <button className="lnk ab-cap-act" onClick={onConnect}>
-                {service ? "See the account" : "Set it up"}
+                {service ? "See access" : "Set it up"}
               </button>
             )}
           </p>
@@ -324,15 +318,10 @@ function Overview({ slug, a, onConnect, onChange }: { slug: string; a: Ability; 
           </div>
         )}
       </dl>
-      {service && (
-        <p className="muted sm">
-          It works through your {serviceOf(a).name} account, shared by every ability of {serviceOf(a).name}. Connect it, and choose what Seemo may do there, under <Link to={`/p/${slug}/accounts`}>Accounts</Link>.
-        </p>
-      )}
       {a.installed && Object.keys(a.settings ?? {}).length > 0 && (
         <div className="ab-settings">
           <p className="cap">What it works with</p>
-          <AbilitySettings slug={slug} a={a} lead={a.sources.length ? "Measured by" : "Through"} onChange={onChange} />
+          <AbilitySettings slug={slug} a={a} onChange={onChange} />
         </div>
       )}
       <AdvancedParts a={a} />
@@ -509,7 +498,7 @@ function CoreSignIn({ slug, a, onChange }: { slug: string; a: Ability; onChange:
   );
 }
 
-/** A service ability: this project's accounts of its service, connected in place. A core one: KIQR's own key, on this machine. Then which ability serves a contract. */
+/** What it may use: its Access (credentials from the Vault, allowed per project); a core one's own key on this machine. Then which ability serves a contract. */
 function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Ability; rivals: Contract[]; onChange: () => void; onPrefer: (contract: string, id: string) => void }) {
   return (
     <div className="ab-con">
@@ -524,8 +513,18 @@ function Connect({ slug, a, rivals, onChange, onPrefer }: { slug: string; a: Abi
           </div>
           <p className="muted sm">KIQR's own key, on this machine; every project uses it.</p>
         </>
+      ) : a.installed ? (
+        <AbilityAccess slug={slug} a={a} onChange={onChange} />
       ) : (
-        <ServiceAccounts slug={slug} ability={a} onChange={onChange} />
+        <div className="ax">
+          {(a.access ?? []).map((n) => (
+            <p key={n.id} className="sm">
+              It asks for {n.describe}
+              {n.for ? `: ${n.for.charAt(0).toLowerCase()}${n.for.slice(1)}` : ""}.
+            </p>
+          ))}
+          <p className="muted sm">Install it first; then allow it a credential from the Vault for this project.</p>
+        </div>
       )}
       {rivals.map((c) => (
         <div key={c.id} className="ab-prefer">

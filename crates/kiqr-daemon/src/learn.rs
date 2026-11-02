@@ -11,7 +11,7 @@
 use crate::api::ApiError;
 use crate::App;
 use axum::http::StatusCode;
-use kiqr_core::accounts::Account;
+use kiqr_core::conn::Conn;
 use kiqr_core::channels::Channel;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{self, LearnDoc, Manifest};
@@ -30,19 +30,23 @@ const EVERY: chrono::Duration = chrono::Duration::days(7);
 /// every tick.
 static TRIED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
-/// One account's ability, when it can teach the project.
-async fn learnable(app: &App, slug: &str, c: &Account) -> Option<Manifest> {
-    crate::accounts::manifests_of(app, slug, &c.service).await.into_iter().find(|m| m.learn.is_some())
+/// The ability that reads a channel's documents, when its kind's ability can teach the project.
+async fn learnable(app: &App, slug: &str, ch: &Channel) -> Option<Manifest> {
+    crate::channels::kind_for(app, slug, ch).await.map(|(m, _)| m).filter(|m| m.learn.is_some())
 }
 
-/// Whether accounts of a service can teach the project.
-pub async fn learnable_service(app: &App, slug: &str, service: &str) -> bool {
-    !service.is_empty() && crate::accounts::manifests_of(app, slug, service).await.iter().any(|m| m.learn.is_some())
-}
-
-/// The channels learned from, with the account each is read through.
-fn sources(app: &App, slug: &str) -> Vec<(Channel, Account)> {
-    Channel::all(&app.store, slug).unwrap_or_default().into_iter().filter(|ch| ch.learn && ch.owned() && !ch.suggested).filter_map(|ch| Account::load(&app.store, slug, &ch.publisher).ok().map(|c| (ch, c))).collect()
+/// The channels learned from, with the ability and the credential each is read through.
+async fn sources(app: &App, slug: &str) -> Vec<(Channel, Manifest, Option<Conn>)> {
+    let mut out = Vec::new();
+    for ch in Channel::all(&app.store, slug).unwrap_or_default().into_iter().filter(|ch| ch.learn && ch.owned() && !ch.suggested) {
+        let Some(m) = learnable(app, slug, &ch).await else { continue };
+        let named = Some(ch.publisher.as_str()).filter(|p| !p.is_empty());
+        match crate::creds::pick(app, slug, &m, named).await {
+            Ok(c) => out.push((ch, m, c)),
+            Err(e) => tracing::info!(%slug, channel = %ch.id, error = %e, "a source cannot be read yet"),
+        }
+    }
+    out
 }
 
 /// A tool's answer as text: what it said, a text file, or the JSON itself.
@@ -59,9 +63,9 @@ fn doc_text(out: &crate::ext::ExecOut) -> String {
     serde_json::to_string_pretty(&out.json).unwrap_or_default()
 }
 
-async fn call(app: &App, slug: &str, m: &Manifest, c: &Account, tool: &str, args: &Value) -> anyhow::Result<crate::ext::ExecOut> {
+async fn call(app: &App, slug: &str, m: &Manifest, c: Option<&Conn>, tool: &str, args: &Value) -> anyhow::Result<crate::ext::ExecOut> {
     let t = m.tools.iter().find(|t| t.name == tool).ok_or_else(|| anyhow::anyhow!("{} has no tool '{tool}'", m.name))?;
-    crate::ext::execute(app, slug, m, &t.provide, None, Some(tool), args, Some(&c.id)).await
+    crate::ext::execute(app, slug, m, &t.provide, None, Some(tool), args, c.map(|c| c.id())).await
 }
 
 /// One document into facts: 1 when it gave any.
@@ -82,15 +86,24 @@ async fn extract(ex: &Extractor, slug: &str, title: String, url: String, text: S
 
 /// Read one source's documents into facts. Returns how many documents gave
 /// facts; a document that is not there (no `docs/` folder) is skipped.
-pub async fn read_source(app: &App, slug: &str, ch: &Channel, c: &Account, ex: &Extractor) -> anyhow::Result<usize> {
-    let m = learnable(app, slug, c).await.ok_or_else(|| anyhow::anyhow!("{} has nothing to learn from", c.label))?;
-    let st = crate::accounts::state(app, slug, c).await;
-    if !st.ready() {
-        anyhow::bail!("{}", crate::accounts::state_text(c, &st));
+pub async fn read_source(app: &App, slug: &str, ch: &Channel, m: &Manifest, c: Option<&Conn>, ex: &Extractor) -> anyhow::Result<usize> {
+    if let Some(c) = c {
+        let st = crate::creds::state(app, slug, c.primary()).await;
+        if !st.ready() {
+            anyhow::bail!("{}", crate::creds::state_text(c.label(), &st));
+        }
     }
+    let m = m.clone();
     let spec = m.learn.clone().unwrap_or_default();
-    // Titles and links may name the account's keys (`${GITHUB_REPO}`), never a secret: they are kept in the facts.
-    let env = crate::ext::target_env(app, slug, &m, c);
+    // Titles and links may name settings (`${GITHUB_REPO}`), never a secret: they are kept in the facts.
+    let env = match c {
+        Some(c) => std::sync::Arc::new(crate::ext::target_env(app, slug, &m, c)) as std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+        None => {
+            let set = crate::creds::settings_of(app, slug, &m.id).into_iter().map(|(k, v)| (k.to_ascii_uppercase(), v)).collect::<std::collections::BTreeMap<_, _>>();
+            std::sync::Arc::new(move |k: &str| set.get(k).cloned())
+        }
+    };
+    let env = move |k: &str| env(k);
     let mut read = 0usize;
     for d in &spec.documents {
         let LearnDoc { tool, args, title, url, each } = d;
@@ -98,7 +111,7 @@ pub async fn read_source(app: &App, slug: &str, ch: &Channel, c: &Account, ex: &
         let out = match call(app, slug, &m, c, tool, &args).await {
             Ok(o) => o,
             Err(e) => {
-                tracing::info!(%slug, account = %c.label, %tool, error = %e, "a document to learn from is not there");
+                tracing::info!(%slug, channel = %ch.label, %tool, error = %e, "a document to learn from is not there");
                 continue;
             }
         };
@@ -118,7 +131,7 @@ pub async fn read_source(app: &App, slug: &str, ch: &Channel, c: &Account, ex: &
                     let at = json!({ "value": v });
                     match call(app, slug, &m, c, &e.tool, &json!({ e.arg.clone(): v })).await {
                         Ok(o) => read += extract(ex, slug, extensions::fill(title, &at, &env), extensions::fill(url, &at, &env), doc_text(&o)).await,
-                        Err(err) => tracing::info!(%slug, account = %c.label, value = %v, error = %err, "could not read a document to learn from"),
+                        Err(err) => tracing::info!(%slug, channel = %ch.label, value = %v, error = %err, "could not read a document to learn from"),
                     }
                 }
             }
@@ -136,11 +149,8 @@ pub async fn read_source(app: &App, slug: &str, ch: &Channel, c: &Account, ex: &
 /// writes the profile itself afterwards. Says nothing; returns what was read.
 pub async fn read_all(app: &App, slug: &str, only: Option<&str>, ex: &Extractor) -> Vec<(String, anyhow::Result<usize>)> {
     let mut out = Vec::new();
-    for (ch, c) in sources(app, slug).into_iter().filter(|(ch, _)| only.is_none_or(|o| o == ch.id)) {
-        if learnable(app, slug, &c).await.is_none() {
-            continue;
-        }
-        let r = read_source(app, slug, &ch, &c, ex).await;
+    for (ch, m, c) in sources(app, slug).await.into_iter().filter(|(ch, _, _)| only.is_none_or(|o| o == ch.id)) {
+        let r = read_source(app, slug, &ch, &m, c.as_ref(), ex).await;
         out.push((ch.label.clone(), r));
     }
     out
@@ -187,10 +197,14 @@ pub async fn start(app: &App, slug: &str, only: Option<String>) -> Result<(), Ap
 pub async fn due(app: &App, slug: &str) {
     let now = chrono::Utc::now();
     let mut any = false;
-    for (ch, c) in sources(app, slug) {
-        let Some(m) = learnable(app, slug, &c).await else { continue };
-        if m.learn.is_none() || !crate::accounts::state(app, slug, &c).await.ready() {
+    for (ch, m, c) in sources(app, slug).await {
+        if m.learn.is_none() {
             continue;
+        }
+        if let Some(c) = &c {
+            if !crate::creds::state(app, slug, c.primary()).await.ready() {
+                continue;
+            }
         }
         let due = match ch.last_learned {
             Some(at) => now - at > EVERY,

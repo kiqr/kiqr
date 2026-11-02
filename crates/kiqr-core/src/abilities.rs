@@ -45,7 +45,7 @@ pub fn all() -> Vec<Ability> {
             group: Group::Images,
             tool: "create_image",
             tool_label: "Making an image",
-            description: "Make an image and save it as a file on an asset (role media). Two shapes, depending on the connection behind it: the built-in renderer takes `source` (SVG, or HTML when a browser is available) and renders it; a generator takes `prompt`. `size` is a channel kind the project publishes to (its network's image size; `brand_kit` lists them), a preset (landscape, square, portrait, og, cover) or WxH. The file lands on the asset at once and returns its name and URL; the user sees the whole asset, image included, in the chat and approves it there or in the library.",
+            description: "Make an image and save it as a file on an asset (role media). Two shapes: `source` (SVG, or HTML when a browser is available) is a design you wrote, rendered here by the built-in renderer, free, whatever generator is connected; `prompt` is a brief for a connected generator (a photo-like or illustrated picture of a mood or a concept, never a picture passed off as the business's own). Real pictures of the business come from the Library's Media (`brand_kit` lists them as `file:` URLs for <image href>). `size` is a channel kind the project publishes to (its network's image size; `brand_kit` lists them), a preset (landscape, square, portrait, og, cover) or WxH. The file lands on the asset at once and returns its name and URL; the user sees the whole asset, image included, in the chat and approves it there or in the library.",
             schema: || obj(
                 json!({
                     "asset": asset_ref(),

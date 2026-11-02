@@ -21,6 +21,55 @@ pub fn routes() -> Router<App> {
     Router::new()
         .route("/api/projects/{slug}/access", get(list))
         .route("/api/projects/{slug}/access/grant", post(grant_route).delete(revoke_route))
+        .route("/api/projects/{slug}/recommendations", get(recommendations))
+}
+
+/// `GET …/recommendations?credential=<id>`: for each credential in the Vault
+/// (or the one named), the abilities that could use it, matched by host:
+/// `allowed` here already, `installed` but not allowed, or `available` in
+/// the marketplace. A signed-in app missing some access an ability asks for
+/// says so (`more_access`): signing in again adds it.
+async fn recommendations(State(app): State<App>, Path(slug): Path<String>, axum::extract::Query(q): axum::extract::Query<std::collections::BTreeMap<String, String>>) -> ApiResult<Value> {
+    let _ = kiqr_core::project::Project::load(&app.store, &slug)?;
+    let access = Access::load(&app.store, &slug).unwrap_or_default();
+    let creds: Vec<kiqr_core::vault::Credential> = app.vault.all().unwrap_or_default().into_iter().filter(|c| q.get("credential").is_none_or(|id| *id == c.id)).collect();
+    let installed: Vec<kiqr_core::extensions::Manifest> = {
+        let reg = app.registry.read().await;
+        reg.visible(&slug).into_iter().filter(|e| e.error.is_none()).filter_map(|e| e.manifest.clone()).filter(|m| !m.credentials.is_empty()).collect()
+    };
+    let here: Vec<String> = app.registry.read().await.visible(&slug).into_iter().map(|e| e.id().to_string()).collect();
+    let catalogue = crate::market::catalogue(&app).await;
+    let none = |_: &str| None;
+    let mut out = Vec::new();
+    for c in &creds {
+        let mut abilities = Vec::new();
+        // Fits but for access a sign-in did not give: still worth naming, with what is missing.
+        let judge = |needs: &[kiqr_core::extensions::CredentialNeed]| -> Option<(String, String, bool)> {
+            needs.iter().find_map(|n| {
+                let loose = kiqr_core::extensions::CredentialNeed { scopes: vec![], ..n.clone() };
+                loose.fits(c, &none).then(|| (n.describe(), n.for_.clone(), !n.fits(c, &none)))
+            })
+        };
+        for m in &installed {
+            if let Some((need, why, more)) = judge(&m.needs()) {
+                let status = if access.allows(&m.id, &c.id) { "allowed" } else { "installed" };
+                abilities.push(json!({ "id": m.id, "name": m.name, "icon": m.icon, "summary": m.summary, "status": status, "need": need, "for": why, "more_access": more }));
+            }
+        }
+        for item in catalogue.iter().filter(|i| !installed.iter().any(|m| m.id == i.id) && !i.credentials.is_empty()) {
+            let needs: Vec<kiqr_core::extensions::CredentialNeed> = item.credentials.iter().map(|n| if n.hosts.is_empty() { kiqr_core::extensions::CredentialNeed { hosts: item.hosts.clone(), ..n.clone() } } else { n.clone() }).collect();
+            if here.contains(&item.id) {
+                continue;
+            }
+            if let Some((need, why, more)) = judge(&needs) {
+                abilities.push(json!({ "id": item.id, "name": item.name, "icon": item.icon, "summary": item.summary, "status": "available", "need": need, "for": why, "more_access": more }));
+            }
+        }
+        if !abilities.is_empty() || q.contains_key("credential") {
+            out.push(json!({ "credential": c.id, "label": c.label, "domain": c.default_domain(), "provider": c.provider, "abilities": abilities }));
+        }
+    }
+    Ok(Json(json!({ "recommendations": out })))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {

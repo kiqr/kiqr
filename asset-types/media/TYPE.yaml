@@ -1,0 +1,15 @@
+# The business's own material: pictures, video, audio and documents, brought
+# in from its website, from connected folders and drives, and from uploads.
+# What Seemo builds on; it is never published on its own.
+id: media
+name: Media
+plural: Media
+icon: images
+description: Your own pictures, video, audio and documents, from your website, connected folders and uploads. What Seemo builds on.
+preview: media
+image: none
+files:
+  - { role: image, accept: [png, jpg, jpeg, webp, gif, avif] }
+  - { role: video, accept: [mp4, mov, webm] }
+  - { role: audio, accept: [mp3, wav, m4a, ogg] }
+  - { role: document, accept: [pdf] }

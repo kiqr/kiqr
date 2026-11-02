@@ -501,36 +501,27 @@ pub struct Manifest {
     pub version: String,
     pub summary: String,
     pub transport: Transport,
-    /// The service whose accounts this ability uses. Abilities that name the
-    /// same service share its accounts (one sign-in, one browser profile, one
-    /// daily cap) and agree on its key names. Empty: the ability's own id, so
-    /// its accounts are its own. A string, or a block with how the service
-    /// shows in the grid of things to connect (`Service`).
-    pub service: Service,
-    /// What an account of this ability allows Seemo when it is made, by role
-    /// (`accounts::PERMISSIONS`); the user changes it on the account. A role
-    /// not named has its default: acting asks, the rest is on.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub allow: BTreeMap<String, crate::accounts::Allow>,
-    /// What the project picks once for this ability, through one of its
-    /// accounts (an analytics property, a Search Console site): name → {label,
-    /// help, placeholder, optional, enum, choices}. Kept in the project
-    /// (`project.yaml`, `ability_settings`), never on the account; the values
-    /// fill the ability's calls (`{{property}}`) unless a call names its own. A
-    /// field with `choices` is picked from a list read through the account.
+    /// The credentials it would like from the Vault (`CredentialNeed`): it
+    /// never owns one; a project grants them. Each names its template, the
+    /// hosts a fitting credential is for, and which of its fields the calls
+    /// get under which name (`env: { FAL_KEY: key }`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<CredentialNeed>,
+    /// What the project picks once for this ability (an analytics property,
+    /// a site's address): name → {label, help, placeholder, optional, enum,
+    /// choices}. Kept in the project (`project.yaml`, `ability_settings`), never
+    /// on a credential; the values fill the ability's calls (`{{property}}`, or
+    /// `${PROPERTY}` in templates and `hosts`) unless a call names its own. A
+    /// field with `choices` is picked from a list read through the credential.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, Value>,
-    /// One call at a time per account, across every ability of the service
+    /// One call at a time per credential, across every ability and project
     /// that says so: a browser session that two callers must not drive at once.
     pub exclusive: bool,
-    /// Actions (tool calls with a role other than `read`) per account per
-    /// day, across every ability of the service; the lowest declared wins.
+    /// Actions (tool calls with a role other than `read`) per credential per
+    /// day, across every project.
     pub daily_cap: Option<u32>,
-    pub auth: Vec<AuthKey>,
-    /// How the keys can be got with one button instead of typed in (`docs/abilities.md`,
-    /// "Signing in"): one block, or a list of ways (the first with a button is the button).
-    #[serde(deserialize_with = "crate::connect::one_or_many", skip_serializing_if = "Vec::is_empty")]
-    pub connect: Vec<crate::connect::Connect>,
+    /// Where it works: the hosts its calls may reach, and what credentials are matched on.
     pub hosts: Vec<String>,
     /// The mail server, for `transport: smtp`.
     pub smtp: Option<SmtpSpec>,
@@ -548,6 +539,9 @@ pub struct Manifest {
     /// into the business profile like the site's pages. An account with
     /// learning on is a source; it may be a channel too.
     pub learn: Option<LearnSpec>,
+    /// Media this connection offers the Library (a folder, a drive, a bucket):
+    /// how to list its items and fetch one (`crate::media`).
+    pub media: Option<crate::media::MediaSpec>,
     /// When to suggest it to a new project.
     #[serde(skip_serializing_if = "Fits::is_empty")]
     pub fits: Fits,
@@ -592,21 +586,118 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// The service whose accounts this ability uses: `service`, else its own id.
-    pub fn service(&self) -> &str {
-        if self.service.id.is_empty() { &self.id } else { &self.service.id }
+    /// Its fixed hosts (not a `${SITE}` each project names).
+    pub fn fixed_hosts(&self) -> Vec<String> {
+        self.hosts.iter().filter(|h| !h.contains('$') && !h.contains('{')).cloned().collect()
     }
-    /// The service as the grid of things to connect shows it: the block's
-    /// name, icon and group, else the ability's own.
+    /// What it asks for, with the defaults filled in: an id, and the ability's hosts when a need names none.
+    pub fn needs(&self) -> Vec<CredentialNeed> {
+        self.credentials
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let mut n = n.clone();
+                if n.id.is_empty() {
+                    n.id = if i == 0 { "main".into() } else { format!("need{}", i + 1) };
+                }
+                if n.hosts.is_empty() {
+                    n.hosts = self.hosts.clone();
+                }
+                n
+            })
+            .collect()
+    }
+    /// The names its calls get from credentials (`FAL_KEY`).
+    pub fn credential_env(&self) -> Vec<String> {
+        self.credentials.iter().flat_map(|n| n.env.keys().cloned()).collect()
+    }
+    /// How a card shows it: its name and icon, its first category as the
+    /// group, and the profile hosts of the kinds it publishes.
     pub fn service_card(&self) -> Service {
-        Service {
-            id: self.service().to_string(),
-            name: if self.service.name.is_empty() { self.name.clone() } else { self.service.name.clone() },
-            icon: if self.service.icon.is_empty() { self.icon.clone() } else { self.service.icon.clone() },
-            group: self.service.group.clone(),
-            profile_hosts: self.service.profile_hosts.clone(),
+        let mut profile_hosts: Vec<String> = self.kinds.iter().filter(|k| k.account_is_target || !k.target.is_empty()).map(|k| crate::channels::host_of(&k.url)).filter(|h| !h.is_empty()).collect();
+        if profile_hosts.is_empty() && !self.kinds.is_empty() {
+            profile_hosts = self.fixed_hosts();
+        }
+        profile_hosts.dedup();
+        Service { id: self.id.clone(), name: self.name.clone(), icon: self.icon.clone(), group: self.categories.first().cloned().unwrap_or_default(), profile_hosts }
+    }
+}
+
+/// A credential an ability would like: what kind, for which hosts, what a
+/// call gets from it. The user decides which credential, per project.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CredentialNeed {
+    /// Names it among several (`main` when there is one).
+    pub id: String,
+    /// The Vault templates that fit (`oauth`, `[oauth, api_key]`).
+    #[serde(deserialize_with = "one_or_many_str")]
+    pub template: Vec<String>,
+    /// The domains a fitting credential is for; the ability's `hosts` when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
+    /// The kiqr.cloud provider that signs in for it ("Sign in with Google").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    /// What a signed-in app must have been allowed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    /// What it is for, in a few words ("Sign in to post and read").
+    #[serde(rename = "for", skip_serializing_if = "String::is_empty")]
+    pub for_: String,
+    pub optional: bool,
+    /// Name a call sees → the credential's field (`FAL_KEY: key`; `token|key`: the first that is set).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// A one-click way to make the credential (`flow: redirect` or `oauth2`, `docs/abilities.md`):
+    /// `needs` are settings asked first (`WP_SITE`), `returns` the names (as in `env`, or a
+    /// setting's) filled from what the service sends back. The values land in a new credential
+    /// in the Vault, granted to the ability; settings go to the project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect: Option<crate::connect::Connect>,
+}
+
+impl CredentialNeed {
+    /// Whether a credential fits, with the need's hosts filled from the project's settings.
+    pub fn fits(&self, c: &crate::vault::Credential, env: &dyn Fn(&str) -> Option<String>) -> bool {
+        let hosts: Vec<String> = self.hosts.iter().map(|h| site_host(&fill(h, &Value::Null, env))).collect();
+        c.fits(&self.template, &hosts, &self.scopes)
+    }
+    /// "a login for x.com", "an API key for fal.ai".
+    pub fn describe(&self) -> String {
+        let what = match self.template.first().map(String::as_str) {
+            Some("login") => "a login",
+            Some("api_key") => "an API key",
+            Some("oauth") => "a sign-in",
+            Some("smtp") => "a mail server",
+            Some("app_password") => "an app password",
+            _ => "a credential",
+        };
+        let host = self.hosts.iter().find(|h| !h.contains('$')).cloned();
+        match host {
+            Some(h) if self.template.first().map(String::as_str) != Some("smtp") => format!("{what} for {}", crate::vault::normalise_host(&h).unwrap_or(h)),
+            _ => what.to_string(),
         }
     }
+}
+
+/// A host, or the host of a URL (`https://blog.acme.com/` → `blog.acme.com`).
+pub fn site_host(h: &str) -> String {
+    let h = h.trim();
+    url::Url::parse(h).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_else(|| h.to_string()).to_ascii_lowercase()
+}
+
+fn one_or_many_str<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Raw::deserialize(d)? {
+        Raw::One(s) => vec![s],
+        Raw::Many(v) => v,
+    })
 }
 
 /// A program KIQR installs for an ability: pinned to a version, fetched from
@@ -711,12 +802,8 @@ pub struct LiveView {
     pub navigate: Step,
 }
 
-/// The list a field is picked from, when it has one: an `auth` key's
-/// `choices`, or a setting's.
+/// The list a setting is picked from, when it has one.
 pub fn choices_of(m: &Manifest, name: &str) -> Option<Choices> {
-    if let Some(c) = m.auth.iter().find(|a| a.env == name).and_then(|a| a.choices.clone()) {
-        return Some(c);
-    }
     let spec = m.settings.get(name)?;
     serde_json::from_value(spec.get("choices")?.clone()).ok()
 }
@@ -775,13 +862,10 @@ impl Default for Manifest {
             version: "0.1.0".into(),
             summary: String::new(),
             transport: Transport::Http,
-            service: Service::default(),
-            allow: BTreeMap::new(),
+            credentials: vec![],
             settings: BTreeMap::new(),
             exclusive: false,
             daily_cap: None,
-            auth: vec![],
-            connect: vec![],
             hosts: vec![],
             smtp: None,
             provides: Default::default(),
@@ -789,6 +873,7 @@ impl Default for Manifest {
             kinds: vec![],
             sources: BTreeMap::new(),
             learn: None,
+            media: None,
             fits: Fits::default(),
             program: String::new(),
             env_set: BTreeMap::new(),
@@ -970,7 +1055,7 @@ pub fn shipped_all() -> Vec<(&'static str, Manifest)> {
 /// leaves to the user: removed when they were never set up (only the shipped
 /// manifest inside, no key present), kept and treated as installed otherwise.
 /// Returns the folder names removed.
-pub fn retire_auto_installed(store: &crate::Store, has_key: impl Fn(&str) -> bool) -> Result<Vec<String>> {
+pub fn retire_auto_installed(store: &crate::Store, _has_key: impl Fn(&str) -> bool) -> Result<Vec<String>> {
     let mut removed = vec![];
     // Once per home: after that, what is in `skills/` is the user's choice.
     let marker = store.home().abilities_dir().join(".marketplace");
@@ -988,7 +1073,8 @@ pub fn retire_auto_installed(store: &crate::Store, has_key: impl Fn(&str) -> boo
         }
         let only_shipped = std::fs::read_dir(&dir).map(|rd| rd.flatten().all(|e| matches!(e.file_name().to_str(), Some("extension.yaml" | ".builtin" | "SKILL.previous.md")))).unwrap_or(false);
         // A manifest that does not parse is kept: never remove on a doubt.
-        let set_up = parse_manifest(text).map(|m| !m.auth.is_empty() && missing_keys(&m, &has_key).is_empty()).unwrap_or(true);
+        // Abilities hold no keys any more: a shipped folder alone is never set up.
+        let set_up = parse_manifest(text).is_err();
         if only_shipped && !set_up {
             std::fs::remove_dir_all(&dir)?;
             removed.push(folder.to_string());
@@ -1043,12 +1129,6 @@ impl Registry {
     /// The installed abilities (entries with a usable manifest, not paused) a project sees.
     pub fn connections(&self, slug: &str) -> Vec<(&Entry, &Manifest)> {
         self.visible(slug).into_iter().filter(|e| !e.paused).filter_map(|e| e.manifest.as_ref().filter(|_| e.error.is_none()).map(|m| (e, m))).collect()
-    }
-
-    /// The working manifests a project sees for a service (`Manifest::service`),
-    /// paused ones included: every ability that uses the service's accounts.
-    pub fn of_service(&self, slug: &str, service: &str) -> Vec<&Manifest> {
-        self.visible(slug).into_iter().filter(|e| e.error.is_none()).filter_map(|e| e.manifest.as_ref()).filter(|m| m.service() == service).collect()
     }
 
     /// Every installed folder with this ability id, paused or not, any scope.
@@ -1113,6 +1193,68 @@ pub fn parse_manifest(text: &str) -> Result<Manifest> {
     Ok(m)
 }
 
+/// A manifest's credentials: known templates, names a call can take, and
+/// never a field only the sign-in may read (a login's password or two-factor
+/// key): a manifest that tries does not load.
+fn check_needs(m: &Manifest) -> Result<()> {
+    let mut ids = Vec::new();
+    for (i, n) in m.needs().iter().enumerate() {
+        if ids.contains(&n.id) {
+            bail!("credentials: two share the id '{}'", n.id);
+        }
+        ids.push(n.id.clone());
+        if n.template.is_empty() {
+            bail!("credentials: the {} one names no template", ordinal(i));
+        }
+        for t in &n.template {
+            let Some(tpl) = crate::vault::template(t) else { bail!("credentials: '{t}' is not a template ({})", crate::vault::templates().iter().map(|t| t.id).collect::<Vec<_>>().join(", ")) };
+            for (env, field) in &n.env {
+                if !valid_env_name(env) {
+                    bail!("credentials: '{env}' is not a variable name (A-Z, 0-9, _)");
+                }
+                if crate::provider::is_core_key(env) {
+                    bail!("credentials: {env} is one of KIQR's own keys");
+                }
+                for f in field.split('|').map(str::trim) {
+                    if let Some(tf) = tpl.fields.iter().find(|x| x.name == f) {
+                        if tf.runner_only {
+                            bail!("credentials: {env} names the {}'s {}, which only the sign-in ever reads", tpl.label.to_lowercase(), tf.label.to_lowercase());
+                        }
+                    } else if t != "custom" && !n.template.iter().any(|o| crate::vault::template(o).is_some_and(|x| x.fields.iter().any(|y| y.name == f))) {
+                        bail!("credentials: {env} names '{f}', which no {} has", n.template.join(" or "));
+                    }
+                }
+            }
+        }
+        if let Some(c) = &n.connect {
+            use crate::connect::Flow;
+            if !matches!(c.flow, Flow::Redirect | Flow::Oauth2) {
+                bail!("credentials: a connect here is `redirect` or `oauth2`; a kiqr.cloud sign-in is `provider:` on the need");
+            }
+            if c.url.trim().is_empty() && c.authorize_url.trim().is_empty() {
+                bail!("credentials: the connect has no url to open");
+            }
+            let settings: Vec<String> = m.settings.keys().map(|k| k.to_ascii_uppercase()).collect();
+            for name in c.needs.iter().chain(c.returns.keys()) {
+                if !n.env.contains_key(name) && !settings.contains(name) {
+                    bail!("credentials: the connect names {name}, which is neither in env nor a setting");
+                }
+            }
+        }
+        for h in &n.hosts {
+            let is_var = h.starts_with("${") && h.ends_with('}');
+            if !is_var && (h.trim().is_empty() || h.contains('/') || h.contains(':')) {
+                bail!("credentials: hosts holds '{h}', which is not a host name");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ordinal(i: usize) -> String {
+    ["first", "second", "third"].get(i).map(|s| s.to_string()).unwrap_or_else(|| format!("#{}", i + 1))
+}
+
 pub fn validate(m: &Manifest) -> Result<()> {
     if !crate::tools::valid_ext_id(&m.id) {
         bail!("id must be lowercase letters, digits and dashes (got '{}')", m.id);
@@ -1120,17 +1262,7 @@ pub fn validate(m: &Manifest) -> Result<()> {
     if m.name.trim().is_empty() {
         bail!("name is missing");
     }
-    if !m.service.id.is_empty() && !crate::tools::valid_ext_id(&m.service.id) {
-        bail!("service must be lowercase letters, digits and dashes (got '{}')", m.service.id);
-    }
-    if !m.service.group.is_empty() && !SERVICE_GROUPS.iter().any(|(g, _)| *g == m.service.group) {
-        bail!("service group '{}' is not one of {}", m.service.group, SERVICE_GROUPS.iter().map(|(g, _)| *g).collect::<Vec<_>>().join(", "));
-    }
-    for h in &m.service.profile_hosts {
-        if h.trim().is_empty() || h.contains('/') || h.contains(':') {
-            bail!("service: profile_hosts holds '{h}', which is not a host name");
-        }
-    }
+    check_needs(m)?;
     for (name, spec) in &m.settings {
         if !valid_env_name(&name.to_ascii_uppercase()) || name.contains(char::is_uppercase) {
             bail!("settings: '{name}' is not a field name (lowercase letters, digits, _)");
@@ -1142,34 +1274,11 @@ pub fn validate(m: &Manifest) -> Result<()> {
             }
         }
     }
-    for (role, a) in &m.allow {
-        if !crate::accounts::PERMISSIONS.contains(&role.as_str()) {
-            bail!("allow names '{role}', which is not one of {}", crate::accounts::PERMISSIONS.join(", "));
-        }
-        if !crate::accounts::Allow::acts(role) && *a == crate::accounts::Allow::Ask {
-            bail!("allow: '{role}' never asks; it is on or off");
-        }
-    }
-    for a in &m.auth {
-        if !valid_env_name(&a.env) {
-            bail!("auth env '{}' is not a variable name (A-Z, 0-9, _)", a.env);
-        }
-    }
     for h in &m.hosts {
         // A host name, or `${VAR}`: a site each project names (its value may be a URL).
         let is_var = h.starts_with("${") && h.ends_with('}') && valid_env_name(&h[2..h.len() - 1]);
         if !is_var && (h.trim().is_empty() || h.contains('/') || h.contains(':')) {
             bail!("hosts holds '{h}', which is not a host name");
-        }
-    }
-    for c in &m.connect {
-        crate::connect::validate(m, c)?;
-    }
-    for a in &m.auth {
-        if let Some(ch) = &a.choices {
-            if ch.request.url.trim().is_empty() || ch.list.trim().is_empty() || ch.value.trim().is_empty() {
-                bail!("the choices of {} need a request, a list and a value", a.env);
-            }
         }
     }
     let mut names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
@@ -1204,6 +1313,11 @@ pub fn validate(m: &Manifest) -> Result<()> {
         for (i, r) in spec.requests.iter().enumerate() {
             check_provide(m, &Provide { request: Some(r.request.clone()), ..Default::default() }, &format!("source '{src}' request {}", i + 1))?;
         }
+    }
+    if let Some(media) = &m.media {
+        crate::media::validate(media)?;
+        check_provide(m, &Provide { request: Some(media.list.request.clone()), ..Default::default() }, "media list")?;
+        check_provide(m, &media.get, "media get")?;
     }
     for r in &m.requires {
         if r.program.trim().is_empty() {
@@ -1646,17 +1760,6 @@ pub fn pointer<'a>(v: &'a Value, p: &str) -> Option<&'a Value> {
 /// Does the manifest's auth say the connection has what it needs? The keys
 /// it requires, and, when it offers ways to sign in, one of them set up (else
 /// the first's key is named).
-pub fn missing_keys(m: &Manifest, has: impl Fn(&str) -> bool) -> Vec<String> {
-    let mut out: Vec<String> = m.auth.iter().filter(|a| !a.optional && !has(&a.env)).map(|a| a.env.clone()).collect();
-    if !m.connect.is_empty() && !m.connect.iter().any(|c| c.satisfied(&has)) {
-        let proof = m.connect[0].proof().to_string();
-        if !proof.is_empty() && !out.contains(&proof) {
-            out.push(proof);
-        }
-    }
-    out
-}
-
 /// Every value at a pointer whose segments may be `*` (each element of an
 /// array): `/accountSummaries/*/propertySummaries/*`.
 pub fn pointer_all<'a>(v: &'a Value, p: &str) -> Vec<&'a Value> {
@@ -1883,9 +1986,8 @@ id: wordpress
 name: WordPress
 summary: Publish articles to a WordPress site.
 transport: http
-auth:
-  - { env: WP_USER, label: User }
-  - { env: WP_APP_PASSWORD, label: Application password, help: https://example.com/wp-admin/profile.php }
+credentials:
+  - { template: app_password, env: { WP_USER: username, WP_APP_PASSWORD: password } }
 hosts: [myblog.com]
 tools:
   - name: publish_article
@@ -1919,17 +2021,14 @@ kinds:
     }
 
     #[test]
-    fn service_blocks_allow_and_kinds_parse() {
-        // A service as a string, or as a block with how the connect grid shows it.
-        let m = parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: { id: blogs, name: Blogs, icon: newspaper, group: website, profile_hosts: [blog.example] }\nallow: { publish: auto, learn: off }")).unwrap();
-        assert_eq!((m.service(), m.service.name.as_str(), m.service.group.as_str()), ("blogs", "Blogs", "website"));
-        assert_eq!(m.service_card().profile_hosts, vec!["blog.example".to_string()]);
-        assert_eq!((m.allow["publish"], m.allow["learn"]), (crate::accounts::Allow::Auto, crate::accounts::Allow::Off));
-        let plain = parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: blogs")).unwrap();
-        assert_eq!((plain.service(), plain.service_card().name.as_str()), ("blogs", plain.name.as_str()), "no block: the ability's own name");
-        assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: { id: blogs, group: nowhere }")).unwrap_err().to_string().contains("group"));
-        assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nallow: { shout: auto }")).unwrap_err().to_string().contains("allow"));
-        assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nallow: { learn: ask }")).unwrap_err().to_string().contains("never asks"));
+    fn credential_needs_and_kinds_parse() {
+        // A need defaults its id and hosts; an unknown template or field is refused.
+        let m = parse_manifest(WP).unwrap();
+        let n = &m.needs()[0];
+        assert_eq!((n.id.as_str(), n.hosts.clone(), n.describe()), ("main", vec!["myblog.com".to_string()], "an app password for myblog.com".to_string()));
+        assert!(parse_manifest(&WP.replace("template: app_password", "template: diary")).unwrap_err().to_string().contains("not a template"));
+        assert!(parse_manifest(&WP.replace("WP_USER: username", "WP_USER: shoe")).unwrap_err().to_string().contains("no app_password has"));
+        assert!(parse_manifest(&WP.replace("WP_USER: username", "OPENAI_API_KEY: username")).unwrap_err().to_string().contains("KIQR's own"));
         // A kind's target fields; the account being the spot has none, and a section is one of three.
         let sub = WP.replace("account_is_target: true", "section: community, target: { sub: { label: Sub, pattern: \"^[a-z]+$\" } }, target_from: { post_url: \"myblog.com/{sub}/\" }");
         let k = &parse_manifest(&sub).unwrap().kinds[0];
@@ -1945,7 +2044,6 @@ kinds:
         let m = parse_manifest(WP).unwrap();
         assert_eq!(m.tools.len(), 1);
         assert_eq!(m.kinds[0].publish, "publish_article");
-        assert_eq!(missing_keys(&m, |k| k == "WP_USER"), vec!["WP_APP_PASSWORD".to_string()]);
         let bad = WP.replace("hosts: [myblog.com]", "hosts: [other.com]");
         assert!(parse_manifest(&bad).unwrap_err().to_string().contains("not in hosts"));
         let bad = WP.replace("id: wordpress", "id: Word Press");
@@ -2020,6 +2118,21 @@ kinds:
         }
         assert_eq!(core_of_folder("business-brief").map(|c| c.id), Some("business-profile"));
         assert!(is_core_id("kiqr-render") && is_core_id("make-images") && is_core_id("browser") && is_core_id("tasks") && !is_core_id("fal-image"));
-        assert!(shipped("browser").is_some_and(|(folder, _, _, m)| folder == "browser" && m.service().eq("browser") && m.service_card().group == "sites"));
+        assert!(shipped("browser").is_some_and(|(folder, _, _, m)| folder == "browser" && m.service_card().id == "browser"));
+    }
+}
+
+#[cfg(test)]
+mod marketplace_check {
+    /// `KIQR_MARKETPLACE=../marketplace cargo test marketplace`: every manifest there parses with this KIQR.
+    #[test]
+    fn marketplace_manifests_parse() {
+        let Ok(dir) = std::env::var("KIQR_MARKETPLACE") else { return };
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let f = e.path().join("extension.yaml");
+            if let Ok(text) = std::fs::read_to_string(&f) {
+                super::parse_manifest(&text).unwrap_or_else(|err| panic!("{}: {err:#}", f.display()));
+            }
+        }
     }
 }

@@ -23,6 +23,7 @@ pub const BUILTIN_TYPES: &[(&str, &str)] = &[
     ("post", include_str!("../../../asset-types/post/TYPE.yaml")),
     ("reply", include_str!("../../../asset-types/reply/TYPE.yaml")),
     ("image", include_str!("../../../asset-types/image/TYPE.yaml")),
+    ("media", include_str!("../../../asset-types/media/TYPE.yaml")),
     ("meme", include_str!("../../../asset-types/meme/TYPE.yaml")),
     ("video", include_str!("../../../asset-types/video/TYPE.yaml")),
     ("audio", include_str!("../../../asset-types/audio/TYPE.yaml")),
@@ -187,6 +188,11 @@ pub struct AssetFile {
     pub path: String,
     pub bytes: u64,
     pub sha256: String,
+    /// An image's size in pixels, read from its header when it was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 /// Where an asset went out.
@@ -195,8 +201,9 @@ pub struct Publication {
     /// The channel it went to; empty for an email to one address.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub channel: String,
-    /// The account it went through.
-    pub account: String,
+    /// The credential it went out as.
+    #[serde(default, alias = "account")]
+    pub credential: String,
     /// The ability that published it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ability: String,
@@ -436,8 +443,26 @@ pub fn write_file(store: &Store, slug: &str, kind: &str, id: &str, role: &str, n
     std::fs::write(dir.join(name), bytes)?;
     let sha256 = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
     a.files.retain(|f| f.path != name);
-    a.files.push(AssetFile { role: role.to_string(), path: name.to_string(), bytes: bytes.len() as u64, sha256 });
+    let (width, height) = image_size(bytes).map(|(w, h)| (Some(w), Some(h))).unwrap_or((None, None));
+    a.files.push(AssetFile { role: role.to_string(), path: name.to_string(), bytes: bytes.len() as u64, sha256, width, height });
     save(store, slug, &a)
+}
+
+/// An image's pixel size from its header (PNG, JPEG, WebP, GIF, AVIF…); none for anything else.
+pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let s = imagesize::blob_size(bytes).ok()?;
+    (s.width > 0 && s.height > 0).then_some((s.width as u32, s.height as u32))
+}
+
+impl AssetFile {
+    /// `landscape`, `portrait` or `square`, for an image with a known size.
+    pub fn orientation(&self) -> Option<&'static str> {
+        match (self.width?, self.height?) {
+            (w, h) if w > h => Some("landscape"),
+            (w, h) if h > w => Some("portrait"),
+            _ => Some("square"),
+        }
+    }
 }
 
 /// The path of one of an asset's files, if the asset lists it.
@@ -595,7 +620,7 @@ mod tests {
         let mut a = a;
         a.publish_at = Some(Utc::now() + chrono::Duration::hours(1));
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Scheduled);
-        a.publications.push(Publication { channel: "blog".into(), account: "blog".into(), ability: String::new(), from: None, to: None, url: None, at: Utc::now(), run: None });
+        a.publications.push(Publication { channel: "blog".into(), credential: "blog".into(), ability: String::new(), from: None, to: None, url: None, at: Utc::now(), run: None });
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Published);
         a.archived = true;
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Archived);

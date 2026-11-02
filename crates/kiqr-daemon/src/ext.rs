@@ -15,11 +15,10 @@ use axum::{
 use base64::Engine;
 use kiqr_core::abilities::{self, Ability};
 use kiqr_core::assets;
-use kiqr_core::accounts::{Activity, Account};
+use kiqr_core::conn::{Activity, Conn};
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{self, CommandSpec, Entry, HttpRequest, Manifest, Provide, Registry, ResultMap, Scope, Transport};
 use kiqr_core::project::Project;
-use kiqr_core::provider;
 use kiqr_core::tools::{self, CallSpec, Group, ToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -88,39 +87,14 @@ pub async fn program_of(app: &App, slug: Option<&str>, m: &Manifest) -> Result<M
     reg.entry(slug, &m.program).and_then(|e| e.manifest.clone()).filter(|p| p.transport == Transport::Mcp && !p.command.is_empty()).ok_or_else(|| anyhow!("{} runs on '{}', which is not installed", m.name, m.program))
 }
 
-/// Keys an ability still needs for a project: none once a connection has
-/// them all, else what its default connection (or a new one) lacks.
+/// What an ability still needs for a project, in words ("a login for
+/// x.com"): its required credentials the project has not granted it, or
+/// granted but not complete. Without a project, every required one.
 pub fn missing_in(app: &App, slug: Option<&str>, m: &Manifest) -> Vec<String> {
-    let all = extensions::missing_keys(m, |_| false);
-    if all.is_empty() {
-        return all;
+    match slug.filter(|s| !s.is_empty()) {
+        Some(slug) => crate::creds::missing(app, slug, m),
+        None => m.needs().iter().filter(|n| !n.optional).map(|n| n.describe()).collect(),
     }
-    let Some(slug) = slug.filter(|s| !s.is_empty()) else { return all };
-    let home = app.store.home();
-    let conns = Account::of(&app.store, slug, m.service());
-    if conns.iter().any(|c| c.missing(home, slug, m).is_empty()) {
-        return vec![];
-    }
-    conns.first().map(|c| c.missing(home, slug, m)).unwrap_or(all)
-}
-
-/// The connection a call goes through: the one named (id or label), else the
-/// ability's default. None for an ability that needs no keys and has none.
-pub fn pick_connection(app: &App, slug: &str, m: &Manifest, name: Option<&str>) -> Result<Option<Account>> {
-    if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
-        return match Account::find(&app.store, slug, m.service(), n) {
-            Some(c) => Ok(Some(c)),
-            None => {
-                let have: Vec<String> = Account::of(&app.store, slug, m.service()).into_iter().map(|c| c.label).collect();
-                bail!("{} has no account '{n}' in this project{}", m.name, if have.is_empty() { String::new() } else { format!(" (there is {})", have.join(", ")) })
-            }
-        };
-    }
-    let found = Account::default_of(&app.store, slug, m.service());
-    if found.is_none() && !extensions::missing_keys(m, |_| false).is_empty() {
-        bail!("{} is not connected in this project yet; connect an account under Setup → Accounts", m.name);
-    }
-    Ok(found)
 }
 
 /// Is a program there: a path that exists, or a name found on PATH.
@@ -204,9 +178,16 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         if !allowed.contains(&a.group) {
             continue;
         }
-        if let Some((_, m)) = reg.provider(slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(app, Some(slug), m)) {
+        if let Some((e, m)) = reg.provider(slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(app, Some(slug), m)) {
             let cost = m.provides.get(a.id).and_then(|p| p.cost.as_deref());
-            out.push(with_connection_arg(a.spec(&m.name, cost), &Account::of(&app.store, slug, m.service())));
+            let mut spec = a.spec(&m.name, cost);
+            // A design (`source`) always renders here, free, whichever generator is picked.
+            if !e.is_core() {
+                if let Some((_, core)) = core_provider(&reg, slug, a.id, &off) {
+                    spec.description.push_str(&format!(" `source` (SVG or HTML) still renders through {}, free; `prompt` goes to {}{}.", core.name, m.name, cost.map(|c| format!(" ({c})")).unwrap_or_default()));
+                }
+            }
+            out.push(with_credential_arg(spec, &crate::creds::granted(app, slug, &m.id)));
         }
     }
     for (_, m) in reg.connections(slug) {
@@ -217,7 +198,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         if m.transport == Transport::Mcp && !m.expose.is_empty() && ready_in(app, Some(slug), m) {
             // The server's own tools, raw, under the connection's group.
             let program = program_of_sync(app, Some(slug), m).unwrap_or_else(|| m.clone());
-            match app.mcp.tools(app.store.home().root(), &program, &launch_for(app, slug, m)).await {
+            match app.mcp.tools(app.store.home().root(), &program, &launch_for(app, slug, m).await).await {
                 Ok(list) => {
                     for t in list {
                         let name = t["name"].as_str().unwrap_or("").to_string();
@@ -239,7 +220,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
                 Err(e) => tracing::warn!(id = %m.id, error = %e, "could not list the MCP server's tools"),
             }
         }
-        let conns = Account::of(&app.store, slug, m.service());
+        let conns = crate::creds::granted(app, slug, &m.id);
         for t in &m.tools {
             let mut name = t.name.clone();
             if out.iter().any(|s| s.name == name) {
@@ -256,15 +237,15 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
                 cost: t.provide.cost.clone(),
             });
             let last = out.pop().expect("just pushed");
-            out.push(with_connection_arg(last, &conns));
+            out.push(with_credential_arg(last, &conns));
         }
     }
     out
 }
 
-/// With more than one account of an ability in the project, its tools take
-/// `connection`: which one, by name; the default when left out.
-fn with_connection_arg(mut spec: ToolSpec, conns: &[Account]) -> ToolSpec {
+/// With more than one credential granted to an ability in the project, its
+/// tools take `credential`: which one, by name; the first when left out.
+fn with_credential_arg(mut spec: ToolSpec, conns: &[kiqr_core::vault::Credential]) -> ToolSpec {
     if conns.len() < 2 {
         return spec;
     }
@@ -275,7 +256,7 @@ fn with_connection_arg(mut spec: ToolSpec, conns: &[Account]) -> ToolSpec {
     if !spec.input_schema["properties"].is_object() {
         spec.input_schema["properties"] = json!({});
     }
-    spec.input_schema["properties"]["connection"] = json!({ "type": "string", "enum": labels, "description": format!("Which account to use. Leave it out for the default, {}.", conns[0].label) });
+    spec.input_schema["properties"]["credential"] = json!({ "type": "string", "enum": labels, "description": format!("Which one to act as. Leave it out for {}.", conns[0].label) });
     spec
 }
 
@@ -339,13 +320,11 @@ fn connection_view(app: &App, e: &Entry, m: &Manifest) -> Value {
         "core": e.is_core(),
         "categories": m.categories,
         "icon": m.icon,
-        "auth": m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": provider::has_env(&a.env) })).collect::<Vec<_>>(),
-        "connect": kiqr_core::connect::view(m.connect.as_ref()),
+        "credentials": m.needs(),
         "provides": m.provides.iter().map(|(id, p)| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or(""), "cost": p.cost })).collect::<Vec<_>>(),
         "tools": m.tools.iter().map(|t| json!({ "name": t.name, "label": t.label, "cost": t.provide.cost })).collect::<Vec<_>>(),
         "kinds": m.kinds.iter().map(|k| json!({ "kind": k.kind, "label": k.label, "name": k.display_name(), "section": k.section(), "target": k.target, "publishes": k.publishes() })).collect::<Vec<_>>(),
         "settings": m.settings,
-        "service": m.service(),
         "hosts": m.hosts,
         "command": if m.transport == Transport::Mcp { Some(format!("{} {}", m.command, m.args.join(" ")).trim().to_string()) } else { None },
         "env": m.env,
@@ -446,7 +425,7 @@ pub(crate) async fn known_secret(app: &App, name: &str) -> bool {
     if crate::api::SECRETS.contains(&name) {
         return true;
     }
-    let uses = |m: &Manifest| m.auth.iter().any(|a| a.env == name) || m.connect.iter().any(|c| c.writes().iter().any(|w| w == name)) || m.env.contains(&name.to_string()) || m.tools.iter().any(|t| t.provide.command.as_ref().is_some_and(|c| c.env.contains(&name.to_string())));
+    let uses = |m: &Manifest| m.env.contains(&name.to_string()) || m.tools.iter().any(|t| t.provide.command.as_ref().is_some_and(|c| c.env.contains(&name.to_string())));
     let reg = app.registry.read().await;
     reg.entries.iter().filter_map(|e| e.manifest.as_ref()).any(uses) || extensions::shipped_all().iter().any(|(_, m)| uses(m))
 }
@@ -457,7 +436,7 @@ pub(crate) async fn known_secret(app: &App, name: &str) -> bool {
 pub(crate) async fn set_secret(app: &App, slug: Option<&str>, name: &str, value: &str) -> Result<bool, ApiError> {
     let value = check_secret(app, name, value).await?;
     if !crate::api::SECRETS.contains(&name) {
-        return Err(bad(format!("{name} belongs to an ability: set it on the project's account of its service (Setup → Accounts)")));
+        return Err(bad(format!("{name} belongs to an ability: its value lives in a credential in the Vault (Setup → Vault)")));
     }
     let path = match slug {
         Some(s) => {
@@ -478,42 +457,11 @@ pub(crate) async fn set_secret(app: &App, slug: Option<&str>, name: &str, value:
     Ok(!value.is_empty())
 }
 
-/// Set (or clear) one key of an account: a name an ability of its service uses.
-pub(crate) async fn set_account_secret(app: &App, slug: &str, conn: &str, name: &str, value: &str) -> Result<bool, ApiError> {
-    let value = check_secret(app, name, value).await?;
-    let c = Account::load(&app.store, slug, conn).map_err(|e| not_found(e.to_string()))?;
-    // Any ability of the account's service may name the key; they agree on names.
-    let m = {
-        let reg = app.registry.read().await;
-        let all = reg.of_service(slug, &c.service);
-        all.iter().find(|m| kiqr_core::accounts::key_names(m).iter().any(|n| n == name)).or_else(|| all.first()).map(|m| (*m).clone())
-    }
-    .ok_or_else(|| bad(format!("nothing installed uses {}", c.label)))?;
-    // A login saved in KIQR (`LOGIN_*`) belongs to an account that signs in on a hosted program.
-    let login_key = kiqr_core::accounts::Secrets::LOGIN.contains(&name) && crate::session::session_manifest(app, slug, &c).await.is_some();
-    if !login_key && !kiqr_core::accounts::key_names(&m).iter().any(|n| n == name) {
-        return Err(bad(format!("{} does not use {name}", m.name)));
-    }
-    if let Some(k) = m.auth.iter().find(|a| a.env == name && !a.options.is_empty()) {
-        if !value.is_empty() && !k.options.contains(&value) {
-            return Err(bad(format!("{} is one of {}", if k.label.is_empty() { name } else { k.label.as_str() }, k.options.join(", "))));
-        }
-    }
-    kiqr_core::secrets::write_env(&c.env_file(app.store.home(), slug), name, &value).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    // A program runs with the account's keys, so a changed key restarts it; a login key is the runner's alone and the program never saw it.
-    if !login_key {
-        app.mcp.stop_account(slug, &c.id).await;
-    }
-    app.bus.emit(Some(slug), EventKind::SecretSet { name: name.to_string(), set: !value.is_empty(), project: Some(slug.to_string()) });
-    Ok(!value.is_empty())
-}
-
 async fn check_secret(app: &App, name: &str, value: &str) -> Result<String, ApiError> {
     if !extensions::valid_env_name(name) {
         return Err(bad("a secret name is upper-case letters, digits and underscores"));
     }
-    // A login saved in KIQR (`LOGIN_*`) belongs to an account that signs in on a hosted program; its names are KIQR's.
-    if !kiqr_core::accounts::Secrets::LOGIN.contains(&name) && !known_secret(app, name).await {
+    if !known_secret(app, name).await {
         return Err(bad(format!("no ability or provider uses {name}")));
     }
     let mut value = value.trim().to_string();
@@ -862,9 +810,10 @@ pub struct ExecOut {
 /// is refused when it would repeat an action on the same target or go over
 /// the service's `daily_cap`, and is logged on the account when it acts.
 pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&str>) -> Result<ExecOut> {
-    // The project's settings for this ability (a property, a site) name the account they were picked through.
+    // The project's settings for this ability (a property, a site); `pick` honours the credential they name.
     let setting = (!m.settings.is_empty()).then(|| Project::load(&app.store, slug).ok().and_then(|p| p.ability_settings.get(&m.id).cloned())).flatten();
-    let conn = pick_connection(app, slug, m, conn.or(setting.as_ref().map(|s| s.account.as_str()).filter(|a| !a.is_empty())))?;
+    let named = conn.or(args.get("credential").and_then(Value::as_str));
+    let conn = crate::creds::pick(app, slug, m, named).await?;
     let mut args = args.clone();
     if let Some(o) = args.as_object_mut() {
         // The settings fill what the call left out; a call may name its own (another property).
@@ -877,14 +826,12 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         }
     }
     // The channel the call happens in decides: a role it switched off is refused, whoever asks.
-    // And an account on a hosted program that is not signed in does nothing, reading included
+    // And a credential on a hosted program that is not signed in does nothing, reading included
     // (it would read the sign-in page).
     let role = role_of(m, tool);
+    let kinds: Vec<(Manifest, extensions::Kind)> = m.kinds.iter().map(|k| (m.clone(), k.clone())).collect();
     let spot = match &conn {
-        Some(c) => {
-            let kinds = crate::channels::kinds_of(app, slug, &c.service).await;
-            crate::channels::spot_of(&app.store, slug, c, &kinds, tool.unwrap_or_default(), &args, false).ok().flatten()
-        }
+        Some(c) => crate::channels::spot_of(&app.store, slug, c.id(), &crate::creds::name_of(c.primary()), &kinds, tool.unwrap_or_default(), &args, false).ok().flatten(),
         None => None,
     };
     if let Some(s) = &spot {
@@ -894,50 +841,45 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
     }
     if let Some(c) = &conn {
         if m.transport == Transport::Mcp {
-            let st = crate::accounts::state(app, slug, c).await;
+            let st = crate::creds::state(app, slug, c.primary()).await;
             if !st.ready() {
-                bail!("{}; the user sees to it under Setup → Accounts before Seemo works there", crate::accounts::state_text(c, &st));
+                bail!("{}; the user sees to it in the Vault before Seemo works there", crate::creds::state_text(c.label(), &st));
             }
         }
     }
     let _turn = match (&conn, m.exclusive) {
-        (Some(c), true) => Some(account_turn(slug, &c.id).await),
+        (Some(c), true) => Some(turn(c.id()).await),
         _ => None,
     };
     // The channel the call happens in, for the log.
     let channel = spot.and_then(|s| s.channel).map(|e| e.id).unwrap_or_default();
-    let act = conn.as_ref().and_then(|c| action(m, tool, &args, &target_env(app, slug, m, c), channel));
+    let act = conn.as_ref().and_then(|c| action(slug, m, tool, &args, &target_env(app, slug, m, c), channel));
     if let (Some(c), Some(a)) = (&conn, &act) {
-        if let Err((why, e)) = check_action(app, slug, m, c, a).await {
-            app.bus.emit(Some(slug), EventKind::ActionRefused { account: c.id.clone(), ability: m.id.clone(), why: why.to_string(), message: e.to_string() });
+        if let Err((why, e)) = check_action(app, m, c, a) {
+            app.bus.emit(Some(slug), EventKind::ActionRefused { credential: c.id().to_string(), ability: m.id.clone(), why: why.to_string(), message: e.to_string() });
             return Err(e);
         }
     }
     let out = run(app, slug, m, provide, ability, tool, &args, conn.as_ref()).await?;
     if let (Some(c), Some(mut a)) = (conn, act) {
         a.url = out.text.clone().filter(|t| t.starts_with("http")).or_else(|| ["url", "link"].iter().find_map(|k| out.json.get(*k).and_then(|u| u.as_str()).map(str::to_string)));
-        if let Err(e) = c.record(app.store.home(), slug, &a) {
-            tracing::warn!(account = %c.id, "could not log an action: {e:#}");
+        if let Err(e) = c.record(app.store.home(), &a) {
+            tracing::warn!(credential = %c.id(), "could not log an action: {e:#}");
         }
-        app.bus.emit(Some(slug), EventKind::AccountActed { account: c.id.clone(), ability: a.ability, role: a.role, target: a.target, channel: a.channel, url: a.url });
+        app.bus.emit(Some(slug), EventKind::CredentialActed { credential: c.id().to_string(), ability: a.ability, role: a.role, target: a.target, channel: a.channel, url: a.url });
     }
     Ok(out)
 }
 
 /// The values a key can take, read through the account once it is signed in
 /// (a key's `choices`: the properties it can see), as `{value, label}`.
-pub(crate) async fn key_choices(app: &App, slug: &str, conn: &Account, name: &str) -> Result<Vec<Value>> {
-    let (m, ch) = {
-        let reg = app.registry.read().await;
-        let found = reg.of_service(slug, &conn.service).into_iter().find_map(|m| extensions::choices_of(m, name).map(|ch| (m.clone(), ch)));
-        found.ok_or_else(|| anyhow!("{name} has no list to choose from"))?
-    };
+pub(crate) async fn key_choices(app: &App, slug: &str, m: &Manifest, conn: &Conn, name: &str) -> Result<Vec<Value>> {
+    let ch = extensions::choices_of(m, name).ok_or_else(|| anyhow!("{name} has no list to choose from"))?;
+    let m = m.clone();
     if m.transport != Transport::Http {
         bail!("{} reads choices over http only", m.name);
     }
-    let stored = kiqr_core::accounts::env_for(app.store.home(), slug, Some(conn), &m, crate::session::vault_keys(app, slug, Some(conn)).await);
-    let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, &m, Some(conn)).await?);
-    let env = move |k: &str| minted.get(k).cloned().or_else(|| stored(k));
+    let env = kiqr_core::conn::env_for(app.store.home(), slug, Some(conn), &m, &crate::creds::settings_of(app, slug, &m.id));
     let mut seen = std::collections::BTreeSet::new();
     let mut found = Vec::new();
     for page in 1..=ch.pages() {
@@ -975,15 +917,15 @@ pub(crate) async fn action_preview(app: &App, slug: &str, payload: &Value) -> Re
     }
     let t = m.tools.iter().find(|t| t.name == tool).filter(|t| t.acts()).ok_or_else(|| bad(format!("{} has no tool '{tool}' that acts", m.name)))?;
     let args = payload["args"].clone();
-    let conn = pick_connection(app, slug, &m, args["connection"].as_str()).map_err(|e| bad(e.to_string()))?.ok_or_else(|| bad(format!("{} has no account here yet", m.name)))?;
+    let conn = crate::creds::pick(app, slug, &m, args["credential"].as_str()).await.map_err(|e| bad(e.to_string()))?.ok_or_else(|| bad(format!("{} acts as nobody here yet; allow it a credential first", m.name)))?;
     // Where it happens: the channel's mode decides; somewhere that is no channel asks.
-    let kinds = crate::channels::kinds_of(app, slug, &conn.service).await;
-    let spot = crate::channels::spot_of(&app.store, slug, &conn, &kinds, tool, &args, true).map_err(|e| bad(e.to_string()))?;
+    let kinds: Vec<(Manifest, extensions::Kind)> = m.kinds.iter().map(|k| (m.clone(), k.clone())).collect();
+    let spot = crate::channels::spot_of(&app.store, slug, conn.id(), &crate::creds::name_of(conn.primary()), &kinds, tool, &args, true).map_err(|e| bad(e.to_string()))?;
     let mode = spot.as_ref().map(|s| s.mode(&t.role)).unwrap_or(kiqr_core::channels::Mode::Ask);
     if mode == kiqr_core::channels::Mode::Off {
         return Err(bad(format!("Seemo may not {} in {}; the user can allow it on the channel", t.role, spot.as_ref().map(|s| s.label.as_str()).unwrap_or("this channel"))));
     }
-    let shown: Vec<Value> = args.as_object().map(|o| o.iter().filter(|(k, _)| k.as_str() != "connection" && k.as_str() != "by").map(|(k, v)| json!({ "key": k, "value": v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()) })).collect()).unwrap_or_default();
+    let shown: Vec<Value> = args.as_object().map(|o| o.iter().filter(|(k, _)| k.as_str() != "credential" && k.as_str() != "by").map(|(k, v)| json!({ "key": k, "value": v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()) })).collect()).unwrap_or_default();
     Ok(json!({
         "ability": m.id,
         "ability_name": m.name,
@@ -992,8 +934,8 @@ pub(crate) async fn action_preview(app: &App, slug: &str, payload: &Value) -> Re
         "description": t.description,
         "role": t.role,
         "target": extensions::fill(&t.target, &args, target_env(app, slug, &m, &conn)).trim(),
-        "connection": conn.id,
-        "account": conn.label,
+        "credential": conn.id(),
+        "account": crate::creds::name_of(conn.primary()),
         "args": args,
         "fields": shown,
         // Where it happens; somewhere new becomes a channel with the yes.
@@ -1013,36 +955,36 @@ pub(crate) async fn do_action(app: &App, slug: &str, preview: &Value) -> Result<
     }
     .ok_or_else(|| bad(format!("the ability '{id}' is not installed or is off here")))?;
     let t = m.tools.iter().find(|t| t.name == tool).cloned().ok_or_else(|| bad(format!("{} has no tool '{tool}'", m.name)))?;
-    let out = execute(app, slug, &m, &t.provide, None, Some(tool), &preview["args"], preview["connection"].as_str()).await.map_err(|e| bad(format!("{e:#}")))?;
-    // A spot the user said yes to is one Seemo goes to again: it becomes a channel.
+    let out = execute(app, slug, &m, &t.provide, None, Some(tool), &preview["args"], preview["credential"].as_str()).await.map_err(|e| bad(format!("{e:#}")))?;
+    // A spot the user said yes to is one Seemo goes to again: it becomes a channel, published to as this credential.
     if preview["spot"]["new"].as_bool() == Some(true) {
-        if let Ok(c) = Account::load(&app.store, slug, preview["connection"].as_str().unwrap_or_default()) {
-            crate::channels::add_spot(app, slug, &c, &preview["spot"], "seemo").await;
+        if let Some(c) = preview["credential"].as_str().and_then(|id| app.vault.get(id).ok().flatten()) {
+            crate::channels::add_spot(app, slug, &m, &c, &preview["spot"], "seemo").await;
         }
     }
     let url = out.text.clone().filter(|x| x.starts_with("http")).or_else(|| ["html_url", "url", "link"].iter().find_map(|k| out.json.get(*k).and_then(|u| u.as_str()).map(str::to_string)));
     Ok(json!({ "done": true, "url": url, "text": out.text, "result": out.json, "note": "Done. Say in one line what was done where, with the link." }))
 }
 
-/// Accounts being driven right now, by `slug/id`.
+/// Credentials being driven right now, by id: machine-wide, so two projects never drive one browser profile at once.
 static TURNS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> = std::sync::LazyLock::new(Default::default);
 
-/// Wait until no other exclusive call is using the account.
-pub(crate) async fn account_turn(slug: &str, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
-    let lock = TURNS.lock().unwrap_or_else(|e| e.into_inner()).entry(format!("{slug}/{id}")).or_default().clone();
+/// Wait until no other exclusive call is using the credential.
+pub(crate) async fn turn(id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = TURNS.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_string()).or_default().clone();
     lock.lock_owned().await
 }
 
 /// What a call does on its account, when it does more than read: the tool's
 /// `role` (or `publish` for a channel kind's publish tool) and its `target`.
-fn action(m: &Manifest, tool: Option<&str>, args: &Value, env: &impl Fn(&str) -> Option<String>, channel: String) -> Option<Activity> {
+fn action(slug: &str, m: &Manifest, tool: Option<&str>, args: &Value, env: &impl Fn(&str) -> Option<String>, channel: String) -> Option<Activity> {
     let role = role_of(m, tool);
     if role == "read" {
         return None;
     }
     let t = tool.and_then(|n| m.tools.iter().find(|t| t.name == n));
     let target = t.map(|t| extensions::fill(&t.target, args, env)).unwrap_or_default().trim().to_string();
-    Some(Activity { at: chrono::Utc::now(), ability: m.id.clone(), role, tool: tool.unwrap_or_default().to_string(), target, channel, url: None })
+    Some(Activity { at: chrono::Utc::now(), project: slug.to_string(), ability: m.id.clone(), role, tool: tool.unwrap_or_default().to_string(), target, channel, url: None })
 }
 
 /// What a call of a tool does on its account: the tool's `role`, `publish` for a kind's publish tool, else reading.
@@ -1055,32 +997,30 @@ pub(crate) fn role_of(m: &Manifest, tool: Option<&str>) -> String {
     }
 }
 
-/// The account's keys a target may name (`${GITHUB_REPO}`): never a secret.
-/// Targets are logged and shown, so a token, a password or anything a
-/// sign-in keeps stays out even when a manifest names it.
-pub(crate) fn target_env(app: &App, slug: &str, m: &Manifest, c: &Account) -> impl Fn(&str) -> Option<String> + Clone {
-    let env = kiqr_core::accounts::env_for(app.store.home(), slug, Some(c), m, Default::default());
-    let written = kiqr_core::connect::written_tokens(&m.connect);
+/// What a target may name (`${GITHUB_REPO}`): settings and plain fields, never a secret.
+/// Targets are logged and shown, so a token, a key or a password stays out even when a manifest names it.
+pub(crate) fn target_env(app: &App, slug: &str, m: &Manifest, c: &Conn) -> impl Fn(&str) -> Option<String> + Clone {
+    let env = kiqr_core::conn::env_for(app.store.home(), slug, Some(c), m, &crate::creds::settings_of(app, slug, &m.id));
+    let secret = c.secret_names();
     move |k: &str| {
         let u = k.to_ascii_uppercase();
-        let secret = ["TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "FILE"].iter().any(|w| u.contains(w)) || written.iter().any(|w| w == k);
-        if secret { None } else { env(k) }
+        let looks = ["TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "FILE"].iter().any(|w| u.contains(w));
+        if looks || secret.iter().any(|s| s == k) || kiqr_core::provider::is_core_key(k) { None } else { env(k) }
     }
 }
 
-/// Refuse an action already done on the same target through this account,
-/// or one over the lowest `daily_cap` any ability of the service declares.
-async fn check_action(app: &App, slug: &str, m: &Manifest, c: &Account, a: &Activity) -> std::result::Result<(), (&'static str, anyhow::Error)> {
+/// Refuse an action already done on the same target as this credential (in
+/// any project), or one over the ability's `daily_cap` for the credential today.
+fn check_action(app: &App, m: &Manifest, c: &Conn, a: &Activity) -> std::result::Result<(), (&'static str, anyhow::Error)> {
     let home = app.store.home();
     if !a.target.is_empty() {
-        if let Some(p) = c.acted_on(home, slug, &a.role, &a.target) {
-            return Err(("duplicate", anyhow!("already done: {} ({}) on {} through {} at {}; not doing it twice", p.role, p.ability, a.target, c.label, p.at.format("%Y-%m-%d %H:%M UTC"))));
+        if let Some(p) = c.acted_on(home, &a.role, &a.target) {
+            return Err(("duplicate", anyhow!("already done: {} ({}) on {} as {} at {}; not doing it twice", p.role, p.ability, a.target, c.label(), p.at.format("%Y-%m-%d %H:%M UTC"))));
         }
     }
-    let cap = app.registry.read().await.of_service(slug, m.service()).iter().filter_map(|o| o.daily_cap).min();
-    if let Some(cap) = cap {
-        if c.actions_today(home, slug) >= cap as usize {
-            return Err(("cap", anyhow!("{} has done its {cap} actions for today (the limit is shared by every ability that uses this account); it can act again tomorrow", c.label)));
+    if let Some(cap) = m.daily_cap {
+        if c.actions_today(home) >= cap as usize {
+            return Err(("cap", anyhow!("{} has done its {cap} actions for today (the limit counts every project that uses it); it can act again tomorrow", c.label())));
         }
     }
     Ok(())
@@ -1089,21 +1029,33 @@ async fn check_action(app: &App, slug: &str, m: &Manifest, c: &Account, a: &Acti
 /// One call through its transport with no checks or log of its own: for a
 /// send to a list, where the caller holds the account and logs the whole
 /// send as one action.
-pub(crate) async fn run_through(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&Account>) -> Result<ExecOut> {
+pub(crate) async fn run_through(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&Conn>) -> Result<ExecOut> {
     run(app, slug, m, provide, ability, tool, args, conn).await
 }
 
 /// One call through its transport, after the account's checks.
-async fn run(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&Account>) -> Result<ExecOut> {
+async fn run(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: &Value, conn: Option<&Conn>) -> Result<ExecOut> {
     let mut args = provide.mapped_args(args);
     if let Some(o) = args.as_object_mut() {
-        o.remove("connection");
+        o.remove("credential");
     }
     let files = call_files(app, slug, provide, &mut args)?;
-    let stored = kiqr_core::accounts::env_for(app.store.home(), slug, conn, m, crate::session::vault_keys(app, slug, conn).await);
-    // Tokens a sign-in flow mints or refreshes for this call come first.
-    let minted = std::sync::Arc::new(crate::connect::call_env(app, slug, m, conn).await?);
-    let env = move |k: &str| minted.get(k).cloned().or_else(|| stored(k));
+    let env = kiqr_core::conn::env_for(app.store.home(), slug, conn, m, &crate::creds::settings_of(app, slug, &m.id));
+    // A credential's values go only to its own domains, whatever the manifest's hosts allow (`send`).
+    let guard: CredHosts = std::sync::Arc::new(conn.map(|c| c.env().into_iter().map(|(k, (_, d))| (k, d)).collect()).unwrap_or_default());
+    CRED_HOSTS.scope(guard, run_with(app, slug, m, provide, ability, tool, args, files, conn, env)).await
+}
+
+/// Which names carry a credential's value, and the domains each may go to.
+type CredHosts = std::sync::Arc<std::collections::BTreeMap<String, Vec<String>>>;
+tokio::task_local! {
+    static CRED_HOSTS: CredHosts;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_with(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Option<&Ability>, tool: Option<&str>, args: Value, files: Files, conn: Option<&Conn>, env: impl Fn(&str) -> Option<String> + Clone) -> Result<ExecOut> {
+    let args = &args;
+    let files = &files;
     match m.transport {
         Transport::Http if !provide.steps.is_empty() => steps_exec(m, &provide.steps, &args, &provide.result, &env, &files).await,
         Transport::Http => {
@@ -1156,24 +1108,35 @@ async fn run(app: &App, slug: &str, m: &Manifest, provide: &Provide, ability: Op
     }
 }
 
-/// The launch for a project's default connection of a hosted program.
-pub fn launch_for(app: &App, slug: &str, m: &Manifest) -> crate::mcp_host::Launch {
-    let conn = Account::default_of(&app.store, slug, m.service());
-    let env = kiqr_core::accounts::env_for(app.store.home(), slug, conn.as_ref(), m, Default::default());
+/// The launch of a hosted program as the credential a project's calls of it go through.
+pub async fn launch_for(app: &App, slug: &str, m: &Manifest) -> crate::mcp_host::Launch {
+    let conn = crate::creds::pick(app, slug, m, None).await.ok().flatten();
+    let env = kiqr_core::conn::env_for(app.store.home(), slug, conn.as_ref(), m, &crate::creds::settings_of(app, slug, &m.id));
     mcp_env(app, slug, m, conn.as_ref(), &env)
 }
 
-/// What a hosted program is started with: the account (one server per account
-/// and program, shared by every ability of the service on that program), the
-/// values of the names the ability and the program ask for, the program's
-/// `env_set` filled, and the account's own folder (`data/`) to work in.
-pub fn mcp_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Account>, env: &impl Fn(&str) -> Option<String>) -> crate::mcp_host::Launch {
+/// The names a program is given: the ability's credential names, its own `env`, and its commands' `env`.
+fn program_names(m: &Manifest) -> Vec<String> {
+    let mut v = m.credential_env();
+    v.extend(m.env.iter().cloned());
+    for c in m.tools.iter().filter_map(|t| t.provide.command.as_ref()).chain(m.provides.values().filter_map(|p| p.command.as_ref())) {
+        v.extend(c.env.iter().cloned());
+    }
+    v.retain(|n| !n.is_empty() && !kiqr_core::provider::is_core_key(n));
+    v
+}
+
+/// What a hosted program is started with: the credential (one server per
+/// credential and program, shared by every ability and project on that
+/// program), the values of the names the ability and the program ask for,
+/// the program's `env_set` filled, and the credential's own session folder to work in.
+pub fn mcp_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Conn>, env: &impl Fn(&str) -> Option<String>) -> crate::mcp_host::Launch {
     let program = program_of_sync(app, Some(slug), m).unwrap_or_else(|| m.clone());
     let home = app.store.home();
-    let dir = conn.map(|c| c.data_dir(home, slug));
+    let dir = conn.map(|c| c.data_dir(home));
     let project_dir = home.project_dir(slug);
-    let mut names = kiqr_core::accounts::key_names(m);
-    names.extend(kiqr_core::accounts::key_names(&program));
+    let mut names = program_names(m);
+    names.extend(program_names(&program));
     names.sort();
     names.dedup();
     let mut vars: Vec<(String, String)> = names.into_iter().filter_map(|k| env(&k).map(|v| (k, v))).collect();
@@ -1197,7 +1160,7 @@ pub fn mcp_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Account>, env:
         _ => env(k),
     };
     let warmup = program.warmup.iter().map(|st| (st.call.clone(), st.args.as_ref().map(|t| extensions::fill_value(t, &Value::Null, &lookup)).unwrap_or_else(|| json!({})))).collect();
-    crate::mcp_host::Launch { key: crate::mcp_host::Launch::key_for(slug, conn.map(|c| c.id.as_str()), &program.id), vars, dir, project_dir: Some(project_dir), warmup }
+    crate::mcp_host::Launch { key: crate::mcp_host::Launch::key_for(slug, conn.map(|c| c.id()), &program.id), vars, dir, project_dir: Some(project_dir), warmup }
 }
 
 /// Steps on a hosted program, in order: each calls one of the program's
@@ -1297,6 +1260,23 @@ pub(crate) fn check_host(m: &Manifest, url: &str, env: &dyn Fn(&str) -> Option<S
     Ok(())
 }
 
+/// A credential's value goes only to its own domains: a request that names
+/// one (`${FAL_KEY}` anywhere in it) to a host outside them is refused, even
+/// when the manifest's `hosts` allow the host.
+fn check_credential_hosts(m: &Manifest, req: &HttpRequest, host: &str) -> Result<()> {
+    let Ok(map) = CRED_HOSTS.try_with(|m| m.clone()) else { return Ok(()) };
+    if map.is_empty() {
+        return Ok(());
+    }
+    let text = serde_json::to_string(req).unwrap_or_default();
+    for (name, domains) in map.iter() {
+        if text.contains(&format!("${{{name}}}")) && !domains.iter().any(|d| kiqr_core::vault::same_site(d, host)) {
+            bail!("{} may not send {name} to {host}: the credential is for {} only (add {host} to its domains in the Vault if it belongs there)", m.name, domains.join(", "));
+        }
+    }
+    Ok(())
+}
+
 /// The asset's files, when the call names any (`{{file…}}`): their bytes for
 /// the executor, and `files` in the arguments as `[{name, mime, size}]`
 /// (with `base64` when the manifest asks for it, for APIs that take JSON only).
@@ -1371,6 +1351,7 @@ async fn send(m: &Manifest, req: &HttpRequest, args: &Value, env: &(impl Fn(&str
     if !extensions::host_allowed(&url, &extensions::hosts_for(m, env)) {
         bail!("{} may not call {}", m.name, url.host_str().unwrap_or(""));
     }
+    check_credential_hosts(m, req, url.host_str().unwrap_or(""))?;
     for (k, v) in &req.query {
         let v = extensions::fill(v, args, env.clone());
         if !v.is_empty() {
@@ -1567,45 +1548,7 @@ fn summarize(v: &Value) -> Value {
     }
 }
 
-pub fn sniff_mime(b: &[u8]) -> String {
-    if b.starts_with(b"\x89PNG") {
-        "image/png"
-    } else if b.starts_with(b"\xFF\xD8") {
-        "image/jpeg"
-    } else if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
-        "image/webp"
-    } else if b.starts_with(b"GIF8") {
-        "image/gif"
-    } else if b.get(4..8) == Some(b"ftyp") {
-        "video/mp4"
-    } else if b.starts_with(b"ID3") || b.starts_with(b"\xFF\xFB") {
-        "audio/mpeg"
-    } else if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WAVE") {
-        "audio/wav"
-    } else if b.starts_with(b"<svg") || b.starts_with(b"<?xml") {
-        "image/svg+xml"
-    } else {
-        "application/octet-stream"
-    }
-    .to_string()
-}
-
-pub fn extension_for(mime: &str) -> &'static str {
-    match mime.split(';').next().unwrap_or("").trim() {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        "image/svg+xml" => "svg",
-        "video/mp4" => "mp4",
-        "video/webm" => "webm",
-        "audio/mpeg" => "mp3",
-        "audio/wav" | "audio/x-wav" => "wav",
-        "audio/ogg" => "ogg",
-        "application/pdf" => "pdf",
-        _ => "bin",
-    }
-}
+pub use kiqr_core::fetch::{extension_for, sniff_mime};
 
 async fn command_exec(spec: &CommandSpec, args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone)) -> Result<ExecOut> {
     let program = extensions::fill(&spec.command, args, env.clone());
@@ -1718,6 +1661,18 @@ fn gcd(a: u64, b: u64) -> u64 {
     }
 }
 
+/// Is this call a design to render rather than something to generate: the
+/// `image` ability with a `source` and no `prompt`?
+pub fn renders_locally(ability: &str, args: &Value) -> bool {
+    let has = |k: &str| args.get(k).and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty());
+    ability == "image" && has("source") && !has("prompt")
+}
+
+/// The core connection that provides an ability (the renderer behind `image`), when it is on.
+fn core_provider<'a>(reg: &'a kiqr_core::extensions::Registry, slug: &str, ability: &str, off: &[String]) -> Option<(&'a kiqr_core::extensions::Entry, &'a Manifest)> {
+    reg.connections(slug).into_iter().find(|(e, m)| e.is_core() && m.provides.contains_key(ability) && !off.contains(&m.id))
+}
+
 /// `POST /api/projects/{slug}/abilities/{ability}`: run the ability through
 /// the connection that serves it.
 async fn run_ability(State(app): State<App>, Path((slug, ability)): Path<(String, String)>, headers: HeaderMap, Json(args): Json<Value>) -> ApiResult<Value> {
@@ -1727,7 +1682,9 @@ async fn run_ability(State(app): State<App>, Path((slug, ability)): Path<(String
     let (m, provide) = {
         let reg = app.registry.read().await;
         let off = project_off(&app, &slug);
-        let Some((_, m)) = reg.provider(&slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(&app, Some(&slug), m)) else {
+        // A design always renders here: the built-in provider takes `source` whichever generator is picked.
+        let local = if renders_locally(a.id, &args) { core_provider(&reg, &slug, a.id, &off) } else { None };
+        let Some((_, m)) = local.or_else(|| reg.provider(&slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(&app, Some(&slug), m))) else {
             return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("Nothing can \"{}\" yet. Install an ability for it under Setup → Abilities.", a.label.to_lowercase())));
         };
         (m.clone(), m.provides.get(a.id).cloned().unwrap_or_default())
@@ -1782,4 +1739,24 @@ async fn run_ext_tool(State(app): State<App>, Path((slug, ext, tool)): Path<(Str
         }
     }
     Ok(Json(v))
+}
+
+#[cfg(test)]
+mod credential_host_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_credential_value_goes_only_to_its_domains() {
+        let m = extensions::parse_manifest("id: t\nname: T\ntransport: http\nhosts: [fal.run, other.example]\ncredentials:\n  - { template: api_key, env: { FAL_KEY: key } }\n").unwrap();
+        let mut req = HttpRequest { url: "https://other.example/x".into(), ..Default::default() };
+        req.headers.insert("Authorization".into(), "Key ${FAL_KEY}".into());
+        let map: CredHosts = std::sync::Arc::new([("FAL_KEY".to_string(), vec!["fal.ai".to_string(), "fal.run".to_string()])].into_iter().collect());
+        let (to_other, to_own) = CRED_HOSTS.scope(map, async { (check_credential_hosts(&m, &req, "other.example"), check_credential_hosts(&m, &req, "queue.fal.run")) }).await;
+        assert!(to_other.unwrap_err().to_string().contains("may not send FAL_KEY"), "the manifest's hosts do not widen the credential's");
+        assert!(to_own.is_ok());
+        // A request that names no credential goes anywhere the manifest allows.
+        let plain = HttpRequest { url: "https://other.example/x".into(), ..Default::default() };
+        let map: CredHosts = std::sync::Arc::new([("FAL_KEY".to_string(), vec!["fal.ai".to_string()])].into_iter().collect());
+        assert!(CRED_HOSTS.scope(map, async { check_credential_hosts(&m, &plain, "other.example") }).await.is_ok());
+    }
 }

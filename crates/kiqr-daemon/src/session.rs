@@ -1,17 +1,16 @@
-//! Signing an account in on a hosted program (a browser) and keeping it so.
+//! Signing a credential in on a hosted program (a browser) and keeping it so.
 //! The manifest's `session` says how: `check` steps tell whether the account
 //! is signed in; the sign-in starts at `login_url`, where the model reads each
 //! page's controls (any site, any language) and names the user, password and
 //! code fields, and the runner types into those and nothing else (`guided`
 //! below); or `login` steps type the credentials into fixed fields;
 //! `blocked_when` texts mean a person is needed, and so does the model
-//! saying the page is a captcha or a check. The credentials come from the account's login: saved
-//! in KIQR (its own `.env`) or an item in a password manager account
-//! (`provides.credential`). Only this runner ever reads them, right before
+//! saying the page is a captcha or a check. The login is a Vault credential;
+//! its password and two-factor key are read only here (`Caller::Runner`), right before
 //! typing; the model, transcripts, events and logs see names only, and what
 //! was typed is struck from every program answer while it is in use. When
 //! the steps are blocked (a captcha, a device check) or fail twice, the
-//! account needs a hand: a badge, a To do item, one Seemo line, and acting
+//! credential needs a hand: a badge, a To do item, one Seemo line, and acting
 //! tools refuse until a person finished the sign-in in the live view.
 
 use crate::api::{ApiError, ApiResult};
@@ -23,16 +22,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use kiqr_core::accounts::{Account, Secrets, SessionStatus};
+use kiqr_core::conn::{Conn, SessionStatus};
+use kiqr_core::vault::Caller;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::Manifest;
 use serde_json::{json, Value};
 
 pub fn routes() -> Router<App> {
     Router::new()
-        .route("/api/projects/{slug}/accounts/{id}/session", get(status_route))
-        .route("/api/projects/{slug}/accounts/{id}/signin", post(signin_route))
-        .route("/api/projects/{slug}/accounts/{id}/signout", post(signout_route))
+        .route("/api/projects/{slug}/credentials/{id}/session", get(status_route))
+        .route("/api/projects/{slug}/credentials/{id}/signin", post(signin_route))
+        .route("/api/projects/{slug}/credentials/{id}/signout", post(signout_route))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -40,13 +40,13 @@ fn bad(msg: impl Into<String>) -> ApiError {
 }
 
 /// A login's values, for one sign-in. Dropped right after.
-pub struct Credential {
+pub struct Login {
     pub username: String,
     pub password: String,
     pub otp: Option<String>,
 }
 
-impl Credential {
+impl Login {
     fn values(&self) -> Vec<String> {
         let mut v = vec![self.password.clone()];
         if let Some(o) = &self.otp {
@@ -56,67 +56,35 @@ impl Credential {
     }
 }
 
-/// The manifest of the service with a `session`, when one is on here.
-pub async fn session_manifest(app: &App, slug: &str, c: &Account) -> Option<Manifest> {
-    let reg = app.registry.read().await;
-    let off = crate::ext::project_off(app, slug);
-    reg.of_service(slug, &c.service).into_iter().find(|m| m.session.is_some() && !off.contains(&m.id)).cloned()
+/// The installed ability that signs a credential in, when one is on here.
+pub async fn session_manifest(app: &App, slug: &str, c: &Conn) -> Option<Manifest> {
+    crate::creds::session_manifest(app, slug, c.primary()).await
 }
 
-/// What a password manager holds for an account (its `secrets.item`), through
-/// the manager's `credential` contract: `username`, `password`, `otp` or
-/// `totp`, and `fields` (typed keys by name). Read at call time, never kept.
-pub async fn from_manager(app: &App, slug: &str, c: &Account) -> Result<Value> {
-    let manager = Account::load(&app.store, slug, &c.secrets.store).map_err(|_| anyhow!("the password manager account '{}' is gone; pick where {}'s secrets are kept again", c.secrets.store, c.label))?;
-    let (m, provide) = {
-        let reg = app.registry.read().await;
-        reg.of_service(slug, &manager.service).into_iter().find_map(|m| m.provides.get(kiqr_core::abilities::CREDENTIAL).map(|p| (m.clone(), p.clone()))).ok_or_else(|| anyhow!("nothing on here reads secrets from {}", manager.label))?
-    };
-    let out = crate::ext::run_through(app, slug, &m, &provide, None, None, &json!({ "op": "get", "ref": c.secrets.item }), Some(&manager)).await?;
-    Ok(out.json)
+/// A credential as the runner drives it: with the need of the ability that signs it in.
+pub async fn load(app: &App, slug: &str, id: &str) -> Result<Conn> {
+    let c = app.vault.get(id)?.ok_or_else(|| anyhow!("there is no credential {id}"))?;
+    let need = crate::creds::session_manifest(app, slug, &c).await.and_then(|m| m.needs().into_iter().find(|n| n.fits(&c, &|_| None))).unwrap_or_default();
+    Ok(Conn { given: vec![(need, c)] })
 }
 
-/// The typed keys a password manager holds for an account, by name; empty
-/// when its secrets are kept in KIQR or the manager does not answer.
-pub async fn vault_keys(app: &App, slug: &str, c: Option<&Account>) -> std::collections::BTreeMap<String, String> {
-    let Some(c) = c.filter(|c| !c.secrets.in_kiqr()) else { return Default::default() };
-    match Box::pin(from_manager(app, slug, c)).await {
-        Ok(v) => v["fields"].as_object().map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()).unwrap_or_default(),
-        Err(e) => {
-            tracing::warn!(account = %c.id, "could not read keys from the password manager: {e:#}");
-            Default::default()
-        }
-    }
+/// The login's values, read for the runner alone, with the one-time code computed from the saved key.
+pub async fn credential(app: &App, _slug: &str, c: &Conn) -> Result<Login> {
+    let id = c.id();
+    let username = app.vault.field(id, "username", Caller::Runner)?.filter(|s| !s.trim().is_empty()).ok_or_else(|| anyhow!("{} has no username saved; the user adds it in the Vault", c.label()))?;
+    let password = app.vault.field(id, "password", Caller::Runner)?.ok_or_else(|| anyhow!("{} has no password saved", c.label()))?;
+    let otp = app.vault.field(id, "totp", Caller::Runner)?.filter(|s| !s.trim().is_empty()).map(|s| kiqr_core::totp::code(&s).ok_or_else(|| anyhow!("the two-factor key saved for {} is not valid", c.label()))).transpose()?;
+    Ok(Login { username, password, otp })
 }
 
-/// Read the account's login: from its own `.env` (kept in KIQR, with the
-/// one-time code computed from the saved secret), or from its password manager.
-pub async fn credential(app: &App, slug: &str, c: &Account) -> Result<Credential> {
-    let home = app.store.home();
-    if c.secrets.in_kiqr() {
-        let keys = c.keys(home, slug);
-        let username = keys.get(Secrets::USERNAME).cloned().filter(|s| !s.trim().is_empty()).ok_or_else(|| anyhow!("{} has no login saved; the user adds one on the account", c.label))?;
-        let password = keys.get(Secrets::PASSWORD).cloned().filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("{} has no password saved", c.label))?;
-        let otp = keys.get(Secrets::TOTP).filter(|s| !s.trim().is_empty()).map(|s| kiqr_core::totp::code(s).ok_or_else(|| anyhow!("the one-time code secret saved for {} is not valid", c.label))).transpose()?;
-        return Ok(Credential { username, password, otp });
-    }
-    let v = from_manager(app, slug, c).await?;
-    let username = v["username"].as_str().unwrap_or("").to_string();
-    let password = v["password"].as_str().unwrap_or("").to_string();
-    if username.is_empty() || password.is_empty() {
-        bail!("{} did not hand back a user name and password for {}", c.secrets.store, c.secrets.item);
-    }
-    let otp = v["otp"].as_str().map(str::to_string).or_else(|| v["totp"].as_str().and_then(kiqr_core::totp::code));
-    Ok(Credential { username, password, otp })
+/// Whether the credential has a login to sign in with.
+pub fn has_login(_app: &App, _slug: &str, c: &Conn) -> bool {
+    let p = c.primary();
+    p.field("username").is_some_and(|f| !f.value.trim().is_empty()) && p.field("password").is_some_and(|f| !f.value.is_empty())
 }
 
-/// Whether the account has a login to sign in with: saved in KIQR, or kept in a password manager.
-pub fn has_login(app: &App, slug: &str, c: &Account) -> bool {
-    !c.secrets.in_kiqr() || c.keys(app.store.home(), slug).get(Secrets::USERNAME).is_some_and(|u| !u.trim().is_empty())
-}
-
-async fn set_state(app: &App, slug: &str, c: &Account, state: &str, message: impl Into<String>) -> SessionStatus {
-    let mut st = c.session(app.store.home(), slug);
+async fn set_state(app: &App, slug: &str, c: &Conn, state: &str, message: impl Into<String>) -> SessionStatus {
+    let mut st = c.session(app.store.home());
     let now = chrono::Utc::now();
     st.state = state.to_string();
     st.message = message.into();
@@ -126,8 +94,8 @@ async fn set_state(app: &App, slug: &str, c: &Account, state: &str, message: imp
     if state == SessionStatus::SIGNED_IN {
         st.signed_in_at = Some(now);
     }
-    let _ = c.set_session(app.store.home(), slug, &st);
-    app.bus.emit(Some(slug), EventKind::AccountStateChanged { account: c.id.clone(), state: st.state.clone(), message: st.message.clone() });
+    let _ = kiqr_core::conn::set_session(app.store.home(), c.id(), &st);
+    app.bus.emit(Some(slug), EventKind::CredentialStateChanged { credential: c.id().to_string(), state: st.state.clone(), message: st.message.clone() });
     st
 }
 
@@ -150,7 +118,7 @@ const CHECK_PAUSE: std::time::Duration = std::time::Duration::from_secs(4);
 /// holds one of `signed_out_when`; with no marker the model reads the page. A page with nothing on it, or one
 /// the model cannot place, is loaded again a few seconds later (the steps start with a fresh load) rather than
 /// read as signed out: that would start a sign-in on an account that is signed in.
-async fn run_check(app: &App, slug: &str, c: &Account, m: &Manifest) -> Result<Check> {
+async fn run_check(app: &App, slug: &str, c: &Conn, m: &Manifest) -> Result<Check> {
     let mut last_seen = None;
     for load in 1..=CHECK_LOADS {
         if load > 1 {
@@ -160,16 +128,16 @@ async fn run_check(app: &App, slug: &str, c: &Account, m: &Manifest) -> Result<C
         if !seen.unread {
             return Ok(seen);
         }
-        tracing::info!(account = %c.id, load, said = ?seen.said, "the check page had nothing to read yet");
+        tracing::info!(credential = %c.id(), load, said = ?seen.said, "the check page had nothing to read yet");
         last_seen = Some(seen);
     }
     Ok(last_seen.expect("CHECK_LOADS > 0"))
 }
 
-async fn check_once(app: &App, slug: &str, c: &Account, m: &Manifest) -> Result<Check> {
+async fn check_once(app: &App, slug: &str, c: &Conn, m: &Manifest) -> Result<Check> {
     let sess = m.session.as_ref().ok_or_else(|| anyhow!("{} has no session", m.name))?;
     let program = crate::ext::program_of(app, Some(slug), m).await?;
-    let env = kiqr_core::accounts::env_for(app.store.home(), slug, Some(c), m, Default::default());
+    let env = kiqr_core::conn::env_for(app.store.home(), slug, Some(c), m, &crate::creds::settings_of(app, slug, &m.id));
     let launch = crate::ext::mcp_env(app, slug, m, Some(c), &env);
     let (last, text) = crate::ext::mcp_steps(app, &program, &launch, m, &sess.check, &json!({}), &Default::default(), &env).await?;
     // What the program said, as plain text: a program that answers with JSON (a snapshot) often
@@ -178,7 +146,7 @@ async fn check_once(app: &App, slug: &str, c: &Account, m: &Manifest) -> Result<
         Some(t) if !last.is_object() => t,
         _ => flat_text(&last),
     };
-    tracing::debug!(account = %c.id, steps = sess.check.len(), text = %kiqr_core::profile::truncate_chars(&text, 400), "session check read");
+    tracing::debug!(credential = %c.id(), steps = sess.check.len(), text = %kiqr_core::profile::truncate_chars(&text, 400), "session check read");
     if blank(&last, &text) {
         return Ok(Check { signed_in: false, unread: true, text, said: None });
     }
@@ -225,11 +193,11 @@ fn blocked(sess: &kiqr_core::extensions::Session, text: &str) -> Option<String> 
 /// Check, and sign in when signed out: the heart of the runner. Holds the
 /// account's turn. Returns the state it ended in.
 pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
-    let c = Account::load(&app.store, slug, id)?;
-    let m = session_manifest(app, slug, &c).await.ok_or_else(|| anyhow!("{} has nothing that signs in", c.label))?;
+    let c = load(app, slug, id).await?;
+    let m = session_manifest(app, slug, &c).await.ok_or_else(|| anyhow!("{} has nothing that signs it in", c.label()))?;
     let sess = m.session.clone().expect("session_manifest");
-    let _turn = crate::ext::account_turn(slug, &c.id).await;
-    let was = c.session(app.store.home(), slug).state;
+    let _turn = crate::ext::turn(c.id()).await;
+    let was = c.session(app.store.home()).state;
     set_state(app, slug, &c, SessionStatus::CHECKING, "").await;
     let seen = match run_check(app, slug, &c, &m).await {
         Ok(x) => x,
@@ -287,10 +255,10 @@ fn unread_message(seen: &Check) -> String {
 /// never type the login (it could undo what they just did). A page the check
 /// cannot read takes their word for it; one that shows signed out does not.
 pub async fn signed_in_by_hand(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
-    let c = Account::load(&app.store, slug, id)?;
-    let m = session_manifest(app, slug, &c).await.ok_or_else(|| anyhow!("{} has nothing that signs in", c.label))?;
+    let c = load(app, slug, id).await?;
+    let m = session_manifest(app, slug, &c).await.ok_or_else(|| anyhow!("{} has nothing that signs it in", c.label()))?;
     let sess = m.session.clone().expect("session_manifest");
-    let _turn = crate::ext::account_turn(slug, &c.id).await;
+    let _turn = crate::ext::turn(c.id()).await;
     set_state(app, slug, &c, SessionStatus::CHECKING, "checking the sign-in").await;
     Ok(match run_check(app, slug, &c, &m).await {
         Ok(Check { signed_in: true, .. }) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
@@ -305,9 +273,9 @@ pub async fn signed_in_by_hand(app: &App, slug: &str, id: &str) -> Result<Sessio
 
 /// The `login` steps with the credentials in their context, one at a time so
 /// a block is seen as soon as it shows. Returns what blocked, if anything.
-async fn run_login(app: &App, slug: &str, c: &Account, m: &Manifest, sess: &kiqr_core::extensions::Session, cred: &Credential) -> Result<Option<String>> {
+async fn run_login(app: &App, slug: &str, c: &Conn, m: &Manifest, sess: &kiqr_core::extensions::Session, cred: &Login) -> Result<Option<String>> {
     let program = crate::ext::program_of(app, Some(slug), m).await?;
-    let env = kiqr_core::accounts::env_for(app.store.home(), slug, Some(c), m, Default::default());
+    let env = kiqr_core::conn::env_for(app.store.home(), slug, Some(c), m, &crate::creds::settings_of(app, slug, &m.id));
     let launch = crate::ext::mcp_env(app, slug, m, Some(c), &env);
     let args = json!({ "credential": { "username": cred.username, "password": cred.password, "otp": cred.otp.clone().unwrap_or_default() } });
     for st in &sess.login {
@@ -463,9 +431,9 @@ pub mod guided {
 
     /// Sign in from `login_url`. Returns what blocked, if anything; an error
     /// when the pages could not be followed.
-    pub async fn run(app: &App, slug: &str, c: &Account, m: &Manifest, sess: &kiqr_core::extensions::Session, cred: &Credential) -> Result<Option<String>> {
+    pub async fn run(app: &App, slug: &str, c: &Conn, m: &Manifest, sess: &kiqr_core::extensions::Session, cred: &Login) -> Result<Option<String>> {
         let program = crate::ext::program_of(app, Some(slug), m).await?;
-        let env = kiqr_core::accounts::env_for(app.store.home(), slug, Some(c), m, Default::default());
+        let env = kiqr_core::conn::env_for(app.store.home(), slug, Some(c), m, &crate::creds::settings_of(app, slug, &m.id));
         let launch = crate::ext::mcp_env(app, slug, m, Some(c), &env);
         let args = json!({ "credential": { "username": cred.username, "password": cred.password, "otp": cred.otp.clone().unwrap_or_default() } });
         let map: kiqr_core::extensions::ResultMap = Default::default();
@@ -607,9 +575,9 @@ pub mod guided {
 /// Forget the sign-in: stop the account's programs and wipe what they kept
 /// (the browser profile). The login stays.
 pub async fn signout(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
-    let c = Account::load(&app.store, slug, id)?;
-    app.mcp.stop_account(slug, &c.id).await;
-    let dir = c.data_dir(app.store.home(), slug);
+    let c = load(app, slug, id).await?;
+    app.mcp.stop_credential(c.id()).await;
+    let dir = c.data_dir(app.store.home());
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
             // The log and the status stay; everything a program kept goes.
@@ -621,23 +589,25 @@ pub async fn signout(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     let mut st = set_state(app, slug, &c, SessionStatus::SIGNED_OUT, "signed out").await;
     // Nothing signs it in again until the user does.
     st.by_user = true;
-    let _ = c.set_session(app.store.home(), slug, &st);
+    let _ = kiqr_core::conn::set_session(app.store.home(), c.id(), &st);
     Ok(st)
 }
 
 /// Keys and programs are there, so a sign-in can run (the session aside).
-async fn can_sign_in(app: &App, slug: &str, c: &Account) -> bool {
-    !matches!(crate::accounts::state(app, slug, c).await, kiqr_core::accounts::State::MissingKeys { .. } | kiqr_core::accounts::State::NeedsProgram { .. })
+async fn can_sign_in(app: &App, slug: &str, c: &Conn) -> bool {
+    !matches!(crate::creds::state(app, slug, c.primary()).await, kiqr_core::conn::State::MissingFields { .. } | kiqr_core::conn::State::NeedsProgram { .. })
 }
 
-/// The scheduler's tick: accounts with a session whose check is due.
+/// The scheduler's tick: credentials used here with a session whose check is due.
 pub async fn due(app: &App, slug: &str) {
-    for c in Account::list(&app.store, slug).unwrap_or_default() {
+    let used = kiqr_core::access::Access::load(&app.store, slug).unwrap_or_default().credentials();
+    for id in used {
+        let Ok(c) = load(app, slug, &id).await else { continue };
         let Some(m) = session_manifest(app, slug, &c).await else { continue };
         if !can_sign_in(app, slug, &c).await {
             continue;
         }
-        let st = c.session(app.store.home(), slug);
+        let st = c.session(app.store.home());
         // A hand is needed, or the user signed it out: nothing to do until a person says so.
         if st.needs_hand() || st.by_user {
             continue;
@@ -651,16 +621,16 @@ pub async fn due(app: &App, slug: &str) {
         if !due {
             continue;
         }
-        let key = format!("session:{slug}/{}", c.id);
+        let key = format!("session:{}", c.id());
         if !app.jobs.write().await.insert(key.clone()) {
             continue;
         }
-        let (app2, slug2, id, label) = (app.clone(), slug.to_string(), c.id.clone(), c.label.clone());
+        let (app2, slug2, id, label) = (app.clone(), slug.to_string(), c.id().to_string(), c.label().to_string());
         tokio::spawn(async move {
             match signin(&app2, &slug2, &id).await {
-                Ok(st) if st.needs_hand() => app2.bus.emit(Some(&slug2), EventKind::SeemoSays { text: format!("{label} needs a hand to sign in: {}. Open it under Setup → Accounts to finish.", st.message) }),
+                Ok(st) if st.needs_hand() => app2.bus.emit(Some(&slug2), EventKind::SeemoSays { text: format!("{label} needs a hand to sign in: {}. Open it in the Vault to finish.", st.message) }),
                 Ok(_) => {}
-                Err(e) => tracing::warn!(slug = %slug2, account = %id, "session check failed: {e:#}"),
+                Err(e) => tracing::warn!(slug = %slug2, credential = %id, "session check failed: {e:#}"),
             }
             app2.jobs.write().await.remove(&key);
         });
@@ -668,11 +638,11 @@ pub async fn due(app: &App, slug: &str) {
 }
 
 /// For the account view: how the sign-in stands, and whether this account signs in at all.
-pub async fn view(app: &App, slug: &str, c: &Account) -> Value {
+pub async fn view(app: &App, slug: &str, c: &Conn) -> Value {
     let m = session_manifest(app, slug, c).await;
     json!({
         "has_session": m.is_some(),
-        "session": c.session(app.store.home(), slug),
+        "session": c.session(app.store.home()),
         "has_login": has_login(app, slug, c),
         "live_view": m.as_ref().and_then(|m| m.live_view.as_ref()).is_some(),
         // No login steps: a person signs in once in the live view; the program keeps it.
@@ -682,8 +652,8 @@ pub async fn view(app: &App, slug: &str, c: &Account) -> Value {
 }
 
 /// Where the live view opens: the first page the session's check visits, with the account's keys filled.
-pub fn start_url(app: &App, slug: &str, c: &Account, m: &Manifest) -> Option<String> {
-    let env = kiqr_core::accounts::env_for(app.store.home(), slug, Some(c), m, Default::default());
+pub fn start_url(app: &App, slug: &str, c: &Conn, m: &Manifest) -> Option<String> {
+    let env = kiqr_core::conn::env_for(app.store.home(), slug, Some(c), m, &crate::creds::settings_of(app, slug, &m.id));
     let sess = m.session.as_ref()?;
     let template = match sess.check.iter().find(|s| s.args.as_ref().is_some_and(|a| a.get("url").is_some())) {
         Some(st) => st.args.as_ref()?["url"].as_str()?.to_string(),
@@ -695,26 +665,26 @@ pub fn start_url(app: &App, slug: &str, c: &Account, m: &Manifest) -> Option<Str
 }
 
 async fn status_route(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
-    let c = Account::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let c = load(&app, &slug, &id).await.map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
     Ok(Json(view(&app, &slug, &c).await))
 }
 
 /// `POST …/signin`: check and sign in now, in the background; the status says how it went.
 async fn signin_route(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
-    let c = Account::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    session_manifest(&app, &slug, &c).await.ok_or_else(|| bad(format!("{} has nothing that signs in", c.label)))?;
+    let c = load(&app, &slug, &id).await.map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    session_manifest(&app, &slug, &c).await.ok_or_else(|| bad(format!("{} has nothing that signs it in", c.label())))?;
     if !can_sign_in(&app, &slug, &c).await {
-        let st = crate::accounts::state(&app, &slug, &c).await;
-        return Err(bad(crate::accounts::state_text(&c, &st)));
+        let st = crate::creds::state(&app, &slug, c.primary()).await;
+        return Err(bad(crate::creds::state_text(c.label(), &st)));
     }
-    let key = format!("session:{slug}/{}", c.id);
+    let key = format!("session:{}", c.id());
     if !app.jobs.write().await.insert(key.clone()) {
-        return Ok(Json(json!({ "started": false, "note": "a sign-in is running already", "session": c.session(app.store.home(), &slug) })));
+        return Ok(Json(json!({ "started": false, "note": "a sign-in is running already", "session": c.session(app.store.home()) })));
     }
-    let (app2, slug2, id2) = (app.clone(), slug.clone(), c.id.clone());
+    let (app2, slug2, id2) = (app.clone(), slug.clone(), c.id().to_string());
     tokio::spawn(async move {
         if let Err(e) = signin(&app2, &slug2, &id2).await {
-            tracing::warn!(slug = %slug2, account = %id2, "sign-in failed: {e:#}");
+            tracing::warn!(slug = %slug2, credential = %id2, "sign-in failed: {e:#}");
         }
         app2.jobs.write().await.remove(&key);
     });

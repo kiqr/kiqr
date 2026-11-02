@@ -3,7 +3,7 @@
 // running). Used full-size on the Chats page and compact in the widget.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, Target, Users, X, Zap } from "lucide-react";
+import { AlertCircle, ArrowUp, BookOpen, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Send, Settings2, Square, Target, Users, X, Zap, Radio } from "lucide-react";
 import { api, useAsync, useEvents, type Card, type Message, type Step, type Streaming, type Task } from "../api";
 import { Markdown } from "../markdown";
 import { ago } from "../pages/Project";
@@ -238,6 +238,7 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
   if (card.approval_kind === "task") return <Resolved kind="task" status={card.status} title={String(card.payload.title ?? "Task")} />;
   if (card.approval_kind === "ability") return <Resolved kind="ability" status={card.status} title={String(card.payload.name ?? "Ability")} />;
   if (card.approval_kind === "list") return <Resolved kind="list" status={card.status} title={String(card.payload.label ?? "List")} />;
+  if (card.approval_kind === "channel") return <Resolved kind="channel" status={card.status} title={String(card.payload.label || card.payload.domain || "Channel")} />;
   if (card.approval_kind === "plan") return <Resolved kind="plan" status={card.status} title={`${String(card.payload.period ?? "Plan")}${card.status === "approved" && card.result?.version ? ` · v${String(card.result.version)}` : ""}`} />;
   if (card.approval_kind === "campaign") return <Resolved kind="campaign" status={card.status} title={String(card.payload.title ?? "Campaign")} />;
   if (card.approval_kind === "publish" || card.approval_kind === "email") {
@@ -304,11 +305,11 @@ function CardView({ slug, card, id, compact }: { slug: string; card: Card; id: s
 }
 
 function Resolved({ kind, status, title }: { kind: string; status: string; title: string }) {
-  const noun = kind === "task" ? "Task" : kind === "ability" ? "Ability" : kind === "list" ? "List" : kind === "plan" ? "Plan" : kind === "campaign" ? "Campaign" : "Change";
+  const noun = kind === "task" ? "Task" : kind === "ability" ? "Ability" : kind === "list" ? "List" : kind === "channel" ? "Channel" : kind === "plan" ? "Plan" : kind === "campaign" ? "Campaign" : "Change";
   return (
     <div className={`ccard ${status}`}>
       <p className="cap">
-        {kind === "ability" ? <BookOpen size={13} /> : kind === "list" ? <Users size={13} /> : kind === "plan" || kind === "campaign" ? <Target size={13} /> : <ListChecks size={13} />} {noun} {status === "approved" && (kind === "ability" || kind === "list" || kind === "campaign") ? "added" : status}
+        {kind === "ability" ? <BookOpen size={13} /> : kind === "list" ? <Users size={13} /> : kind === "plan" || kind === "campaign" ? <Target size={13} /> : <ListChecks size={13} />} {noun} {status === "approved" && (kind === "ability" || kind === "list" || kind === "channel" || kind === "campaign") ? "added" : status}
       </p>
       <p className="ttl">{title}</p>
     </div>
@@ -338,7 +339,8 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
   const isPlan = card.approval_kind === "plan";
   const isCampaign = card.approval_kind === "campaign";
   const isAction = card.approval_kind === "action";
-  const isList = card.approval_kind === "list";
+  const isChannel = card.approval_kind === "channel";
+  const isList = card.approval_kind === "list" || (isChannel && card.payload.kind === "list");
   const objectives = (p.objectives as { id: string; title: string; why?: string; kpi_label?: string; kpi?: string; target?: number | null; unit?: string; by?: string | null }[] | undefined) ?? [];
   const replaces = p.replaces as { version: number; period: string } | null | undefined;
   const next = ((p.next as string[]) ?? []).slice(0, 3);
@@ -346,13 +348,13 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
   const abilityText = String(p.text ?? "");
   const files = (p.files as { name: string; bytes: number }[] | undefined) ?? [];
   const scheduled = isPublish && typeof p.at === "string" && p.at;
-  const caption = isAction ? `Seemo wants to use ${String(p.ability_name ?? "an ability")}` : isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isList ? `Seemo proposes a list: ${String(p.label ?? "")}` : isPlan ? (replaces ? "Seemo proposes a revised plan" : "Seemo proposes a marketing plan") : isCampaign ? (p.update ? "Seemo proposes a campaign change" : "Seemo proposes a campaign") : "Seemo proposes a settings change";
-  const yes = isAction ? "Do it" : isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isList ? "Make the list" : isPlan ? "Approve the plan" : isCampaign ? (p.update ? "Apply" : "Add the campaign") : "Apply";
+  const caption = isAction ? `Seemo wants to use ${String(p.ability_name ?? "an ability")}` : isTask ? "Seemo proposes a task" : isAbility ? "Seemo wants to learn something" : isPublish ? (scheduled ? "Seemo wants to schedule a publish" : "Seemo wants to publish") : isEmail ? "Seemo wants to send an email" : isList ? `Seemo proposes a list: ${String(p.label ?? "")}` : isChannel ? `Seemo proposes a channel: ${String(p.label || p.domain || "")}` : isPlan ? (replaces ? "Seemo proposes a revised plan" : "Seemo proposes a marketing plan") : isCampaign ? (p.update ? "Seemo proposes a campaign change" : "Seemo proposes a campaign") : "Seemo proposes a settings change";
+  const yes = isAction ? "Do it" : isTask ? "Approve and run" : isAbility ? "Teach it" : isPublish ? (scheduled ? "Schedule it" : "Publish it") : isEmail ? "Send it" : isList ? "Make the list" : isChannel ? "Add the channel" : isPlan ? "Approve the plan" : isCampaign ? (p.update ? "Apply" : "Add the campaign") : "Apply";
   const no = "Decline";
   return (
     <div className="ccard pending">
       <p className="cap">
-        {isAction ? <Zap size={13} /> : isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isList ? <Users size={13} /> : isPublish || isEmail ? <Send size={13} /> : isPlan || isCampaign ? <Target size={13} /> : <Settings2 size={13} />} {caption}
+        {isAction ? <Zap size={13} /> : isTask ? <ListChecks size={13} /> : isAbility ? <BookOpen size={13} /> : isList ? <Users size={13} /> : isChannel ? <Radio size={13} /> : isPublish || isEmail ? <Send size={13} /> : isPlan || isCampaign ? <Target size={13} /> : <Settings2 size={13} />} {caption}
       </p>
       {isAction ? (
         <>
@@ -450,6 +452,19 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
             </p>
           )}
           {!!p.note && <p className="muted sm">{String(p.note)}</p>}
+        </>
+      ) : isChannel && !isList ? (
+        <>
+          <p className="ttl">{String(p.label || p.domain || "")}</p>
+          {!!p.url && (
+            <p className="sched">
+              <a href={String(p.url)} target="_blank" rel="noreferrer">
+                {String(p.url).replace(/^https?:\/\//, "")}
+              </a>
+            </p>
+          )}
+          {!!p.description && <p className="muted sm">{String(p.description)}</p>}
+          <p className="muted sm">Seemo asks before it publishes there until you say otherwise on the channel.</p>
         </>
       ) : isList ? (
         <>

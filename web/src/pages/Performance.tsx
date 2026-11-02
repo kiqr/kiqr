@@ -7,9 +7,9 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Loader2, Minus, Plug, RefreshCw, Sparkles, Target } from "lucide-react";
-import { api, useAsync, useEvents, ACCOUNT_EVENTS, type PerfKpi, type PerfMetric } from "../api";
+import { api, useAsync, useEvents, ACCESS_EVENTS, type PerfKpi, type PerfMetric } from "../api";
 import { ago } from "./Project";
-import { AbilitySettings, connectPath } from "./Accounts";
+import { AbilitySettings, abilityHref } from "./Access";
 import "../profile.css";
 import "../accounts.css";
 
@@ -21,7 +21,7 @@ export function PerformancePage() {
   useEvents(slug, (e) => PERF_EVENTS.includes(e.type) && data.reload(), { demo: false });
   // What each source reads through its account (the GA4 property): one quiet line each, with Change.
   const abilities = useAsync(() => api.abilities(slug).catch(() => null), [slug]);
-  useEvents(slug, (e) => [...ACCOUNT_EVENTS, "ability_settings_saved"].includes(e.type) && abilities.reload(), { demo: false });
+  useEvents(slug, (e) => ACCESS_EVENTS.includes(e.type) && abilities.reload(), { demo: false });
   const measured = (abilities.data?.abilities ?? []).filter((a) => a.installed && !a.paused && Object.keys(a.settings ?? {}).length > 0);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string }[] | null>(null);
@@ -128,7 +128,7 @@ export function PerformancePage() {
             <b>Connect your analytics</b>
             <p className="muted">Connect the account where your numbers live, and Seemo reads them once a day. Until then only what KIQR publishes is counted.</p>
           </div>
-          <Link className="btn p" to={connectPath(slug, { group: "numbers" })}>
+          <Link className="btn p" to={abilityHref(slug)}>
             <Plug size={14} /> Connect your analytics
           </Link>
         </div>
@@ -186,9 +186,9 @@ export function PerformancePage() {
                     {s.taken_at ? ` · ${ago(s.taken_at)}` : " · not read yet"}
                   </span>
                 ) : s.candidates.length ? (
-                  <Link to={connectPath(slug, { service: s.candidates[0].id })}>Connect {s.candidates[0].name}</Link>
+                  <Link to={abilityHref(slug, s.candidates[0].id)}>Connect {s.candidates[0].name}</Link>
                 ) : (
-                  <Link to={connectPath(slug, { group: "numbers" })}>Connect a source</Link>
+                  <Link to={abilityHref(slug)}>Connect a source</Link>
                 )}
               </li>
             ))}
@@ -322,7 +322,7 @@ function KpiTile({ k, slug }: { k: PerfKpi; slug: string }) {
         <>
           <div className="plan-bar" />
           <span className="sub">
-            <Link to={connectPath(slug, { group: "numbers" })}>{k.source ? `Connect a ${k.source} source` : "Connect a source"}</Link>
+            <Link to={abilityHref(slug)}>{k.source ? `Connect a ${k.source} source` : "Connect a source"}</Link>
           </span>
         </>
       )}

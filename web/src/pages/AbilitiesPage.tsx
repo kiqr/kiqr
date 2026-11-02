@@ -1,22 +1,24 @@
 // Setup → Abilities: the one page for everything Seemo can do in this
 // project. Core abilities (code, switch off but never leave), what is
 // installed from the marketplace, what you taught it; each opens in its own
-// modal. "Teach Seemo something" adds one in plain words. Abilities of a
-// service (WordPress, Google, email: anything that needs an account) are not
-// here at all, installed or in the marketplace: they come with the account,
-// under Setup → Accounts. The marketplace of the rest sits below. Installing is for the machine; switches and copies
-// of the instructions are per project.
+// modal. "Teach Seemo something" adds one in plain words. An ability that
+// works with a credential says which it uses, or what it needs ("needs a
+// login for x.com"); its Access tab allows one from the Vault. Credentials
+// in the Vault recommend what could use them, at the top. The marketplace
+// sits below. Installing is for the machine; switches, access and copies of
+// the instructions are per project.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence } from "motion/react";
-import { AlertTriangle, BookOpen, KeyRound, Loader2, Plug, Plus, RefreshCw, Send, Sparkles } from "lucide-react";
+import { AlertTriangle, BookOpen, KeyRound, Loader2, Plus, RefreshCw, Send, Sparkles } from "lucide-react";
 import { api, useAsync, useEvents, type Ability } from "../api";
 import { Switch } from "./Switch";
 import { AbilityModal } from "./AbilityModal";
 import { Advanced, Marketplace } from "./Marketplace";
 import { TeachForm, type TeachDraft } from "./TeachForm";
-import { AbilityIcon, Author, accountTrouble, hasNewer, isOn, isService, OneClick, oneClick, RELOAD_ON, serviceName, stateOf, workingAccounts } from "./abilityBits";
-import { connectPath, serviceOf } from "./Accounts";
+import { AbilityIcon, Author, hasNewer, isOn, isService, OneClick, oneClick, RELOAD_ON, stateOf } from "./abilityBits";
+import { accessLine } from "./Access";
+import { Recommended } from "./Recommended";
 import "../profile.css";
 import "../settings.css";
 import "../chat.css";
@@ -84,7 +86,7 @@ export function AbilitiesPage() {
           <p className="cap">Setup</p>
           <h1 className="d2">Abilities</h1>
           <p className="muted">
-            Everything Seemo knows how to do here, switched on and taught here. Click one to see what it includes. What works through one of your accounts (your blog, your analytics, your mail) comes with the account under <Link to={`/p/${slug}/accounts`}>Accounts</Link>.
+            Everything Seemo knows how to do here, switched on and taught here. Click one to see what it includes. One that needs a login, a key or a sign-in says so; give it one from the <Link to={`/p/${slug}/vault`}>Vault</Link> on its Access tab.
           </p>
         </div>
         <div className="cm-acts">
@@ -142,6 +144,8 @@ export function AbilitiesPage() {
         {fromMarket.length > 0 && <Group label="Installed" items={fromMarket} slug={slug} onOpen={open} onChange={data.reload} />}
         {builtin.length > 0 && <Group label="Built in" items={builtin} slug={slug} cols={2} onOpen={open} onChange={data.reload} />}
       </section>
+
+      <Recommended slug={slug} installed={abilities} market={market} onOpen={(a) => open(a, a.installed ? "connect" : "overview")} />
 
       <Marketplace slug={slug} items={shelf} index={data.data?.index ?? ""} indexFetched={data.data?.index_fetched} loaded={!!data.data} onOpen={(a, tab) => open(a, tab)} onChange={data.reload} />
 
@@ -205,6 +209,8 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
   const needs = !a.ready && a.installed;
   const newer = a.installed && a.updatable && hasNewer(a);
   const service = isService(a);
+  // Its state chip already says what it uses or needs; the key part is for KIQR's own keys only.
+  const access = a.installed ? accessLine(a) : null;
   return (
     <li className={`mk-row ab-row ${isOn(a) ? "on" : "off"}`}>
       <div className="main" role="button" tabIndex={0} onClick={() => onOpen(a)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen(a))}>
@@ -228,15 +234,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
                   <BookOpen size={11} /> instructions
                 </button>
               )}
-              {service && a.core ? (
-                <button className="part" title="Part of KIQR; the accounts it works through (a site behind a login) are connected under Accounts" onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
-                  <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? (workingAccounts(a).length === a.accounts!.length ? `${a.accounts!.length} ${a.accounts!.length === 1 ? "account" : "accounts"}` : `${workingAccounts(a).length} of ${a.accounts!.length} accounts signed in`) : "no accounts yet"}
-                </button>
-              ) : service ? (
-                <button className={`part ${workingAccounts(a).length === 0 ? "warn" : ""}`} title={`Every ability of ${serviceName(a)} shares this project's ${serviceName(a)} account`} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
-                  <Plug size={11} /> {workingAccounts(a).length > 0 ? `via your ${serviceName(a)} account` : (a.accounts?.length ?? 0) > 0 ? accountTrouble(a) : "needs an account"}
-                </button>
-              ) : a.auth.length > 0 ? (
+              {a.auth.length > 0 && !access ? (
                 <button className={`part ${a.missing.length ? "warn" : ""}`} title="KIQR's own key" onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
                   <KeyRound size={11} /> key
                 </button>
@@ -261,11 +259,11 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
               {updating ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Update to {a.latest}
             </button>
           )}
-          {service && !a.ready ? (
-            // Not connected yet: the account is the missing step, and the wizard sets it up.
-            <Link className="btn g sm" to={connectPath(slug, { service: serviceOf(a).id })}>
-              <Plug size={13} /> Connect
-            </Link>
+          {service && !a.ready && a.missing.length > 0 ? (
+            // A credential is the missing step: its Access tab allows one, or adds one.
+            <button className="btn g sm" onClick={() => onOpen(a, "connect")}>
+              <KeyRound size={13} /> Give it access
+            </button>
           ) : (
             <span title={a.paused || a.machine_off ? "Off for this project" : needs ? "Not connected yet; opens it so you can" : "On for this project"}>
               {/* A switch that cannot flip yet still does something: it opens the ability where the missing step is. */}

@@ -1,7 +1,7 @@
 # A real browser KIQR hosts, for sites that have no API or sit behind a
 # login: invisible_playwright_mcp (MIT; a Firefox patched below page scripts,
-# the engine UnblockingAPI's browser pool runs on), one copy per account with
-# its own profile in the account's folder, so a login survives. Headless. Seemo
+# the engine UnblockingAPI's browser pool runs on), one copy per login with
+# its own profile in the login's session folder, so a sign-in survives. Headless. Seemo
 # gets the reading tools only: opening a page, reading it, a snapshot of what
 # is on it, a screenshot. Anything that clicks or types is a step in a site
 # ability's manifest, behind a card, or a person's hand in the live view.
@@ -9,12 +9,10 @@
 id: browser
 name: Browse with a real browser
 version: 0.1.0
-summary: "A real browser of Seemo's own, headless, one per account with its login kept. Reads pages behind a login or paywall; site abilities (X, Reddit) post and reply through it, each asking first."
+summary: "A real browser of Seemo's own, headless, one per login with its sign-in kept. Reads pages behind a login or paywall; site abilities (X, Reddit) post and reply through it, each asking first."
 categories: [browser, tools]
 icon: globe
 transport: mcp
-service: { id: browser, name: A site behind a login, icon: globe, group: sites }
-allow: { read: "on" }
 exclusive: true
 # uv runs the Python program; both are pinned and checked before anything is unpacked.
 requires:
@@ -40,22 +38,24 @@ requires:
     system: { apt: xvfb, dnf: xorg-x11-server-Xvfb, pacman: xorg-server-xvfb, zypper: xorg-x11-server-Xvfb, apk: xvfb }
 command: invisible-playwright-mcp
 args: []
-# The browser is opened once the program is up; the profile makes it the account's own.
+# The browser is opened once the program is up; the profile makes it the login's own.
 warmup:
   - { name: open, call: browser_open }
-# The profile (its logins) and everything the program keeps live in the account's own folder.
+# The profile (its sign-ins) and everything the program keeps live in the login's session folder.
 env_set:
   STEALTHFOX_PROFILE_DIR: "${KIQR_ACCOUNT_DIR}/profile"
   INVISIBLE_MCP_HOME: "${KIQR_ACCOUNT_DIR}/program"
   INVISIBLE_MCP_UPLOAD_DIRS: "${KIQR_PROJECT_DIR}/assets"
   STEALTHFOX_HEADLESS: "1"
-# Reading only, for Seemo; the URL it opens stays on the account's site.
+# Reading only, for Seemo; the URL it opens stays on the site.
 expose: [browser_navigate, browser_read_text, browser_snapshot, browser_take_screenshot]
 url_args: [url]
-# An account here is one site: where it lives, and its login. Signing in is a
-# person's job once (the live view); the profile keeps it.
-auth:
-  - { env: SITE_URL, label: The site, placeholder: "https://www.example.com", help: "The page Seemo starts from; it stays on this site" }
+# One site per project: where it lives (a setting), and a login for it from the
+# Vault. Signing in is a person's job once (the live view); the profile keeps it.
+settings:
+  site_url: { label: The site, placeholder: "https://www.example.com", help: "The page Seemo starts from; it stays on this site" }
+credentials:
+  - { template: login, for: "Sign in to the site", optional: true }
 hosts: ["${SITE_URL}"]
 session:
   check:

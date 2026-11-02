@@ -24,7 +24,7 @@
 //! pure: building URLs, reading callbacks and token responses. The daemon
 //! keeps the pending flows, signs, and makes the requests.
 
-use crate::extensions::{fill, host_allowed, pointer, valid_env_name, Manifest};
+use crate::extensions::{fill, pointer};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,7 @@ pub enum Callback {
     Https,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Denied {
     /// The callback parameter that says the user said no.
@@ -62,7 +62,7 @@ pub struct Denied {
 }
 
 /// `grant: { label, url, help }`: where access to more of the service is granted, in the person's own browser.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Grant {
     /// The link: "Install KIQR on your repositories".
@@ -74,7 +74,7 @@ pub struct Grant {
     pub help: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Connect {
     /// The button: "Connect with WordPress".
@@ -216,89 +216,6 @@ pub fn written_tokens(all: &[Connect]) -> Vec<String> {
 }
 
 /// Checked with the rest of the manifest.
-pub fn validate(m: &Manifest, c: &Connect) -> Result<()> {
-    let declared = |n: &str| m.auth.iter().any(|a| a.env == n);
-    let per_project = m.hosts.iter().any(|h| h.starts_with("${"));
-    let check_host = |what: &str, u: &str| -> Result<()> {
-        let url = url::Url::parse(&fill(u, &json!({ "app_id": "x" }), |_| Some("https://placeholder.invalid".into()))).with_context(|| format!("connect: the {what} does not parse"))?;
-        if !per_project && !host_allowed(&url, &m.hosts) {
-            bail!("connect: the {what} is on {}, which is not in hosts", url.host_str().unwrap_or(""));
-        }
-        Ok(())
-    };
-    for n in &c.needs {
-        if !declared(n) {
-            bail!("connect needs {n}, which auth does not declare");
-        }
-    }
-    for n in c.returns.keys() {
-        if !declared(n) {
-            bail!("connect returns {n}, which auth does not declare");
-        }
-    }
-    if let Some(d) = &c.denied {
-        if d.param.trim().is_empty() {
-            bail!("connect: denied needs a param");
-        }
-    }
-    match c.flow {
-        Flow::Redirect => {
-            if c.url.trim().is_empty() {
-                bail!("a redirect connect needs a url");
-            }
-            if c.returns.is_empty() {
-                bail!("a redirect connect must say what it returns");
-            }
-            check_host("url", &c.url)?;
-        }
-        Flow::Oauth2 => {
-            if c.authorize_url.trim().is_empty() || c.token_url.trim().is_empty() || c.client_id.trim().is_empty() {
-                bail!("an oauth2 connect needs authorize_url, token_url and client_id");
-            }
-            if !declared(&c.token_env) {
-                bail!("an oauth2 connect keeps its token in token_env, which auth must declare");
-            }
-            if !c.refresh_env.is_empty() && !valid_env_name(&c.refresh_env) {
-                bail!("refresh_env '{}' is not a variable name", c.refresh_env);
-            }
-            check_host("authorize_url", &c.authorize_url)?;
-            check_host("token_url", &c.token_url)?;
-        }
-        Flow::ServiceAccount => {
-            if c.token_url.trim().is_empty() || c.scopes.is_empty() {
-                bail!("a service_account connect needs token_url and scopes");
-            }
-            if !declared(&c.key_file) {
-                bail!("a service_account connect reads its key file from key_file, which auth must declare");
-            }
-            // Minted, never stored: auth may name it only as optional (another way of signing in keeps it).
-            if !valid_env_name(&c.token_env) || m.auth.iter().any(|a| a.env == c.token_env && !a.optional) {
-                bail!("a service_account connect needs a token_env that auth does not require (the token is minted, not stored)");
-            }
-            check_host("token_url", &c.token_url)?;
-        }
-        Flow::Cloud => {
-            if !crate::tools::valid_ext_id(&c.provider) {
-                bail!("a cloud connect names its provider (`google`): lowercase letters, digits and dashes");
-            }
-            if c.scopes.is_empty() {
-                bail!("a cloud connect needs the scopes it asks for");
-            }
-            if !declared(&c.token_env) {
-                bail!("a cloud connect keeps its token in token_env, which auth must declare");
-            }
-            if !c.refresh_env.is_empty() && !valid_env_name(&c.refresh_env) {
-                bail!("refresh_env '{}' is not a variable name", c.refresh_env);
-            }
-            if !c.authorize_url.is_empty() || !c.token_url.is_empty() || !c.client_id.is_empty() || !c.client_secret.is_empty() {
-                bail!("a cloud connect leaves the URLs and the client to kiqr.cloud");
-            }
-        }
-    }
-    Ok(())
-}
-
-/// A random string for `state` and the PKCE verifier (64 characters, unreserved).
 pub fn random_token() -> String {
     format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
 }
@@ -487,187 +404,4 @@ pub fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
 
 pub fn jwt_form(signed: &str) -> Vec<(String, String)> {
     vec![("grant_type".into(), "urn:ietf:params:oauth:grant-type:jwt-bearer".into()), ("assertion".into(), signed.into())]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::extensions::parse_manifest;
-
-    const WP: &str = r#"
-id: blog
-name: Publish to a blog
-transport: http
-auth:
-  - { env: SITE, label: Site }
-  - { env: USER, label: User }
-  - { env: PASS, label: Password }
-hosts: ["${SITE}"]
-connect:
-  label: Connect with the blog
-  flow: redirect
-  needs: [SITE]
-  url: "${SITE}/authorize?app_name=KIQR&app_id={{app_id}}"
-  callback_params: [success_url, reject_url]
-  callback: https
-  returns: { SITE: site_url, USER: user_login, PASS: password }
-  denied: { param: success, equals: "false" }
-"#;
-
-    fn q(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    }
-
-    #[test]
-    fn redirect_round_trip() {
-        let m = parse_manifest(WP).unwrap();
-        let c = m.connect[0].clone();
-        let env = |k: &str| (k == "SITE").then(|| "https://blog.test".to_string());
-        let u = start_url(&c, &env, "abc", "st", Some("https://kiqr.local/api/connect/callback"), "v").unwrap();
-        assert!(u.starts_with("https://blog.test/authorize?app_name=KIQR&app_id=abc&success_url="));
-        assert!(u.contains("reject_url=") && u.contains("state%3Dst"));
-        // On plain http the page opens without a callback.
-        let bare = start_url(&c, &env, "abc", "st", None, "v").unwrap();
-        assert!(!bare.contains("success_url"));
-        let got = read_redirect(&c, &q(&[("site_url", "https://blog.test"), ("user_login", "jane"), ("password", "abcd efgh")])).unwrap();
-        assert_eq!(got.len(), 3);
-        assert!(got.contains(&("PASS".into(), "abcd efgh".into())));
-        assert!(read_redirect(&c, &q(&[("success", "false")])).unwrap_err().to_string().contains("declined"));
-        assert!(read_redirect(&c, &q(&[("site_url", "x")])).unwrap_err().to_string().contains("did not send"));
-    }
-
-    #[test]
-    fn site_must_be_set_first() {
-        let c = parse_manifest(WP).unwrap().connect[0].clone();
-        assert!(start_url(&c, &|_| None, "a", "s", None, "v").unwrap_err().to_string().contains("${SITE}"));
-    }
-
-    #[test]
-    fn validation() {
-        assert!(parse_manifest(&WP.replace("returns: { SITE: site_url, USER: user_login, PASS: password }", "returns: { OTHER: x }")).unwrap_err().to_string().contains("OTHER"));
-        assert!(parse_manifest(&WP.replace("needs: [SITE]", "needs: [NOPE]")).unwrap_err().to_string().contains("NOPE"));
-        let fixed = WP.replace("hosts: [\"${SITE}\"]", "hosts: [blog.test]").replace("${SITE}/authorize", "https://elsewhere.test/authorize");
-        assert!(parse_manifest(&fixed).unwrap_err().to_string().contains("elsewhere.test"));
-    }
-
-    const OAUTH: &str = r#"
-id: svc
-name: A service
-transport: http
-auth:
-  - { env: SVC_CLIENT_ID, label: Client id }
-  - { env: SVC_TOKEN, label: Token }
-hosts: [svc.test]
-connect:
-  label: Connect
-  flow: oauth2
-  authorize_url: https://svc.test/oauth/authorize
-  token_url: https://svc.test/oauth/token
-  client_id: "${SVC_CLIENT_ID}"
-  scopes: [read, write]
-  params: { access_type: offline }
-  token_env: SVC_TOKEN
-  refresh_env: SVC_REFRESH
-"#;
-
-    #[test]
-    fn oauth2() {
-        let c = parse_manifest(OAUTH).unwrap().connect[0].clone();
-        let env = |k: &str| (k == "SVC_CLIENT_ID").then(|| "cid".to_string());
-        let u = start_url(&c, &env, "", "st", Some("http://127.0.0.1:7878/api/connect/callback"), "verifier").unwrap();
-        assert!(u.contains("client_id=cid") && u.contains("state=st") && u.contains("scope=read+write") && u.contains("code_challenge_method=S256") && u.contains("access_type=offline"));
-        assert!(u.contains(&pkce_challenge("verifier")));
-        assert_eq!(read_code(&c, &q(&[("code", "C")])).unwrap(), "C");
-        assert!(read_code(&c, &q(&[("error", "access_denied")])).is_err());
-        let t = read_token(&c, &json!({ "access_token": "AT", "refresh_token": "RT", "expires_in": 100 }), 1000).unwrap();
-        assert!(t.contains(&("SVC_TOKEN".into(), "AT".into())) && t.contains(&("SVC_REFRESH".into(), "RT".into())) && t.contains(&("SVC_TOKEN_EXPIRES_AT".into(), "1100".into())));
-        assert_eq!(c.writes(), vec!["SVC_REFRESH", "SVC_TOKEN", "SVC_TOKEN_EXPIRES_AT"]);
-        let stored = |k: &str| match k {
-            "SVC_TOKEN" => Some("AT".to_string()),
-            "SVC_TOKEN_EXPIRES_AT" => Some("1100".to_string()),
-            _ => None,
-        };
-        assert!(!needs_refresh(&c, &stored, 1000));
-        assert!(needs_refresh(&c, &stored, 1050));
-        // RFC 7636 appendix B.
-        assert_eq!(pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
-    }
-
-    #[test]
-    fn service_account() {
-        let sa = r#"
-id: reader
-name: Read numbers
-transport: http
-auth:
-  - { env: KEY_FILE, label: Key file }
-hosts: [api.test, auth.test]
-connect:
-  flow: service_account
-  token_url: https://auth.test/token
-  scopes: [https://api.test/read]
-  key_file: KEY_FILE
-  token_env: READER_TOKEN
-"#;
-        let c = parse_manifest(sa).unwrap().connect[0].clone();
-        let key = ServiceKey { client_email: "bot@x.test".into(), private_key_pem: String::new() };
-        let unsigned = jwt_unsigned(&c, &key, 10);
-        let claims: Value = serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(unsigned.split('.').nth(1).unwrap()).unwrap()).unwrap();
-        assert_eq!(claims["aud"], "https://auth.test/token");
-        assert_eq!(claims["exp"], 3610);
-        assert!(parse_manifest(&sa.replace("token_env: READER_TOKEN", "token_env: KEY_FILE")).is_err());
-    }
-
-    /// Sign in through kiqr.cloud, or use a key file: two ways, one account.
-    const BOTH: &str = r#"
-id: numbers
-name: Read numbers
-transport: http
-auth:
-  - { env: PROP, label: Property }
-  - { env: NUM_TOKEN, label: Token, optional: true }
-  - { env: KEY_FILE, label: Key file, optional: true }
-hosts: [api.test, auth.test]
-connect:
-  - { label: Connect with the service, flow: cloud, provider: svc, scopes: [read], token_env: NUM_TOKEN, refresh_env: NUM_REFRESH }
-  - { flow: service_account, token_url: https://auth.test/token, scopes: [read], key_file: KEY_FILE, token_env: NUM_TOKEN }
-"#;
-
-    #[test]
-    fn cloud_or_a_key_file() {
-        let m = parse_manifest(BOTH).unwrap();
-        assert_eq!(m.connect.len(), 2);
-        let v = view(&m.connect);
-        assert_eq!((v["label"].as_str(), v["via_cloud"].as_bool(), v["provider"].as_str()), (Some("Connect with the service"), Some(true), Some("svc")));
-        assert_eq!(written_tokens(&m.connect), vec!["NUM_REFRESH", "NUM_TOKEN", "NUM_TOKEN_EXPIRES_AT"]);
-        let has = |set: &'static [&'static str]| move |k: &str| set.contains(&k);
-        // Nothing yet: the property and the first way's token are missing.
-        assert_eq!(crate::extensions::missing_keys(&m, has(&[])), vec!["PROP", "NUM_TOKEN"]);
-        // Either way is enough.
-        assert!(crate::extensions::missing_keys(&m, has(&["PROP", "NUM_REFRESH"])).is_empty());
-        assert!(crate::extensions::missing_keys(&m, has(&["PROP", "KEY_FILE"])).is_empty());
-        assert_eq!(pick(&m.connect, &has(&["KEY_FILE"])).unwrap().flow, Flow::ServiceAccount);
-        assert_eq!(pick(&m.connect, &has(&["NUM_TOKEN", "KEY_FILE"])).unwrap().flow, Flow::Cloud);
-        assert_eq!(pick(&m.connect, &has(&[])).unwrap().flow, Flow::Cloud);
-        // The cloud keeps the URLs and the client.
-        assert!(parse_manifest(&BOTH.replace("provider: svc,", "provider: svc, token_url: https://auth.test/token,")).is_err());
-        assert!(parse_manifest(&BOTH.replace("provider: svc, scopes: [read],", "provider: svc, scopes: [],")).is_err());
-        // A key file's minted token may not be a required key.
-        assert!(parse_manifest(&BOTH.replace("{ env: NUM_TOKEN, label: Token, optional: true }", "{ env: NUM_TOKEN, label: Token }")).is_err());
-        // One block still reads as one way.
-        assert_eq!(parse_manifest(WP).unwrap().connect.len(), 1);
-    }
-
-    #[test]
-    fn choices_from_an_answer() {
-        let answer = json!({ "accountSummaries": [
-            { "displayName": "Acme", "propertySummaries": [{ "property": "properties/1", "displayName": "acme.com" }, { "property": "properties/2", "displayName": "shop" }] },
-            { "displayName": "Other", "propertySummaries": [{ "property": "properties/9", "displayName": "other.org" }] },
-            { "displayName": "Empty" }
-        ] });
-        let items = crate::extensions::pointer_all(&answer, "/accountSummaries/*/propertySummaries/*");
-        assert_eq!(items.iter().filter_map(|i| i["property"].as_str()).collect::<Vec<_>>(), vec!["properties/1", "properties/2", "properties/9"]);
-        assert_eq!(crate::extensions::pointer_all(&answer, "/accountSummaries/0/displayName")[0], "Acme");
-        assert!(crate::extensions::pointer_all(&answer, "/nothing/*").is_empty());
-    }
 }

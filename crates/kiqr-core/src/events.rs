@@ -114,7 +114,6 @@ pub enum EventKind {
     SuggestionsChanged {},
     /// One of KIQR's own sign-ins (kiqr.cloud, UnblockingAPI) changed: signed in, out, or it failed.
     SignInChanged { id: String, signed_in: bool, #[serde(default)] error: Option<String> },
-    ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] account: Option<String> },
 
     // The Vault and who may use what in it.
     /// A credential was added or changed. Field names only, never values.
@@ -125,39 +124,36 @@ pub enum EventKind {
     /// An ability of a project was allowed to use a credential, or no longer. `by` is `user`, `publisher` or `connect`.
     GrantChanged { ability: String, credential: String, granted: bool, by: String },
 
-    // Abilities, accounts and channels.
+    // Abilities, credentials at work, and channels.
     /// An ability made a file into an asset: `ability` is image, video or music.
     MediaCreated { ability: String, asset_type: String, id: String, file: String, provider: String },
-    /// An account (who Seemo signs in as, on a service) was added or changed.
-    AccountSaved { account: String, label: String, service: String },
     /// A program an ability needs is being installed into `~/.kiqr/bin`, is there, or could not be.
     ProgramInstalling { program: String, version: String, #[serde(default)] note: String },
     ProgramInstalled { program: String, version: String },
     ProgramFailed { program: String, version: String, message: String },
     /// One line of an install's output (what the installer did, what the program it runs printed), for the install log.
     ProgramLog { program: String, version: String, line: String },
-    /// Whether an account works changed (`accounts::State`: `ready`, `signed_out`, `needs_hand`, `checking`, …).
-    AccountStateChanged { account: String, state: String, #[serde(default)] message: String },
-    /// A live view of an account's program: one frame (a JPEG or PNG, base64) for whoever watches, never kept.
-    HandsFrame { account: String, hands: String, mime: String, data: String, #[serde(default)] url: String },
-    HandsStarted { account: String, hands: String },
-    HandsEnded { account: String, hands: String, #[serde(default)] message: String },
+    /// Whether a credential works changed (`conn::State`): its sign-in on a hosted program, a token run out.
+    CredentialStateChanged { credential: String, state: String, #[serde(default)] message: String },
+    /// A live view of a credential's program: one frame (a JPEG or PNG, base64) for whoever watches, never kept.
+    HandsFrame { credential: String, hands: String, mime: String, data: String, #[serde(default)] url: String },
+    HandsStarted { credential: String, hands: String },
+    HandsEnded { credential: String, hands: String, #[serde(default)] message: String },
     /// A channel (a profile, a page, a community, a list) was added, changed, suggested or had people added or removed (`contacts`, a list's).
     ChannelSaved { channel: String, label: String, ownership: String, #[serde(default)] suggested: bool, #[serde(default)] contacts: Option<usize> },
     ChannelDeleted { channel: String },
     /// A send to a list is under way: so many of the people done, so many failed.
     ListSending { list: String, subject: String, sent: usize, failed: usize, total: usize, #[serde(default)] done: bool },
-    AccountDeleted { account: String, service: String },
     /// What the project picked for an ability (a property, a site) changed.
-    AbilitySettingsSaved { ability: String, account: String },
-    /// An ability acted through an account (anything but reading), logged on it; `channel` when it was in one.
-    AccountActed { account: String, ability: String, role: String, #[serde(default)] target: String, #[serde(default)] channel: String, #[serde(default)] url: Option<String> },
-    /// An action through an account was refused: `why` is `duplicate` (the
+    AbilitySettingsSaved { ability: String, #[serde(default)] credential: String },
+    /// An ability acted as a credential (anything but reading), logged on it; `channel` when it was in one.
+    CredentialActed { credential: String, ability: String, role: String, #[serde(default)] target: String, #[serde(default)] channel: String, #[serde(default)] url: Option<String> },
+    /// An action as a credential was refused: `why` is `duplicate` (the
     /// same role on the same target was done already) or `cap` (the service's
     /// daily cap is reached).
-    ActionRefused { account: String, ability: String, why: String, message: String },
+    ActionRefused { credential: String, ability: String, why: String, message: String },
     /// An asset went out to a channel (empty for an email to one address) through its publisher.
-    AssetPublished { asset_type: String, id: String, #[serde(default)] channel: String, account: String, #[serde(default)] url: Option<String> },
+    AssetPublished { asset_type: String, id: String, #[serde(default)] channel: String, #[serde(default)] credential: String, #[serde(default)] url: Option<String> },
     /// The user approved an asset for a channel (it is Ready), or set when the
     /// daemon publishes it (`at` set: Scheduled).
     AssetApproved { asset_type: String, id: String, title: String, target: String, #[serde(default)] at: Option<chrono::DateTime<chrono::Utc>> },
@@ -217,25 +213,22 @@ impl EventKind {
                 | EventKind::ExtensionRemoved { .. }
                 | EventKind::ExtensionPaused { .. }
                 | EventKind::SecretSet { .. }
-                | EventKind::ConnectFinished { .. }
                 | EventKind::SignInChanged { .. }
                 | EventKind::SuggestionsChanged { .. }
                 | EventKind::MediaCreated { .. }
-                | EventKind::AccountSaved { .. }
-                | EventKind::AccountDeleted { .. }
                 | EventKind::AbilitySettingsSaved { .. }
                 | EventKind::ProgramInstalling { .. }
                 | EventKind::ProgramInstalled { .. }
                 | EventKind::ProgramFailed { .. }
                 | EventKind::ProgramLog { .. }
-                | EventKind::AccountStateChanged { .. }
+                | EventKind::CredentialStateChanged { .. }
                 | EventKind::HandsFrame { .. }
                 | EventKind::HandsStarted { .. }
                 | EventKind::HandsEnded { .. }
                 | EventKind::ChannelSaved { .. }
                 | EventKind::ChannelDeleted { .. }
                 | EventKind::ListSending { .. }
-                | EventKind::AccountActed { .. }
+                | EventKind::CredentialActed { .. }
                 | EventKind::ActionRefused { .. }
                 | EventKind::AssetPublished { .. }
                 | EventKind::AssetApproved { .. }

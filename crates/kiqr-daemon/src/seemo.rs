@@ -483,6 +483,20 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
         "plan" => crate::marketing::plan_preview(&app, &slug, &b.payload)?,
         "campaign" => crate::marketing::campaign_preview(&app, &slug, &b.payload)?,
         "action" => crate::ext::action_preview(&app, &slug, &b.payload).await?,
+        "channel" => {
+            let p = &b.payload;
+            let (url, kind, label) = (p["url"].as_str().unwrap_or("").trim(), p["kind"].as_str().unwrap_or("").trim(), p["label"].as_str().unwrap_or("").trim());
+            if url.is_empty() && kind.is_empty() {
+                return Err(bad("name the channel by its link (`url`), or give a `kind` (`list` for a mailing list)"));
+            }
+            if kind == "list" && label.is_empty() {
+                return Err(bad("a list needs a name"));
+            }
+            if kind == "list" && kiqr_core::lists::find(&app.store, &slug, label).is_some() {
+                return Err(bad(format!("there is a list called '{label}' already")));
+            }
+            json!({ "url": url, "kind": kind, "fields": p["fields"], "label": label, "description": p["description"].as_str().unwrap_or("").trim(), "ownership": p["ownership"].as_str().unwrap_or(""), "domain": kiqr_core::channels::host_of(url) })
+        }
         "list" => {
             let label = b.payload["label"].as_str().unwrap_or("").trim().to_string();
             if label.is_empty() {
@@ -646,6 +660,22 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },
+            "channel" => {
+                let p = &approval.payload;
+                let b = crate::channels::NewChannel {
+                    url: p["url"].as_str().unwrap_or("").to_string(),
+                    kind: p["kind"].as_str().unwrap_or("").to_string(),
+                    fields: p["fields"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default(),
+                    label: p["label"].as_str().unwrap_or("").to_string(),
+                    description: p["description"].as_str().unwrap_or("").to_string(),
+                    ownership: p["ownership"].as_str().unwrap_or("").to_string(),
+                    ..Default::default()
+                };
+                match crate::channels::create(&app, &slug, b, "seemo").await {
+                    Ok(c) => Decision { status: "approved".into(), result: json!({ "created": true, "channel": c.id, "label": c.label, "note": if c.is_list() { "The list is a channel now, and empty. The user adds people there; you never handle addresses." } else { "The channel is added. It publishes once an ability there has a publisher; list_channels says what is missing." } }) },
+                    Err(e) => return Err(e),
+                }
+            }
             "list" => match crate::lists::create_list(&app, &slug, crate::lists::NewList { label: approval.payload["label"].as_str().unwrap_or("").to_string(), description: approval.payload["description"].as_str().unwrap_or("").to_string(), account: approval.payload["account"].as_str().unwrap_or("").to_string() }, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
                 Ok(l) => Decision { status: "approved".into(), result: json!({ "created": true, "list": l.id, "label": l.label, "note": "The list is a channel now, and empty. The user adds people there; you never handle addresses." }) },
                 Err(e) => return Err(e),
@@ -969,9 +999,9 @@ async fn calendar(State(app): State<App>, Path(slug): Path<String>, Query(r): Qu
         let Some(at) = a.publish_at.filter(|t| *t >= from - chrono::Duration::seconds(1) && *t <= to) else { continue };
         let entry = a.target.as_deref().and_then(|t| kiqr_core::channels::Channel::load(&app.store, &slug, t).ok());
         let label = entry.as_ref().map(|e| e.label.clone()).unwrap_or_else(|| a.target.clone().unwrap_or_default());
-        let via = entry.as_ref().and_then(|e| kiqr_core::accounts::Account::load(&app.store, &slug, &e.publisher).ok()).map(|c| c.label);
-        // The account is the spot (an X profile, a blog): its name once.
-        let where_ = match &via { Some(v) if *v != label => format!("to {label} via {v}"), _ => format!("to {label}") };
+        let via = entry.as_ref().and_then(|e| app.vault.get(&e.publisher).ok().flatten()).map(|c| crate::creds::name_of(&c));
+        // The publisher is the spot (an X profile, a blog): its name once.
+        let where_ = match &via { Some(v) if *v != label => format!("to {label} as {v}"), _ => format!("to {label}") };
         items.push(json!({ "kind": "publish", "asset": { "type": a.kind, "id": a.id, "title": a.title }, "title": a.title, "at": at, "target": a.target, "target_label": label, "via": via, "schedule_text": where_ }));
     }
     items.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
@@ -1005,18 +1035,27 @@ async fn todo(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Val
     let mut scheduled: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Scheduled).collect();
     scheduled.sort_by_key(|a| a.publish_at);
     let attention: Vec<&assets::Asset> = all.iter().filter(|a| a.publish_error.is_some() && !a.archived && a.publications.is_empty()).collect();
-    // Accounts whose sign-in needs a person: a captcha, a device check, or a first sign-in by hand.
+    // Credentials used here whose sign-in needs a person: a captcha, a device check, or a first sign-in by hand.
     let home = app.store.home();
-    let needing_hand: Vec<Value> = kiqr_core::accounts::Account::list(&app.store, &slug)
+    let needing_hand: Vec<Value> = kiqr_core::access::Access::load(&app.store, &slug)
         .unwrap_or_default()
+        .credentials()
         .into_iter()
-        .filter_map(|c| {
-            let st = c.session(home, &slug);
-            st.needs_hand().then(|| json!({ "account": c.id, "label": c.label, "service": c.service, "message": st.message, "since": st.checked_at }))
+        .filter_map(|id| {
+            let c = app.vault.view(&id).ok().flatten()?;
+            let st = kiqr_core::conn::session_of(home, &id);
+            st.needs_hand().then(|| json!({ "credential": c.id, "label": c.label, "domain": c.domains.first(), "message": st.message, "since": st.checked_at }))
         })
         .collect();
     let count = approvals.len() + drafts.len() + attention.len() + needing_hand.len();
-    // Not counted: a suggestion is an offer, not something waiting on the user.
-    let suggestions = crate::networks::suggestions(&app, &slug).await;
-    Ok(Json(json!({ "approvals": approvals, "drafts": drafts, "ready": ready, "scheduled": scheduled, "attention": attention, "accounts_needing_hand": needing_hand, "suggestions": suggestions, "count": count })))
+    // Channels that cannot be published to yet, with the one fix each. Not counted: a channel can wait.
+    let mut channels_waiting = Vec::new();
+    for ch in kiqr_core::channels::Channel::all(&app.store, &slug).unwrap_or_default().into_iter().filter(|c| !c.suggested) {
+        let v = crate::channels::view(&app, &slug, &ch).await;
+        let st = v["readiness"]["state"].as_str().unwrap_or("");
+        if !matches!(st, "ready" | "publish_off" | "suggested") {
+            channels_waiting.push(json!({ "id": ch.id, "label": v["label"], "domain": ch.domain, "kind": ch.kind, "readiness": v["readiness"] }));
+        }
+    }
+    Ok(Json(json!({ "approvals": approvals, "drafts": drafts, "ready": ready, "scheduled": scheduled, "attention": attention, "credentials_needing_hand": needing_hand, "channels_waiting": channels_waiting, "count": count })))
 }

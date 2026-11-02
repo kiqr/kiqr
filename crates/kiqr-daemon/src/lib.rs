@@ -3,7 +3,7 @@
 //! synthesis, serves the HTTP API and SSE events, and serves the web UI.
 
 mod access;
-mod accounts;
+mod creds;
 mod agent;
 mod channels;
 mod api;
@@ -16,6 +16,7 @@ mod images;
 mod learn;
 mod lists;
 mod market;
+mod media;
 mod marketing;
 mod mcp_host;
 mod metrics_src;

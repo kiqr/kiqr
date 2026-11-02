@@ -59,13 +59,9 @@ async fn read_source(app: &App, slug: &str, m: &Manifest, source: &str, from: Na
     let spec = m.sources.get(source).filter(|s| !s.requests.is_empty()).ok_or_else(|| anyhow!("{} does not say how to read {source}; update it under Setup → Abilities", m.name))?;
     let args = kiqr_core::sources::args(from, to);
     let mut answers = Vec::with_capacity(spec.requests.len());
-    // Through the account the project's settings for it name (the property was picked through it),
-    // else the default account of the service. Measuring needs no channel. The settings
-    // fill the calls (`ext::execute`).
-    let picked = kiqr_core::project::Project::load(&app.store, slug).ok().and_then(|p| p.ability_settings.get(&m.id).map(|s| s.account.clone())).filter(|a| !a.is_empty());
-    let all = kiqr_core::accounts::Account::of(&app.store, slug, m.service());
-    let account = picked.and_then(|id| all.iter().find(|c| c.id == id).cloned()).or_else(|| all.iter().find(|c| c.default).cloned()).or_else(|| all.first().cloned());
-    let account = account.map(|c| c.id);
+    // As the credential the project granted it (the one its settings name first).
+    // Measuring needs no channel. The settings fill the calls (`ext::execute`).
+    let account: Option<String> = None;
     for r in &spec.requests {
         let provide = Provide { request: Some(r.request.clone()), ..Default::default() };
         let out = crate::ext::execute(app, slug, m, &provide, None, None, &args, account.as_deref()).await.with_context(|| format!("{} could not read {source}", m.name))?;
@@ -88,7 +84,7 @@ fn kiqr_rows(app: &App, slug: &str, from: NaiveDate, to: NaiveDate) -> Result<Sn
             let day = p.at.date_naive();
             if day >= from && day <= to {
                 *by_day.entry(day).or_default() += 1.0;
-                *by_channel.entry((day, if p.channel.is_empty() { p.account.clone() } else { p.channel.clone() })).or_default() += 1.0;
+                *by_channel.entry((day, if p.channel.is_empty() { p.credential.clone() } else { p.channel.clone() })).or_default() += 1.0;
             }
         }
     }

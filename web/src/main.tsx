@@ -17,9 +17,7 @@ import { AssetPage, LibraryPage } from "./pages/Library";
 import { ChatsPage } from "./pages/Chats";
 import { CalendarPage, TasksPage } from "./pages/Tasks";
 import { TodoPage } from "./pages/Todo";
-import { AccountsPage } from "./pages/AccountsPage";
 import { VaultPage } from "./pages/Vault";
-import { ConnectPage } from "./pages/Connect";
 import { ChannelsPage } from "./pages/Channels";
 import { PlanPage } from "./pages/Plan";
 import { PerformancePage } from "./pages/Performance";
@@ -62,13 +60,14 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/p/:slug/skills" element={<Redirect to="abilities" />} />
           <Route path="/p/:slug/abilities" element={<AbilitiesPage />} />
           <Route path="/p/:slug/vault" element={<VaultPage />} />
-          <Route path="/p/:slug/accounts" element={<AccountsPage />} />
-          <Route path="/p/:slug/accounts/connect" element={<ConnectPage />} />
+          {/* Accounts became the Vault (credentials) and each ability's Access. */}
+          <Route path="/p/:slug/accounts" element={<Redirect to="vault" />} />
+          <Route path="/p/:slug/accounts/connect" element={<Redirect to="vault#add" />} />
           <Route path="/p/:slug/channels" element={<ChannelsPage />} />
           <Route path="/p/:slug/channels/:id" element={<ChannelsPage />} />
           {/* The Audience became Channels. */}
           <Route path="/p/:slug/audience" element={<Redirect to="channels" />} />
-          <Route path="/p/:slug/connectors" element={<Redirect to="accounts" />} />
+          <Route path="/p/:slug/connectors" element={<Redirect to="vault" />} />
           <Route path="/p/:slug/settings" element={<ProjectSettings />} />
           {/* Abilities moved under each project; these older links follow. */}
           <Route path="/connections" element={<FirstProjectAbilities />} />

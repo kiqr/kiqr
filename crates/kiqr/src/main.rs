@@ -112,10 +112,10 @@ enum Command {
     Signin { id: Option<String> },
     /// Sign out of one of KIQR's own sign-ins
     Signout { id: String },
-    /// A project's accounts of its abilities, each with its own keys (typed, never shown)
-    Accounts {
+    /// Which credentials of the Vault a project's abilities may use
+    Access {
         #[command(subcommand)]
-        cmd: AccountsCmd,
+        cmd: AccessCmd,
     },
     /// The Vault: credentials for the whole machine (logins, API keys, mail servers), values typed, never shown
     Vault {
@@ -205,6 +205,11 @@ enum Command {
         #[command(subcommand)]
         cmd: AssetsCmd,
     },
+    /// Library → Media: the business's own pictures, and the sources they come from
+    Media {
+        #[command(subcommand)]
+        cmd: MediaCmd,
+    },
     /// What waits for you in a project: approvals open in chats, drafts to approve, publishes coming up
     Todo { slug: String },
     /// The marketing plan Seemo owns: objectives, targets and the campaigns under them
@@ -224,6 +229,31 @@ enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum MediaCmd {
+    /// The sources that offer media: the website, and abilities that connect a folder or a drive
+    Sources { slug: String },
+    /// What a source offers, and what is in the Library already
+    Ls {
+        slug: String,
+        /// A source id (default: website)
+        #[arg(long, default_value = "website")]
+        source: String,
+    },
+    /// Bring one item into the Library: a picture's URL on the website, or an item id with --source
+    Import {
+        slug: String,
+        item: String,
+        #[arg(long, default_value = "website")]
+        source: String,
+        /// What the picture shows
+        #[arg(long)]
+        alt: Option<String>,
+    },
+    /// Bring the website's pictures in (the ones the crawl found that are not there yet)
+    Pull { slug: String },
 }
 
 #[derive(Subcommand)]
@@ -325,6 +355,28 @@ enum VaultCmd {
     Set { id: String, field: String },
     /// Delete a credential; abilities lose access to it everywhere
     Rm { id: String },
+    /// Sign a login in on its browser now (check first; type the saved login when signed out), for a project's abilities
+    Signin { slug: String, id: String },
+    /// Forget a login's browser sign-in: stop its program and wipe what it kept; the credential stays
+    Signout { slug: String, id: String },
+    /// What abilities did as a credential, in every project, newest first
+    Activity {
+        id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// The abilities that could use a credential (allowed, installed, or in the marketplace), by host
+    Recommend { slug: String, id: String },
+}
+
+#[derive(Subcommand)]
+enum AccessCmd {
+    /// What each ability may use in a project
+    Ls { slug: String },
+    /// Let an ability use a credential in a project: `kiqr access allow <slug> x-browser cred_…`
+    Allow { slug: String, ability: String, credential: String },
+    /// Take it back
+    Revoke { slug: String, ability: String, credential: String },
 }
 
 #[derive(Subcommand)]
@@ -843,73 +895,25 @@ impl Client {
                 self.delete(&format!("/api/signins/{id}")).await?;
                 println!("Signed out of {id}.");
             }
-            Command::Accounts { cmd } => match cmd {
-                AccountsCmd::Ls { slug } => self.accounts_ls(&slug).await?,
-                AccountsCmd::Signin { slug, account } => {
-                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/accounts/{account}/signin"), &serde_json::json!({})).await?;
-                    println!("{}", if v["started"].as_bool() == Some(true) { format!("Signing {account} in; `kiqr accounts ls {slug}` shows how it went.") } else { v["note"].as_str().unwrap_or("not started").to_string() });
-                }
-                AccountsCmd::Signout { slug, account } => {
-                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/accounts/{account}/signout"), &serde_json::json!({})).await?;
-                    println!("Signed {account} out; its program's profile is gone, the login stays.");
-                }
-                AccountsCmd::Login { slug, account } => {
-                    for (name, label) in [("LOGIN_USERNAME", "User name"), ("LOGIN_PASSWORD", "Password"), ("LOGIN_TOTP_SECRET", "One-time code secret (Enter to skip)")] {
-                        eprint!("{label}: ");
-                        let value = read_secret()?;
-                        if !value.trim().is_empty() || name != "LOGIN_TOTP_SECRET" {
-                            let _: serde_json::Value = self.put(&format!("/api/projects/{slug}/accounts/{account}/secrets/{name}"), &serde_json::json!({ "value": value })).await?;
-                        }
+            Command::Access { cmd } => match cmd {
+                AccessCmd::Ls { slug } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/access")).await?;
+                    let grants = v["grants"].as_object().cloned().unwrap_or_default();
+                    if grants.is_empty() {
+                        println!("No ability here may use a credential yet. Allow one: kiqr access allow {slug} <ability> <credential>");
                     }
-                    println!("Login saved in KIQR for {account}. Sign in: kiqr accounts signin {slug} {account}");
-                }
-                AccountsCmd::Activity { slug, account, limit } => {
-                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/accounts/{account}/activity?limit={limit}")).await?;
-                    let cap = v["daily_cap"].as_u64().map(|c| format!(" of {c}")).unwrap_or_default();
-                    println!("{} action(s) today{cap}", v["today"].as_u64().unwrap_or(0));
-                    for a in v["activity"].as_array().cloned().unwrap_or_default() {
-                        let s = |k: &str| a[k].as_str().unwrap_or("").to_string();
-                        println!("{:<22} {:<8} {:<20} {:<30} {}", s("at").get(..19).unwrap_or(""), s("role"), s("ability"), s("target"), s("url"));
+                    for (ability, creds) in grants {
+                        let names: Vec<String> = creds.as_array().cloned().unwrap_or_default().iter().filter_map(|c| c.as_str().map(str::to_string)).collect();
+                        println!("{ability:<24} {}", names.join(", "));
                     }
                 }
-                AccountsCmd::Add { slug, service, label } => {
-                    let list: serde_json::Value = self.get(&format!("/api/projects/{slug}/abilities")).await?;
-                    let all = list["abilities"].as_array().cloned().unwrap_or_default();
-                    let mine: Vec<serde_json::Value> = all.into_iter().filter(|i| i["installed"].as_bool() == Some(true) && (i["id"] == service.as_str() || i["service"] == service.as_str())).collect();
-                    if mine.is_empty() {
-                        anyhow::bail!("nothing installed signs in to '{service}'; kiqr abilities install <ability>");
-                    }
-                    let service = mine[0]["service"].as_str().unwrap_or(&service).to_string();
-                    let mut secrets = serde_json::Map::new();
-                    let mut asked: Vec<String> = Vec::new();
-                    for a in mine.iter().flat_map(|i| i["auth"].as_array().cloned().unwrap_or_default()) {
-                        if asked.iter().any(|x| a["env"] == x.as_str()) {
-                            continue;
-                        }
-                        asked.push(a["env"].as_str().unwrap_or("").to_string());
-                        let env = a["env"].as_str().unwrap_or("");
-                        eprint!("{} ({env}{}): ", a["label"].as_str().unwrap_or(env), if a["optional"].as_bool() == Some(true) { ", optional, Enter to skip" } else { "" });
-                        let value = read_secret()?;
-                        if !value.trim().is_empty() {
-                            secrets.insert(env.to_string(), serde_json::Value::String(value));
-                        }
-                    }
-                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/accounts"), &serde_json::json!({ "service": service, "label": label.unwrap_or_default(), "secrets": secrets })).await?;
-                    println!("added {} ({}): {}", v["label"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""), v["state"]["says"].as_str().unwrap_or(""));
+                AccessCmd::Allow { slug, ability, credential } => {
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/access/grant"), &serde_json::json!({ "ability": ability, "credential": credential })).await?;
+                    println!("{ability} may use {credential} in {slug}");
                 }
-                AccountsCmd::Set { slug, account, name } => {
-                    eprint!("{name}: ");
-                    let value = read_secret()?;
-                    let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/accounts/{account}/secrets/{name}"), &serde_json::json!({ "value": value })).await?;
-                    println!("{name} {} on {account}", if v["set"].as_bool() == Some(true) { "set" } else { "cleared" });
-                }
-                AccountsCmd::Default { slug, account } => {
-                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/accounts/{account}/default"), &serde_json::json!({})).await?;
-                    println!("{} is the default for {}", v["label"].as_str().unwrap_or(&account), v["service_card"]["name"].as_str().unwrap_or(""));
-                }
-                AccountsCmd::Rm { slug, account } => {
-                    self.delete(&format!("/api/projects/{slug}/accounts/{account}")).await?;
-                    println!("Removed {account}.");
+                AccessCmd::Revoke { slug, ability, credential } => {
+                    let _: serde_json::Value = self.delete_json(&format!("/api/projects/{slug}/access/grant"), &serde_json::json!({ "ability": ability, "credential": credential })).await?;
+                    println!("{ability} may no longer use {credential} in {slug}");
                 }
             },
             Command::Vault { cmd } => match cmd {
@@ -963,6 +967,33 @@ impl Client {
                 VaultCmd::Rm { id } => {
                     self.delete(&format!("/api/vault/{id}")).await?;
                     println!("Removed {id}");
+                }
+                VaultCmd::Signin { slug, id } => {
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/credentials/{id}/signin"), &serde_json::json!({})).await?;
+                    println!("{}", if v["started"].as_bool() == Some(true) { format!("Signing {id} in; `kiqr vault ls` shows how it went.") } else { v["note"].as_str().unwrap_or("not started").to_string() });
+                }
+                VaultCmd::Signout { slug, id } => {
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/credentials/{id}/signout"), &serde_json::json!({})).await?;
+                    println!("Signed {id} out; its browser profile is gone, the credential stays.");
+                }
+                VaultCmd::Activity { id, limit } => {
+                    let v: serde_json::Value = self.get(&format!("/api/vault/{id}/activity?limit={limit}")).await?;
+                    println!("{} today", v["today"]);
+                    for a in v["activity"].as_array().cloned().unwrap_or_default() {
+                        println!("{}  {:<8} {:<16} {}{}", a["at"].as_str().unwrap_or(""), a["role"].as_str().unwrap_or(""), a["ability"].as_str().unwrap_or(""), a["target"].as_str().unwrap_or(""), a["project"].as_str().map(|p| format!("  ({p})")).unwrap_or_default());
+                    }
+                }
+                VaultCmd::Recommend { slug, id } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/recommendations?credential={id}")).await?;
+                    for r in v["recommendations"].as_array().cloned().unwrap_or_default() {
+                        let list = r["abilities"].as_array().cloned().unwrap_or_default();
+                        if list.is_empty() {
+                            println!("Nothing here or in the marketplace works with {} yet.", r["label"].as_str().unwrap_or(&id));
+                        }
+                        for a in list {
+                            println!("{:<24} {:<10} {}{}", a["id"].as_str().unwrap_or(""), a["status"].as_str().unwrap_or(""), a["name"].as_str().unwrap_or(""), if a["more_access"].as_bool() == Some(true) { "  (sign in again to give it access)" } else { "" });
+                        }
+                    }
                 }
             },
             Command::Secrets { cmd } => match cmd {
@@ -1220,6 +1251,39 @@ impl Client {
                     print_brand(&v);
                 }
             }
+            Command::Media { cmd } => match cmd {
+                MediaCmd::Sources { slug } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/media/sources")).await?;
+                    for s in v["sources"].as_array().into_iter().flatten() {
+                        let found = s["found"].as_u64().map(|n| format!("{n} found, ")).unwrap_or_default();
+                        println!("{:<16} {:<24} {}{} imported{}", s["id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), found, s["imported"].as_u64().unwrap_or(0), s["note"].as_str().filter(|n| !n.is_empty()).map(|n| format!("  {n}")).unwrap_or_default());
+                    }
+                }
+                MediaCmd::Ls { slug, source } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/media/sources/{source}/items")).await?;
+                    let items = v["items"].as_array().cloned().unwrap_or_default();
+                    if items.is_empty() {
+                        println!("Nothing offered by {source}.");
+                    }
+                    for i in items {
+                        let s = |k: &str| i[k].as_str().unwrap_or("").to_string();
+                        println!("{:<14} {:<40} {:<10} {}", s("id"), s("name"), i["imported"].as_str().map(|_| "in library").unwrap_or(""), if s("alt").is_empty() { s("url") } else { s("alt") });
+                    }
+                }
+                MediaCmd::Import { slug, item, source, alt } => {
+                    let key = if item.starts_with("http://") || item.starts_with("https://") { "url" } else { "id" };
+                    let r: serde_json::Value = self.post(&format!("/api/projects/{slug}/media/import"), &serde_json::json!({ "source": source, key: item, "alt": alt })).await?;
+                    println!("{} {} ({}).", if r["new"].as_bool().unwrap_or(false) { "Added" } else { "Already there:" }, r["asset"]["title"].as_str().unwrap_or(""), r["asset"]["id"].as_str().unwrap_or(""));
+                }
+                MediaCmd::Pull { slug } => {
+                    let r: serde_json::Value = self.post(&format!("/api/projects/{slug}/media/import-site"), &serde_json::json!({})).await?;
+                    let n = r["imported"].as_u64().unwrap_or(0);
+                    println!("{n} picture{} from the website landed under Media.", if n == 1 { "" } else { "s" });
+                    for a in r["assets"].as_array().into_iter().flatten() {
+                        println!("  {:<40} {}", a["id"].as_str().unwrap_or(""), a["title"].as_str().unwrap_or(""));
+                    }
+                }
+            },
             Command::Assets { cmd } => match cmd {
                 AssetsCmd::Ls { slug, kind } => {
                     let q = kind.map(|k| format!("?type={k}")).unwrap_or_default();
@@ -1536,6 +1600,10 @@ impl Client {
         let resp = self.http.patch(format!("{}{path}", self.base)).json(body).send().await.map_err(connect_hint)?;
         Self::json(resp).await
     }
+    async fn delete_json<T: serde::de::DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T> {
+        let resp = self.http.delete(format!("{}{path}", self.base)).json(body).send().await.map_err(connect_hint)?;
+        Self::json(resp).await
+    }
     async fn delete(&self, path: &str) -> Result<()> {
         let resp = self.http.delete(format!("{}{path}", self.base)).send().await.map_err(connect_hint)?;
         if resp.status().is_success() {
@@ -1546,21 +1614,6 @@ impl Client {
         }
     }
 
-    /// `kiqr accounts ls`: each account, whether it works, what Seemo may do through it, and what uses it.
-    async fn accounts_ls(&self, slug: &str) -> Result<()> {
-        let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/accounts")).await?;
-        let list: Vec<serde_json::Value> = v["accounts"].as_array().cloned().unwrap_or_default();
-        if list.is_empty() {
-            println!("No accounts yet. Add one: kiqr accounts add {slug} <service>");
-        }
-        for c in list {
-            let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
-            let used_by = c["used_by"].as_array().map(|u| u.iter().filter_map(|x| x["id"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-            let state = if c["ready"].as_bool() == Some(true) { "ready".to_string() } else { c["state"]["state"].as_str().unwrap_or("").replace('_', " ") };
-            println!("{:<24} {:<28} {:<16} {:<14}{}{}", s("id"), s("label"), s("service"), state, if used_by.is_empty() { String::new() } else { format!("  used by {used_by}") }, if c["default"].as_bool() == Some(true) { "  (default)" } else { "" });
-        }
-        Ok(())
-    }
     async fn json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
         let status = resp.status();
         let text = resp.text().await?;
@@ -1709,10 +1762,6 @@ fn print_event(ev: &Event) {
             Some(e) => format!("sign-in  {id} failed: {e}"),
             None => format!("sign-in  {id} {}", if *signed_in { "signed in" } else { "signed out" }),
         },
-        EventKind::ConnectFinished { ability, ok, error, account } => match (ok, error) {
-            (true, _) => format!("connect  {ability} connected{}", account.as_ref().map(|c| format!(" as {c}")).unwrap_or_default()),
-            (false, e) => format!("connect  {ability} failed: {}", e.clone().unwrap_or_default()),
-        },
         EventKind::MediaCreated { ability, asset_type, id, file, provider } => format!("{ability:<8} {asset_type}/{id}/{file} via {provider}"),
         EventKind::CredentialSaved { id, label, .. } => format!("vault    {id} \"{label}\" saved"),
         EventKind::CredentialDeleted { id } => format!("vault    {id} removed"),
@@ -1721,23 +1770,21 @@ fn print_event(ev: &Event) {
             (false, e) => format!("vault    sign-in with {provider} failed: {}", e.as_deref().unwrap_or("")),
         },
         EventKind::GrantChanged { ability, credential, granted, by } => format!("access   {ability} {} {credential} ({by})", if *granted { "may use" } else { "may no longer use" }),
-        EventKind::AccountSaved { account, label, service } => format!("account  {account} \"{label}\" ({service})"),
-        EventKind::AccountDeleted { account, .. } => format!("account  {account} removed"),
-        EventKind::AbilitySettingsSaved { ability, account } => format!("ability  {ability} settings, through {account}"),
+        EventKind::AbilitySettingsSaved { ability, .. } => format!("ability  {ability} settings saved"),
         EventKind::ProgramInstalling { program, version, note } => format!("program  installing {program} {version}{}", if note.is_empty() { String::new() } else { format!(": {note}") }),
         EventKind::ProgramInstalled { program, version } => format!("program  {program} {version} installed"),
         EventKind::ProgramFailed { program, version, message } => format!("program  {program} {version} failed: {message}"),
         EventKind::ProgramLog { program, line, .. } => format!("program  {program}: {line}"),
-        EventKind::AccountStateChanged { account, state, message } => format!("account  {account} {}{}", state.replace('_', " "), if message.is_empty() { String::new() } else { format!(": {message}") }),
+        EventKind::CredentialStateChanged { credential, state, message } => format!("vault    {credential} {}{}", state.replace('_', " "), if message.is_empty() { String::new() } else { format!(": {message}") }),
         EventKind::HandsFrame { .. } => return,
-        EventKind::HandsStarted { account, .. } => format!("hands    {account}: someone is at the controls"),
-        EventKind::HandsEnded { account, message, .. } => format!("hands    {account}: done{}", if message.is_empty() { String::new() } else { format!(" ({message})") }),
+        EventKind::HandsStarted { credential, .. } => format!("hands    {credential}: someone is at the controls"),
+        EventKind::HandsEnded { credential, message, .. } => format!("hands    {credential}: done{}", if message.is_empty() { String::new() } else { format!(" ({message})") }),
         EventKind::ChannelSaved { channel, label, ownership, suggested, contacts } => format!("channel  {channel} \"{label}\" ({}{}{})", ownership.replace('_', "-"), if *suggested { ", suggested" } else { "" }, contacts.map(|n| format!(", {n} people")).unwrap_or_default()),
         EventKind::ChannelDeleted { channel } => format!("channel  {channel} removed"),
         EventKind::ListSending { list, subject, sent, failed, total, done } => format!("sending  \"{subject}\" to {list}: {sent}/{total}{}{}", if *failed > 0 { format!(", {failed} failed") } else { String::new() }, if *done { ", done" } else { "" }),
-        EventKind::AccountActed { account, ability, role, target, channel, .. } => format!("{role:<8} {account} by {ability}{}{}", if target.is_empty() { String::new() } else { format!(" on {target}") }, if channel.is_empty() { String::new() } else { format!(" in {channel}") }),
+        EventKind::CredentialActed { credential, ability, role, target, channel, .. } => format!("{role:<8} {credential} by {ability}{}{}", if target.is_empty() { String::new() } else { format!(" on {target}") }, if channel.is_empty() { String::new() } else { format!(" in {channel}") }),
         EventKind::ActionRefused { message, .. } => format!("refused  {message}"),
-        EventKind::AssetPublished { asset_type, id, channel, account, url } => format!("publish  {asset_type}/{id} → {} as {account}{}", if channel.is_empty() { "email" } else { channel.as_str() }, url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
+        EventKind::AssetPublished { asset_type, id, channel, credential, url } => format!("publish  {asset_type}/{id} → {} as {credential}{}", if channel.is_empty() { "email" } else { channel.as_str() }, url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
         EventKind::AssetApproved { asset_type, id, target, at, .. } => match at {
             Some(at) => format!("schedule {asset_type}/{id} → {target} at {}", at.with_timezone(&chrono::Local).format("%a %-d %b %H:%M")),
             None => format!("approve  {asset_type}/{id} for {target}"),

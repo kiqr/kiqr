@@ -67,7 +67,7 @@ pub struct Field {
     pub optional: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Credential {
     pub id: String,
     pub label: String,
@@ -112,6 +112,26 @@ impl Credential {
     /// Whether a value of this credential may be sent to `host`: only to its own domains.
     pub fn allows_host(&self, host: &str) -> bool {
         self.domains.iter().any(|d| same_site(d, host))
+    }
+    /// Whether it fits what an ability asks for: one of the templates, a
+    /// domain of one of the hosts (a mail server fits on its template alone;
+    /// an unresolved `${SITE}` host fits any), and for a sign-in every scope.
+    pub fn fits(&self, templates: &[String], hosts: &[String], scopes: &[String]) -> bool {
+        if !templates.is_empty() && !templates.iter().any(|t| *t == self.template) {
+            return false;
+        }
+        if self.template == "oauth" && !scopes.is_empty() {
+            let have = self.scopes();
+            if !scopes.iter().all(|s| have.contains(s)) {
+                return false;
+            }
+        }
+        let fixed: Vec<&String> = hosts.iter().filter(|h| !h.contains("${")).collect();
+        self.template == "smtp" || fixed.len() < hosts.len() || fixed.is_empty() || fixed.iter().any(|h| self.allows_host(h))
+    }
+    /// A value for a call: the first set of `name`'s alternatives (`token|key`), never a runner-only field.
+    pub fn call_value(&self, name: &str) -> Option<String> {
+        name.split('|').map(str::trim).find_map(|n| self.field(n).filter(|f| !f.runner_only).map(|f| f.value.clone()).filter(|v| !v.is_empty()))
     }
     pub fn default_domain(&self) -> Option<&str> {
         self.domains.first().map(String::as_str)
@@ -198,6 +218,8 @@ pub fn templates() -> Vec<Template> {
             fields: vec![f("username", "Username or email", Text, false, false), f("password", "Password", Secret, true, true), f("totp", "Two-factor key", Totp, true, true)],
         },
         Template { id: "api_key", label: "API key", fields: vec![f("key", "API key", Secret, false, false)] },
+        // A user name and a password made for an API (WordPress application passwords): sent with calls, unlike a login's.
+        Template { id: "app_password", label: "App password", fields: vec![f("username", "Username", Text, false, false), f("password", "App password", Secret, false, false)] },
         Template {
             id: "oauth",
             label: "Signed-in app",

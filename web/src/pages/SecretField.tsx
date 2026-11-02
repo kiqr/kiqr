@@ -1,4 +1,4 @@
-// A secret by name: typed once, saved to .env (one account's, or KIQR's own keys on the machine), never shown again.
+// One of KIQR's own keys by name: typed once, saved to .env (the project's or the machine's), never shown again.
 import { useEffect, useState } from "react";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import { api, type ConnectGrant } from "../api";
@@ -28,7 +28,7 @@ export function Hint({ text }: { text: string }) {
   );
 }
 
-export function SecretField({ name, label, help, placeholder, set, optional, options, choices, grant, slug, account, onSaved }: { name: string; label: string; help?: string; placeholder?: string; set: boolean | string | null; optional?: boolean; options?: string[]; /** Read its values through the account (a signed-in service's list). */ choices?: boolean; /** Where the person grants access to more of the service when the list lacks what they look for. */ grant?: ConnectGrant | null; slug?: string; account?: string; onSaved?: () => void }) {
+export function SecretField({ name, label, help, placeholder, set, optional, options, choices, grant, slug, onSaved }: { name: string; label: string; help?: string; placeholder?: string; set: boolean | string | null; optional?: boolean; options?: string[]; /** Read its values through the account (a signed-in service's list). */ choices?: boolean; /** Where the person grants access to more of the service when the list lacks what they look for. */ grant?: ConnectGrant | null; slug?: string; account?: string; onSaved?: () => void }) {
   const [value, setValue] = useState("");
   const [read, setRead] = useState<{ value: string; label: string }[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -42,15 +42,15 @@ export function SecretField({ name, label, help, placeholder, set, optional, opt
   // A list read through the account: shown as a select; typing stays possible when it cannot be read.
   const [again, setAgain] = useState(0);
   useEffect(() => {
-    if (!choices || !slug || !account || !editing) return;
-    api.accountChoices(slug, account, name).then((r) => setRead(r.choices)).catch(() => setRead([]));
-  }, [choices, slug, account, name, editing, again]);
+    if (!choices || !editing) return;
+    setRead([]);
+  }, [choices, editing, again]);
   const listed = read && read.length > 0 ? read : null;
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
-      const r = slug && account ? await api.setAccountSecret(slug, account, name, value.trim()) : slug ? await api.setProjectSecret(slug, name, value.trim()) : await api.setSecret(name, value.trim());
+      const r = slug ? await api.setProjectSecret(slug, name, value.trim()) : await api.setSecret(name, value.trim());
       setDone(r.set);
       setEditing(!r.set);
       setValue("");

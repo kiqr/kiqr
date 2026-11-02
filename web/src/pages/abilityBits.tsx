@@ -2,7 +2,7 @@
 // the icon, the vendor, the state, what an ability includes.
 import { useState } from "react";
 import { BarChart3, BookOpen, Zap, Brain, Globe, Image as ImageIcon, KeyRound, ListChecks, LogIn, Mail, MessageCircle, MessageSquareText, Music, PenTool, Plug, Send, ShieldCheck, Sparkles, Terminal, Video, Wrench, type LucideIcon } from "lucide-react";
-import type { Ability, AccountSummary } from "../api";
+import type { Ability } from "../api";
 import "../signin.css";
 import { assetIcon } from "../assetIcons";
 
@@ -35,10 +35,9 @@ export function serviceIcon(icon?: string, group?: string): LucideIcon {
   return (group && GROUP_ICON[group]) || Plug;
 }
 
-/** An ability that works through an account of a service: one in a group of the connect grid (the shipped browser is core and still one), or anything not core that takes keys, a sign-in, a kind, a source or settings. */
+/** An ability that works only with a credential from the Vault (a login, a key, a sign-in). */
 export function isService(a: Ability): boolean {
-  if (a.service_card?.group || a.service) return true;
-  return !a.core && (a.auth.length > 0 || !!a.connect || (a.publishes_to ?? []).length > 0 || (a.kinds?.length ?? 0) > 0 || a.sources.length > 0 || Object.keys(a.settings ?? {}).length > 0);
+  return (a.access ?? []).some((n) => !n.optional);
 }
 
 /** The ability's mark: its avatar when it has one, else its icon. */
@@ -69,36 +68,21 @@ export function serviceName(a: Ability): string {
   return a.service_card?.name || a.name;
 }
 
-/** The accounts an ability can work through right now, by the one readiness rule. */
-export function workingAccounts(a: Ability): AccountSummary[] {
-  return (a.accounts ?? []).filter((x) => (x.works ?? x.state === "ready") && x.missing.length === 0);
+/** The credential an ability's calls go through here, as its row names it, when it has one allowed. */
+export function usesWhom(a: Ability): string | null {
+  const c = (a.access ?? []).flatMap((n) => n.granted).find((c) => c.complete);
+  return c ? (c.identity && c.identity !== c.label ? c.identity : c.label) : null;
 }
 
-/** Why an ability's accounts do not work, in the user's words: "signed out", "needs a hand", "not connected". */
-export function accountTrouble(a: Ability): string {
-  const all = a.accounts ?? [];
-  const one = all.length === 1;
-  if (all.some((x) => x.state === "needs_hand")) return one ? "needs a hand" : "accounts need a hand";
-  if (all.some((x) => x.state === "signed_out")) return one ? "signed out" : "accounts signed out";
-  if (all.some((x) => x.state === "checking")) return one ? "signing in" : "accounts signing in";
-  if (all.some((x) => x.state === "needs_program")) return one ? "needs a program" : "accounts need a program";
-  return one ? "missing keys" : "accounts missing keys";
-}
-
-/** One phrase for where an ability stands in this project. A service ability stands with its account. */
+/** One phrase for where an ability stands in this project: on, off, or the one thing it needs. */
 export function stateOf(a: Ability): State {
-  if (!a.installed) return isService(a) ? { id: "via", text: "needs an account", tone: "" } : { id: "available", text: "not installed", tone: "" };
+  if (!a.installed) return { id: "available", text: "not installed", tone: "" };
   if (a.machine_off) return { id: "off-all", text: "off everywhere", tone: "" };
   if (a.paused) return { id: "off-here", text: "off here", tone: "" };
   if (a.program_found === false) return { id: "noprogram", text: "program missing", tone: "warn" };
-  if (!a.ready) return { id: a.missing.length ? "missing" : "setup", text: isService(a) && !(a.accounts?.length ?? 0) ? "needs an account" : a.missing.length ? "not connected" : "needs setup", tone: "warn" };
-  const all = a.accounts?.length ?? 0;
-  const n = workingAccounts(a).length;
-  // A core ability with accounts of its own (the browser and its sites) is on with or without them.
-  if (a.core && isService(a)) return all > 0 ? { id: "own", text: n === all ? (n === 1 ? "1 account" : `${n} accounts`) : `${n} of ${all} accounts signed in`, tone: n > 0 ? "ok" : "warn" } : { id: "on", text: "on", tone: "ok" };
-  // Accounts there, none of them working (signed out, waiting for a hand, keys missing): not "via your account".
-  if (all > 0 && n === 0) return { id: "setup", text: accountTrouble(a), tone: "warn" };
-  if (n > 0) return { id: "own", text: isService(a) ? (n === 1 ? `via your ${serviceName(a)} account` : `via ${n} ${serviceName(a)} accounts`) : n === 1 ? "connected" : `${n} accounts`, tone: "ok" };
+  if (!a.ready) return { id: a.missing.length ? "missing" : "setup", text: a.missing.length ? `needs ${a.missing[0]}` : "needs setup", tone: "warn" };
+  const who = usesWhom(a);
+  if (who) return { id: "own", text: `uses ${who}`, tone: "ok" };
   if (a.signed_in) return { id: "own", text: a.signed_in === "project" ? "signed in here" : "signed in", tone: "ok" };
   if (a.auth.length) return { id: "machine", text: "machine key", tone: "ok" };
   return { id: "on", text: "on", tone: "ok" };
@@ -125,27 +109,18 @@ export function partsOf(a: Ability, full = false): Part[] {
 /** What an ability needs before it works: keys and where each is set, a program on this computer, the hosts it calls. */
 export function needsOf(a: Ability): Part[] {
   const out: Part[] = [];
-  if (a.core && isService(a)) {
-    // Part of KIQR, with accounts of its own (the browser's sites): on without any, each connected under Accounts.
-    const n = a.accounts?.length ?? 0;
-    const ready = workingAccounts(a).length;
-    out.push({ icon: KeyRound, label: "Its accounts", detail: n === 0 ? "none yet; connect a site under Accounts and Seemo browses it" : `${ready} of ${n} signed in`, tone: n > 0 && ready === 0 ? "warn" : "" });
-  } else if (a.auth.length && a.core) {
+  if (a.auth.length && a.core) {
     // Signed in to the service (`signed_in`), its key is not needed: the sign-in stands in for it.
     const signedIn = a.signed_in ? `not needed: signed in for ${a.signed_in === "project" ? "this project" : "every project"}` : null;
     for (const k of a.auth) {
       out.push({ icon: KeyRound, label: `${k.label || k.env}${k.optional ? " (optional)" : ""}`, detail: k.set ? `set for ${k.set === "project" ? "this project" : "the machine"}` : signedIn ?? "not set", tone: !k.set && !k.optional && !signedIn ? "warn" : "" });
     }
-  } else if (isService(a)) {
-    // It works through an account of its service, signed in once and shared by every ability of it.
-    const n = a.accounts?.length ?? 0;
-    const ready = workingAccounts(a).length;
-    out.push({
-      icon: KeyRound,
-      label: `Your ${serviceName(a)} account`,
-      detail: !a.installed || n === 0 ? "not connected in this project yet" : ready === n ? (n === 1 ? "connected" : `${n} connected`) : n === 1 ? accountTrouble(a) : `${ready} of ${n} connected`,
-      tone: a.installed && n > 0 && ready === 0 ? "warn" : "",
-    });
+  }
+  // What it asks for from the Vault, and what this project allowed it.
+  for (const n of a.access ?? []) {
+    const c = n.granted.find((x) => x.complete) ?? n.granted[0];
+    const label = n.describe.charAt(0).toUpperCase() + n.describe.slice(1) + (n.optional ? " (optional)" : "");
+    out.push({ icon: KeyRound, label, detail: c ? `uses ${c.identity && c.identity !== c.label ? c.identity : c.label}${c.complete ? "" : " (incomplete)"}` : a.installed ? "none allowed in this project yet" : "allowed per project once installed", tone: a.installed && !n.optional && !c?.complete ? "warn" : "" });
   }
   if (a.program_found === false) out.push({ icon: Terminal, label: "A program on this computer", detail: "not found; install it first", tone: "warn" });
   return out;
@@ -162,11 +137,11 @@ export function advancedOf(a: Ability): Part[] {
   return out;
 }
 
-export const RELOAD_ON = ["secret_set", "connect_finished", "sign_in_changed", "account_saved", "account_deleted", "account_state_changed", "ability_settings_saved", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];
+export const RELOAD_ON = ["secret_set", "sign_in_changed", "grant_changed", "credential_saved", "credential_deleted", "credential_connected", "credential_state_changed", "ability_settings_saved", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];
 
-/** Connects with a button instead of keys: its manifest has a sign-in, or KIQR signs in to it. */
+/** Signs in with a button instead of keys: a provider signs in for it through kiqr.cloud, or KIQR signs in to it. */
 export function oneClick(a: Ability): boolean {
-  return !!a.connect || ONE_CLICK_CORE.includes(a.id);
+  return (a.access ?? []).some((n) => !!n.provider || !!n.connect) || ONE_CLICK_CORE.includes(a.id);
 }
 const ONE_CLICK_CORE = ["unblockingapi"];
 

@@ -59,7 +59,12 @@ async fn update(State(app): State<App>, Path(id): Path<String>, Json(d): Json<Dr
     if d.domains.as_ref().is_some_and(|d| d.iter().all(|x| x.trim().is_empty())) {
         return Err(bad("a credential keeps at least one domain"));
     }
+    let values_changed = !d.values.is_empty() || d.domains.is_some();
     let c = app.vault.update(&id, d).map_err(|e| bad(format!("{e:#}")))?;
+    // A program runs with the credential's values: a changed value starts it again with the new one.
+    if values_changed {
+        app.mcp.stop_credential(&id).await;
+    }
     saved(&app, &c);
     Ok(Json(json!(c)))
 }
@@ -68,6 +73,7 @@ async fn remove(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Val
     if !app.vault.delete(&id).map_err(locked)? {
         return Err(ApiError(StatusCode::NOT_FOUND, format!("no credential {id}")));
     }
+    app.mcp.stop_credential(&id).await;
     let _ = std::fs::remove_dir_all(app.store.home().credential_session_dir(&id));
     crate::access::forget(&app, &id).await;
     app.bus.emit(None, EventKind::CredentialDeleted { id });

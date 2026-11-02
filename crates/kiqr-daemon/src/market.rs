@@ -101,17 +101,19 @@ pub struct IndexItem {
     /// Metrics sources it reads.
     #[serde(default)]
     pub sources: Vec<String>,
-    /// The service it connects, as the grid of things to connect shows it (the manifest's `service` block).
+    /// How a card shows it (its name, icon, group, the hosts its profiles live on).
     #[serde(default)]
     pub service: Option<kiqr_core::extensions::Service>,
-    /// What an account of it allows Seemo at first (the manifest's `allow`).
+    /// Where it works: what credentials in the Vault are matched on before it is installed.
     #[serde(default)]
-    pub allow: std::collections::BTreeMap<String, kiqr_core::accounts::Allow>,
+    pub hosts: Vec<String>,
+    /// The credentials it would like (the manifest's `credentials`).
+    #[serde(default)]
+    pub credentials: Vec<kiqr_core::extensions::CredentialNeed>,
     /// When to suggest it to a new project (the manifest's `fits`).
     pub fits: kiqr_core::extensions::Fits,
+    /// A core ability's own keys (KIQR's, set by name).
     pub auth: Vec<AuthKey>,
-    /// How the keys can be got with one button (the manifest's `connect`).
-    pub connect: Option<kiqr_core::connect::Connect>,
     /// `official` (KIQR's own), `verified`, `community`.
     pub trust: String,
     /// Where it runs (`linux`, `macos`, `windows`); empty means everywhere.
@@ -270,13 +272,13 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         avatar: m.avatar.clone(),
         cost,
         provides: m.provides.keys().cloned().collect(),
-        kinds: m.kinds.iter().map(|c| IndexKind { kind: c.kind.clone(), name: c.display_name().to_string(), icon: c.icon.clone(), profile_hosts: m.service.profile_hosts.clone() }).collect(),
+        kinds: m.kinds.iter().map(|c| IndexKind { kind: c.kind.clone(), name: c.display_name().to_string(), icon: c.icon.clone(), profile_hosts: m.service_card().profile_hosts }).collect(),
         sources: m.sources.keys().cloned().collect(),
         service: Some(m.service_card()),
-        allow: m.allow.clone(),
+        hosts: m.hosts.clone(),
+        credentials: m.needs(),
         fits: m.fits.clone(),
-        auth: m.auth.clone(),
-        connect: m.connect.iter().find(|c| c.has_button()).or(m.connect.first()).cloned(),
+        auth: vec![],
         trust: "official".into(),
         platforms: vec![],
         transport: serde_json::to_value(m.transport).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
@@ -326,10 +328,10 @@ fn core_item(c: &extensions::CoreAbility) -> IndexItem {
         kinds: vec![],
         sources: vec![],
         service: None,
-        allow: Default::default(),
+        hosts: vec![],
+        credentials: vec![],
         fits: Default::default(),
         auth: c.auth.iter().map(|(env, label, help)| AuthKey { env: env.to_string(), label: label.to_string(), help: help.to_string(), optional: false, options: vec![], placeholder: String::new(), choices: None, typed: false }).collect(),
-        connect: None,
         trust: "official".into(),
         platforms: vec![],
         transport: "builtin".into(),
@@ -498,10 +500,10 @@ fn item_from_instructions(e: &extensions::Entry) -> IndexItem {
         kinds: vec![],
         sources: vec![],
         service: None,
-        allow: Default::default(),
+        hosts: vec![],
+        credentials: vec![],
         fits: Default::default(),
         auth: vec![],
-        connect: None,
         trust: if e.builtin { "official".into() } else { "local".into() },
         platforms: vec![],
         transport: "instructions".into(),
@@ -529,49 +531,33 @@ fn copies(ctx: &Ctx, folder: &str, builtin: bool) -> (bool, bool) {
 
 fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&extensions::Entry>, core: Option<&extensions::CoreAbility>) -> Value {
     let home = ctx.app.store.home();
-    let auth: Vec<&AuthKey> = m.map(|m| m.auth.iter().collect()).unwrap_or_else(|| item.auth.iter().collect());
-    // A core ability's keys are KIQR's own (the machine's); an installed one's live on the project's accounts of it.
-    // A core folder with a service (the browser) stands on its own: it needs no account to be on, and each
-    // account's own gaps show on the account.
-    let core_service = e.is_some_and(|e| e.is_core()) && m.is_some_and(|m| !m.service_card().group.is_empty());
+    // A core ability's keys are KIQR's own (the machine's or the project's); an installed one holds none:
+    // it asks for credentials from the Vault, which the project grants it.
+    let auth: Vec<&AuthKey> = if core.is_some() { item.auth.iter().collect() } else { vec![] };
     let missing: Vec<String> = match (m, core) {
-        (Some(_), None) if core_service => vec![],
         (Some(m), None) => crate::ext::missing_in(ctx.app, ctx.slug, m),
         _ => auth.iter().filter(|a| !a.optional && !crate::signins::has_core_key(home, ctx.slug, &a.env)).map(|a| a.env.clone()).collect(),
     };
-    // This project's accounts of it: never their values, only whether they are complete.
-    let accounts: Vec<Value> = match (m, ctx.slug) {
-        (Some(m), Some(slug)) if core.is_none() => {
-            // The one rule for whether an account works, over the abilities of its service on here.
-            let off = crate::ext::project_off(ctx.app, slug);
-            let all: Vec<Manifest> = ctx.reg.of_service(slug, m.service()).into_iter().cloned().collect();
-            let on: Vec<Manifest> = all.iter().filter(|o| !off.contains(&o.id)).cloned().collect();
-            let ms = if on.is_empty() { all } else { on };
-            kiqr_core::accounts::Account::of(&ctx.app.store, slug, m.service())
-                .iter()
-                .map(|c| {
-                    let keys = c.keys(home, slug);
-                    let st = crate::accounts::state_with(ctx.app, slug, c, &ms);
-                    json!({
-                        "id": c.id,
-                        "label": c.label,
-                        "default": c.default,
-                        "missing": c.missing(home, slug, m),
-                        "state": st.word(),
-                        "works": st.ready(),
-                        "set": m.auth.iter().filter(|a| keys.contains_key(&a.env)).map(|a| a.env.clone()).collect::<Vec<_>>(),
-                    })
-                })
-                .collect()
-        }
-        _ => vec![],
-    };
+    // What it asks for, and in this project what was granted and what in the Vault would fit: never a value.
+    let needs: Vec<kiqr_core::extensions::CredentialNeed> = m.map(|m| m.needs()).unwrap_or_else(|| item.credentials.clone());
+    let access: Vec<Value> = needs
+        .iter()
+        .map(|n| {
+            let (granted, fitting): (Vec<Value>, Vec<Value>) = match (m, ctx.slug) {
+                (Some(m), Some(slug)) => {
+                    let one = |c: &kiqr_core::vault::Credential| json!({ "credential": c.id, "label": c.label, "identity": c.identity(), "domain": c.default_domain(), "template": c.template, "complete": c.missing().is_empty() });
+                    let fit = crate::creds::fitting(ctx.app, slug, m, n);
+                    let given: Vec<String> = kiqr_core::access::Access::load(&ctx.app.store, slug).unwrap_or_default().granted(&m.id).to_vec();
+                    (fit.iter().filter(|c| given.contains(&c.id)).map(one).collect(), fit.iter().filter(|c| !given.contains(&c.id)).map(one).collect())
+                }
+                _ => (vec![], vec![]),
+            };
+            json!({ "id": n.id, "describe": n.describe(), "template": n.template, "hosts": n.hosts.iter().filter(|h| !h.contains('$')).collect::<Vec<_>>(), "provider": n.provider, "scopes": n.scopes, "for": n.for_, "optional": n.optional, "granted": granted, "fitting": fitting, "connect": n.connect.as_ref().map(|c| json!({ "label": if c.label.is_empty() { format!("Connect with {}", item.name) } else { c.label.clone() }, "needs": c.needs.iter().map(|x| x.to_ascii_lowercase()).collect::<Vec<_>>() })) })
+        })
+        .collect();
     let program_found = m.filter(|m| m.transport == Transport::Mcp).map(|m| crate::ext::program_found(ctx.app, ctx.slug, m));
     let installed = core.is_some() || e.is_some();
-    // An ability that works through accounts of its service (keys, a kind to publish as, numbers to read, places)
-    // is not ready in a project until the project has one, keys of its own or not (X runs on the browser, no keys).
-    let needs_account = core.is_none() && !core_service && ctx.slug.is_some() && accounts.is_empty() && m.is_some_and(|m| !m.auth.is_empty() || !m.kinds.is_empty() || !m.sources.is_empty() || !m.settings.is_empty() || m.session.is_some());
-    let ready = installed && missing.is_empty() && program_found.unwrap_or(true) && !needs_account;
+    let ready = installed && missing.is_empty() && program_found.unwrap_or(true);
     let provides: Vec<Value> = m.map(|m| m.provides.keys().cloned().collect::<Vec<_>>()).unwrap_or_else(|| item.provides.clone()).iter().map(|id| json!({ "ability": id, "label": abilities::find(id).map(|a| a.label).unwrap_or("") })).collect();
     let mut item = item.clone();
     if item.repo.is_none() {
@@ -645,7 +631,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "runs_program": m.map(|m| matches!(m.transport, Transport::Mcp | Transport::Command)).unwrap_or(item.transport == "mcp" || item.transport == "command"),
         "command": m.filter(|m| matches!(m.transport, Transport::Mcp | Transport::Command)).map(|m| format!("{} {}", m.command, m.args.join(" ")).trim().to_string()),
         "program_found": program_found,
-        "hosts": m.map(|m| m.hosts.clone()).unwrap_or_default(),
+        "hosts": m.map(|m| m.hosts.clone()).unwrap_or_else(|| item.hosts.clone()),
         "source": source,
         "repo": item.repo,
         "core": is_core,
@@ -662,13 +648,11 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         "ready": ready,
         "missing": missing,
         "auth": auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": if core.is_some() { json!(kiqr_core::secrets::scope_of(home, ctx.slug, &a.env)) } else { Value::Null } })).collect::<Vec<_>>(),
-        "connect": kiqr_core::connect::view(m.map(|m| m.connect.as_slice()).filter(|c| !c.is_empty()).or(item.connect.as_ref().map(std::slice::from_ref)).unwrap_or(&[])),
         // A core ability KIQR signs in to (UnblockingAPI): this project's own sign-in, the machine's, or none.
         "signed_in": core.and_then(|c| crate::signins::signin_scope(home, ctx.slug, c.id)),
-        "accounts": accounts,
+        "access": access,
         "kinds": m.map(|m| m.kinds.iter().map(|k| json!({ "kind": k.kind, "label": k.label, "name": k.display_name(), "section": k.section(), "target": k.target, "publishes": k.publishes() })).collect::<Vec<_>>()).unwrap_or_default(),
-        "service": m.map(|m| m.service().to_string()).or_else(|| item.service.as_ref().map(|s| s.id.clone())),
-        // How the grid of things to connect shows it, and what an account of it allows at first.
+        // How a card shows it.
         "service_card": m.map(|m| json!(m.service_card())).unwrap_or_else(|| json!(item.service)),
         // What the project picks once for it (a property, a site), and what it picked.
         "settings": m.map(|m| json!(m.settings)).unwrap_or(Value::Null),
@@ -676,9 +660,8 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
         // The programs it needs: its own, or those of the ability it runs on (`program:`).
         "programs": m.map(|m| crate::programs::status(&crate::ext::program_of_sync(ctx.app, ctx.slug, m).unwrap_or_else(|| m.clone()))).unwrap_or(Value::Null),
         "platforms": item.platforms,
-        "allow": m.map(|m| json!(m.allow)).unwrap_or_else(|| json!(item.allow)),
-        // An account of it can be a source: what the Source switch says.
-        "learn": m.map(crate::accounts::learn_view),
+        // What it can teach the project from an owned channel.
+        "learn": m.and_then(|m| m.learn.as_ref()).map(|l| json!({ "label": if l.label.is_empty() { "Learn from it into the profile".to_string() } else { l.label.clone() } })),
         "active_for": ctx.active.iter().filter(|(_, id)| *id == item.id).map(|(a, _)| a.clone()).collect::<Vec<_>>(),
         "instructions": files,
         "in_prompt": in_prompt,
@@ -842,8 +825,7 @@ async fn brief(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Va
             })
         })
         .collect();
-    let suggestions = crate::networks::suggestions(&app, &slug).await;
-    Ok(Json(json!({ "abilities": rows, "suggestions": suggestions, "note": "Read an ability's instructions with read_instructions before doing that kind of work. Off or not ready means you cannot use it here; say so instead of improvising. `suggestions` are profiles the business has where an ability in the marketplace could publish; the user installs it under Setup → Abilities." })))
+    Ok(Json(json!({ "abilities": rows, "note": "Read an ability's instructions with read_instructions before doing that kind of work. Off or not ready means you cannot use it here; say so instead of improvising, naming what it needs (`needs`). Which channels wait for an ability or a publisher, list_channels says (`readiness`)." })))
 }
 
 fn scope_of(b_scope: &str, project: &Option<String>) -> Result<Scope, ApiError> {

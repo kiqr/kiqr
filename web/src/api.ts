@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DEMO, demoProject, demoState, runDemo } from "./demo";
-import { demoAssetFile, demoAssetRequest, demoAssetText } from "./demo-assets";
+import { demoAssetFile, demoAssetRequest, demoAssetText, demoMediaRequest } from "./demo-assets";
 import { demoBrand, demoBrief } from "./demo-brief";
 import { demoSeemoRequest, onDemoSeemo } from "./demo-chat";
 
@@ -132,7 +132,11 @@ export type BrandKit = {
   palette: { dark: string; light: string; accent: string };
   logo: string | null;
   html_available: boolean;
+  /** The business's own pictures in the Library (the `media` type), for the renderer to place. */
+  media?: BrandMedia[];
 };
+/** One media asset as the brand kit hands it to a renderer: its image file and what is known about it. */
+export type BrandMedia = { asset: string; title: string; file: string; url: string; alt: string; page: string | null; origin: string; width: number | null; height: number | null; orientation: "landscape" | "portrait" | "square" | null };
 export type AssetStatus = "draft" | "ready" | "scheduled" | "published" | "archived";
 /** Something made with Seemo: an article, a post, a meme, a video… */
 export type Asset = {
@@ -144,7 +148,8 @@ export type Asset = {
   summary?: string;
   created: { at: string; by: string };
   updated_at: string;
-  files: { role: string; path: string; bytes: number; sha256: string }[];
+  /** Image files carry their pixel size once the daemon has read it. */
+  files: { role: string; path: string; bytes: number; sha256: string; width?: number; height?: number }[];
   source?: Record<string, unknown>;
   /** The channel the user approved it for (Ready); when the daemon publishes it (Scheduled); why a scheduled publish failed. */
   target?: string | null;
@@ -156,25 +161,31 @@ export type Asset = {
 /** Where an asset went: the channel (empty for an email to one address), the account it went out as, the ability that sent it. */
 export type Publication = { channel?: string; account: string; ability?: string; from?: string | null; to?: string | null; url?: string | null; at: string; run?: string | null };
 export type TypeCount = { type: string; count: number };
+/** Where the business's own pictures come from: the website (always first), then abilities that connect a folder, a drive or a bucket. */
+export type MediaSource = { id: string; name: string; icon: string; builtin: boolean; ready: boolean; found?: number; imported: number; note: string };
+/** One picture a source offers. `imported` is the media asset's id once it is in the Library; `url` is the picture itself (the website) or a thumbnail. */
+export type MediaItem = { source: string; id: string; name: string; mime: string; bytes: number | null; modified: string | null; url: string | null; alt: string; page: string | null; imported: string | null };
+export type MediaImport = { ok: boolean; new: boolean; asset: { type: string; id: string; title: string }; picture: Record<string, unknown> | null; note: string };
 export type NewAsset = { type: string; title: string; tags?: string[]; summary?: string; source?: Record<string, unknown>; files?: { role: string; name: string; text: string }[] };
 
 export type KiqrEvent = { at: string; project: string | null; type: string } & Record<string, unknown>;
 /** Whether an account works changed (`account_state_changed`): its sign-in on a hosted program. */
-export type AccountStateEvent = { type: "account_state_changed"; account: string; state: SessionState; message: string };
+export type CredentialStateEvent = { type: "credential_state_changed"; credential: string; state: SessionState; message: string };
 /** One picture of the live view (`hands_frame`), a few a second while someone watches. Never kept. */
-export type HandsFrameEvent = { type: "hands_frame"; account: string; hands: string; mime: string; data: string; url?: string };
-export type HandsStartedEvent = { type: "hands_started"; account: string; hands: string };
-export type HandsEndedEvent = { type: "hands_ended"; account: string; hands: string; message: string };
+export type HandsFrameEvent = { type: "hands_frame"; credential: string; hands: string; mime: string; data: string; url?: string };
+export type HandsStartedEvent = { type: "hands_started"; credential: string; hands: string };
+export type HandsEndedEvent = { type: "hands_ended"; credential: string; hands: string; message: string };
 /** A program KIQR installs for an ability (machine-wide events, on the stream without a project). */
 export type ProgramInstallingEvent = { type: "program_installing"; program: string; version: string; note: string };
 export type ProgramInstalledEvent = { type: "program_installed"; program: string; version: string };
 export type ProgramFailedEvent = { type: "program_failed"; program: string; version: string; message: string };
-export const SESSION_EVENTS = ["account_state_changed"];
+export const SESSION_EVENTS = ["credential_state_changed"];
 /** What the Vault page and the credential pickers reload on. */
 export const VAULT_EVENTS = ["credential_saved", "credential_deleted", "credential_connected", "credential_state_changed", "grant_changed"];
-export const ACCOUNT_EVENTS = ["account_saved", "account_deleted", "account_state_changed", "ability_settings_saved", "connect_finished", "secret_set", "extension_installed", "extension_removed", "extension_paused"];
+/** What changes an ability's readiness: its grants, its credentials, its settings, installs. */
+export const ACCESS_EVENTS = ["grant_changed", "credential_saved", "credential_deleted", "credential_connected", "credential_state_changed", "ability_settings_saved", "secret_set", "extension_installed", "extension_removed", "extension_paused"];
 /** Everything that changes a channel or who publishes there: pages listing channels reload on these. */
-export const CHANNEL_EVENTS = ["channel_saved", "channel_deleted", "account_saved", "account_deleted", "account_state_changed", "extension_installed", "extension_removed", "extension_paused"];
+export const CHANNEL_EVENTS = ["channel_saved", "channel_deleted", "grant_changed", "credential_saved", "credential_deleted", "credential_state_changed", "extension_installed", "extension_removed", "extension_paused"];
 export const HANDS_EVENTS = ["hands_frame", "hands_started", "hands_ended"];
 export const PROGRAM_EVENTS = ["program_installing", "program_installed", "program_failed", "program_log"];
 
@@ -329,30 +340,31 @@ export type CalendarItem = { kind?: "task" | "publish"; task?: string; asset?: {
 /** What waits for the user: open approvals from every chat, drafts to approve, what is approved but not sent, publishes coming up, failed publishes. */
 /** A kind of place content goes (a network, a blog, an inbox). Installed ones carry what their ability declares; listed ones only a name. */
 export type Network = { kind: string; name: string; icon: string; network: boolean; installed: boolean; text_limit?: number | null; image?: { width: number; height: number } | null; preview?: string; ability?: string };
-/** A profile the business has where an ability in the marketplace could publish. */
-export type Suggestion = { kind: string; name: string; profile_url: string; ability: string; ability_name: string };
+/** A channel that cannot be published to yet, with its one fix. */
+export type ChannelWaiting = { id: string; label: string; domain: string; kind: string; readiness: ChannelReadiness };
 export type Todo = {
-  suggestions?: Suggestion[];
+  channels_waiting?: ChannelWaiting[];
   approvals: { id: string; kind: string; chat: string | null; chat_title?: string; message?: string | null; created: string; payload: Record<string, unknown> }[];
   drafts: Asset[];
   ready: Asset[];
   scheduled: Asset[];
   attention: Asset[];
-  /** Accounts whose sign-in needs a person (the daemon's `accounts_needing_hand`; `needs_hand` in older drafts). */
-  accounts_needing_hand?: NeedsHand[];
-  needs_hand?: NeedsHand[];
+  /** Logins used here whose sign-in needs a person. */
+  credentials_needing_hand?: NeedsHand[];
   count: number;
 };
 /** An account whose sign-in waits for a person in the live view. */
-export type NeedsHand = { account: string; label: string; message: string; service?: string; since?: string | null };
+export type NeedsHand = { credential: string; label: string; message: string; domain?: string | null; since?: string | null };
 export type ToolGroup = { id: string; label: string; tools: string[] };
 
 // ---- Abilities
 export type Scope = { scope: "global" } | { scope: "project"; project: string };
 /** A key an ability needs. `set` says where, for a core ability's own key (this project or the machine); an installed ability's keys live on its accounts. */
 export type MarketAuth = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: "project" | "global" | boolean | null };
-/** An ability's account in this project. `works`: the one readiness rule says ready (`state`: ready | missing_keys | needs_program | signed_out | needs_hand | checking). */
-export type AccountSummary = { id: string; label: string; default: boolean; missing: string[]; set: string[]; state?: AccountStateWord; works?: boolean };
+/** A credential as an ability's Access shows it: who it is and whether it is complete; never a value. */
+export type AccessCred = { credential: string; label: string; identity?: string | null; domain?: string | null; template: string; complete: boolean };
+/** What an ability asks for, and in this project what was allowed and what else in the Vault would fit. */
+export type AccessNeed = { id: string; describe: string; template: string[]; hosts: string[]; provider: string; scopes: string[]; for: string; optional: boolean; granted: AccessCred[]; fitting: AccessCred[]; /** A one-click sign-in of the ability's own ("Connect with WordPress"); `needs` are settings asked first. */ connect?: { label: string; needs: string[] } | null };
 /** A kind an ability publishes as, and the target fields that name a spot of it (a subreddit). */
 export type KindInfo = { kind: string; label: string; name: string; section: string; target: Record<string, SpecField>; publishes: boolean };
 /** One field a manifest declares: a kind's target field (a subreddit) or an ability's setting (a GA4 property). */
@@ -366,10 +378,10 @@ export type ChannelReadiness = {
   state: "ready" | "suggested" | "no_ability" | "publish_off" | "no_publisher" | "publisher_not_ready" | "publisher_gone";
   ready: boolean;
   text: string;
-  fix: { action: "add" | "abilities" | "publisher" | "account"; label: string; account?: string } | null;
+  fix: { action: "add" | "abilities" | "install" | "publisher" | "credential"; label: string; credential?: string; ability?: string } | null;
 };
 /** Who a channel publishes as (an account, for now), and whether that works. */
-export type ChannelPublisher = { account: string; label: string; service?: string; state: AccountStateWord; ready: boolean };
+export type ChannelPublisher = { credential: string; label: string; domain?: string | null; template?: string; state: CredStateWord; ready: boolean };
 /** Everywhere the business's people are: what Seemo may do there and who it posts as. */
 export type Channel = {
   id: string;
@@ -397,6 +409,8 @@ export type Channel = {
   publisher_view: ChannelPublisher | null;
   /** Who could publish here. */
   publishers: ChannelPublisher[];
+  /** What a publisher must be: the publishing ability's need, to prefill "Add a credential". */
+  publisher_need?: { ability: string; ability_name: string; describe: string; template: string[]; hosts: string[]; provider: string; scopes: string[] } | null;
   readiness: ChannelReadiness;
   kind_name?: string;
   kind_label?: string;
@@ -488,20 +502,18 @@ export type Ability = {
   ready: boolean;
   missing: string[];
   auth: MarketAuth[];
-  connect?: ConnectInfo | null;
   /** A core ability KIQR signs in to: this project's own sign-in, the machine's, or none. */
   signed_in?: "project" | "machine" | null;
-  /** This project's accounts of it; empty for one that needs no keys. */
-  accounts?: AccountSummary[];
+  /** What it asks for from the Vault, and what this project allowed it. */
+  access?: AccessNeed[];
   /** The kinds it publishes as. */
   kinds?: KindInfo[];
   /** What the project picks once for it (a property, a site), field by field, and what it picked. */
   settings?: Record<string, SpecField> | null;
   setting?: AbilitySetting | null;
-  /** The service it is an ability of: its id, and when the daemon sends it, the card the grid shows. */
-  service?: string | null;
+  /** How a card shows it. */
   service_card?: ServiceCard | null;
-  /** An account of it can be a source too: what the Source switch says. */
+  /** It can teach the project from an owned channel: what the switch says. */
   learn?: LearnInfo | null;
   active_for: string[];
   instructions: InstructionFile[];
@@ -512,64 +524,16 @@ export type Contract = { id: string; label: string; tool: string; configured: st
 export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts: Contract[]; broken: { folder: string; scope: Scope; error: string }[]; guide: Ability | null; index: string; index_fetched?: boolean; env_file: string; project_env_file: string | null };
 /** One of KIQR's own sign-ins: kiqr.cloud, UnblockingAPI. `waiting` while a device code is shown. */
 export type SignIn = { id: string; name: string; signed_in: boolean; account: string | null; per_project?: boolean; scope?: "project" | "machine" | null; waiting: { user_code: string; verification_uri: string; verification_uri_complete?: string | null } | null };
-/** A key on one account: set or not, never its value. */
-export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean; /** A sign-in keeps it (a token): never typed. */ written?: boolean; /** Its values are read through the account once it is signed in. */ choices?: boolean };
-/** The one readiness rule's word for an account. */
-export type AccountStateWord = "ready" | "missing_keys" | "needs_program" | "signed_out" | "needs_hand" | "checking";
-/** Whether an account works, with what is missing and a sentence for the user. */
-export type AccountState = { state: AccountStateWord; ready: boolean; says: string; keys?: string[]; programs?: string[] };
-/** Where an account's secrets are kept: in KIQR, or an item in a password manager account. */
-export type SecretsRef = { store: string; item?: string };
-/** What a project picked once for an ability (a GA4 property), and the account it was read through. */
-export type AbilitySetting = { account: string } & Record<string, unknown>;
-/** One account in this project: who Seemo signs in as on a service (a Reddit login, a Google account, a mail account). It never says where content goes or what Seemo may do there: that is the channel. */
-export type Account = {
-  id: string;
-  label: string;
-  service: string;
-  default: boolean;
-  created_by: string;
-  created_at: string;
-  /** Whether it works now, by the one rule. */
-  state: AccountState;
-  ready: boolean;
-  /** The channels it publishes to. */
-  channels?: { id: string; label: string; domain: string; ownership: Ownership }[];
-  /** Who it is out there (a mail address, a site's host), when the daemon tells. */
-  identity?: string | null;
-  /** The label is the user's, not the service's name. */
-  label_set?: boolean;
-  service_card?: ServiceCard;
-  /** The service's mark (its ability's avatar), as a URL, when it has one. */
-  avatar?: string | null;
-  auth: AccountKey[];
-  connect?: ConnectInfo | null;
-  error?: string;
-  /** Signed in one way or another (a token kept, a key file set). */
-  signed_in?: boolean;
-  /** The abilities that use it, with what each does through it. */
-  used_by?: { id: string; name: string; does: string[] }[];
-  /** Learning from it is allowed: the project learns from it into the profile. */
-  source?: boolean;
-  can_learn?: boolean;
-  learn?: LearnInfo | null;
-  can_publish?: boolean;
-  last_learned?: string | null;
-  learned?: number;
-  /** It signs in on a hosted program (a browser), and how that stands. */
-  has_session?: boolean;
-  session?: SessionStatus;
-  /** A login to sign in with is there (saved in KIQR, or in a password manager). */
-  has_login?: boolean;
-  /** Where its secrets are kept. */
-  secrets?: SecretsRef & { store_label: string; in_kiqr: boolean };
-  /** Which values of a login saved in KIQR are there (names only). */
-  login_set?: string[];
-  /** A person can take the controls of its program. */
-  live_view?: boolean;
-  by_hand?: boolean;
-  start_url?: string | null;
-};
+/** The one readiness rule's word for a credential. */
+export type CredStateWord = "ready" | "missing_fields" | "needs_program" | "signed_out" | "needs_hand" | "checking" | "expired";
+/** What a project picked once for an ability (a GA4 property), and the credential its calls go through. */
+export type AbilitySetting = { credential?: string } & Record<string, unknown>;
+/** How a credential's sign-in on a browser stands, for one project's abilities. */
+export type CredentialSession = { has_session: boolean; session: SessionStatus; has_login: boolean; live_view: boolean; by_hand?: boolean; start_url?: string | null };
+/** What abilities did as a credential, in every project. */
+export type CredentialActivity = { credential: string; label: string; today: number; activity: { at: string; project?: string; ability: string; role: string; tool: string; target?: string; channel?: string; url?: string | null }[] };
+/** Abilities that could use a credential, by host: allowed here, installed, or in the marketplace. */
+export type Recommendation = { credential: string; label: string; domain?: string | null; provider?: string | null; abilities: { id: string; name: string; icon: string; summary: string; status: "allowed" | "installed" | "available"; need: string; for: string; more_access: boolean }[] };
 export type LearnInfo = { label: string };
 /** `unknown`, `checking`, `signed_in`, `signed_out`, `needs_hand`. */
 export type SessionState = "unknown" | "checking" | "signed_in" | "signed_out" | "needs_hand";
@@ -597,7 +561,6 @@ export type HandsCan = { click: boolean; key: boolean; type: boolean; navigate: 
 export type HandsInput = { kind: "click"; x: number; y: number; width: number; height: number } | { kind: "key"; key: string } | { kind: "type"; text: string } | { kind: "navigate"; url: string };
 /** Where KIQR listens, when a factory reset could keep it (it isn't the default). `remote`: reachable from other machines. */
 export type ResetNetwork = { host: string; port: number; remote: boolean };
-export type AccountActivity = { account: string; service: string; today: number; daily_cap: number | null; activity: { at: string; ability: string; role: string; tool: string; target?: string; channel?: string; url?: string | null }[] };
 /** A list of people the project emails: a channel of kind `list`, sent by its publisher. The addresses live outside git; this is the record and the counts. */
 export type MailList = { id: string; label: string; description?: string; publisher: string; contacts: number; unsubscribed: number; created_at: string; added_by?: string };
 export type Contact = { email: string; name?: string; consent?: string; added?: string | null; unsubscribed?: string | null };
@@ -693,6 +656,15 @@ export const api = {
     DEMO ? Promise.resolve(demoAssetText(a, name)) : fetch(api.assetFile(slug, a, name)).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`)))),
   history: (slug: string) => req<{ hash: string; at: string; message: string }[]>(`/api/projects/${slug}/history`),
 
+  // Media: the business's own pictures, from the website and from abilities
+  mediaSources: (slug: string) => req<{ sources: MediaSource[] }>(`/api/projects/${slug}/media/sources`),
+  /** 404 for an unknown source; 412 (with the reason as the error) for one not set up yet. */
+  mediaItems: (slug: string, source: string) => req<{ source: string; items: MediaItem[] }>(`/api/projects/${slug}/media/sources/${encodeURIComponent(source)}/items`),
+  /** Bring one picture into the Library: a source's item, or any URL. Returns the asset, new or already there. */
+  mediaImport: (slug: string, b: { source?: string; id?: string; url?: string; alt?: string }) => req<MediaImport>(`/api/projects/${slug}/media/import`, { method: "POST", body: JSON.stringify(b) }),
+  /** The website's pictures, up to 12, best effort. */
+  mediaImportSite: (slug: string) => req<{ imported: number; assets: { id: string; title: string }[] }>(`/api/projects/${slug}/media/import-site`, { method: "POST", body: "{}" }),
+
   // Seemo
   chats: (slug: string) => req<Chat[]>(`/api/projects/${slug}/chats`),
   createChat: (slug: string, title?: string) => req<Chat>(`/api/projects/${slug}/chats`, { method: "POST", body: JSON.stringify({ title: title ?? "" }) }),
@@ -716,7 +688,6 @@ export const api = {
   todo: (slug: string) => req<Todo>(`/api/projects/${slug}/todo`),
   /** Every kind of place the project knows: its abilities' in full, the marketplace's by name. */
   networks: (slug: string) => req<{ networks: Network[] }>(`/api/projects/${slug}/networks`),
-  dismissSuggestion: (slug: string, kind: string) => req<{ dismissed: string }>(`/api/projects/${slug}/suggestions/${encodeURIComponent(kind)}/dismiss`, { method: "POST", body: "{}" }),
   /** Drop the cached marketplace index and read it again in the background; `marketplace_refreshed` follows. */
   refreshMarketplace: () => req<void>("/api/abilities/refresh-index", { method: "POST", body: "{}" }),
 
@@ -778,36 +749,29 @@ export const api = {
   access: (slug: string) => req<Access>(`/api/projects/${slug}/access`),
   grant: (slug: string, ability: string, credential: string) => req<Access>(`/api/projects/${slug}/access/grant`, { method: "POST", body: JSON.stringify({ ability, credential }) }),
   revoke: (slug: string, ability: string, credential: string) => req<Access>(`/api/projects/${slug}/access/grant`, { method: "DELETE", body: JSON.stringify({ ability, credential }) }),
-  startConnect: (slug: string, id: string, b: { account?: string; label?: string; origin: string; values: Record<string, string> }) =>
-    req<{ url: string; callback: boolean; relayed?: boolean; account: string | null; fields: string[] }>(`/api/projects/${slug}/connect/${id}`, { method: "POST", body: JSON.stringify(b) }),
   signIns: (slug?: string) => req<{ signins: SignIn[]; cloud_url: string }>(`/api/signins${slug ? `?project=${encodeURIComponent(slug)}` : ""}`),
   /** `redirect`: open `url`. `device`: show the code and where to enter it; the daemon waits for the approval. */
   startSignIn: (id: string, origin: string, project?: string) => req<{ mode: "redirect"; url: string } | { mode: "device"; user_code: string; verification_uri: string; verification_uri_complete?: string | null }>(`/api/signins/${id}/start`, { method: "POST", body: JSON.stringify({ origin, project }) }),
   signOut: (id: string, project?: string) => req<{ signed_in: boolean }>(`/api/signins/${id}${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "DELETE" }),
 
-  // Accounts: who Seemo signs in as, per service, with its own keys
-  accounts: (slug: string, service?: string) => req<{ accounts: Account[] }>(`/api/projects/${slug}/accounts${service ? `?service=${encodeURIComponent(service)}` : ""}`),
-  account: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/accounts/${id}`),
-  /** A new account of a service: its keys, where its secrets are kept. */
-  createAccount: (slug: string, b: { service: string; label?: string; secrets?: Record<string, string>; same_as?: string; keep?: SecretsRef }) => req<Account>(`/api/projects/${slug}/accounts`, { method: "POST", body: JSON.stringify(b) }),
-  updateAccount: (slug: string, id: string, p: { label?: string; secrets?: SecretsRef }) => req<Account>(`/api/projects/${slug}/accounts/${id}`, { method: "PUT", body: JSON.stringify(p) }),
-  deleteAccount: (slug: string, id: string) => req<void>(`/api/projects/${slug}/accounts/${id}`, { method: "DELETE" }),
-  /** The values a key or a setting can take, read through the account once it is signed in. */
-  accountChoices: (slug: string, id: string, name: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/accounts/${id}/choices/${name}`),
-  setAccountSecret: (slug: string, id: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/accounts/${id}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
-  /** Signing in on a hosted program: check and sign in now (in the background; `account_state_changed` says how it went), forget it, or read how it stands. */
-  accountSignIn: (slug: string, id: string) => req<{ started: boolean; note?: string; session?: SessionStatus }>(`/api/projects/${slug}/accounts/${id}/signin`, { method: "POST", body: "{}" }),
-  accountSignOut: (slug: string, id: string) => req<{ session: SessionStatus }>(`/api/projects/${slug}/accounts/${id}/signout`, { method: "POST", body: "{}" }),
-  accountSession: (slug: string, id: string) => req<{ has_session: boolean; session: SessionStatus; has_login: boolean; live_view: boolean }>(`/api/projects/${slug}/accounts/${id}/session`),
-  /** Take the controls of an account's program: the live view. */
-  startHands: (slug: string, id: string, url?: string) => req<{ hands: string; token: string; can: HandsCan }>(`/api/projects/${slug}/accounts/${id}/hands`, { method: "POST", body: JSON.stringify(url ? { url } : {}) }),
+  // Credentials at work: sign-ins on a browser (for a project's abilities), the live view, what was done, recommendations
+  credentialSession: (slug: string, id: string) => req<CredentialSession>(`/api/projects/${slug}/credentials/${encodeURIComponent(id)}/session`),
+  /** Check and sign in now, in the background; `credential_state_changed` says how it went. */
+  credentialSignIn: (slug: string, id: string) => req<{ started: boolean; note?: string; session?: SessionStatus }>(`/api/projects/${slug}/credentials/${encodeURIComponent(id)}/signin`, { method: "POST", body: "{}" }),
+  credentialSignOut: (slug: string, id: string) => req<{ session: SessionStatus }>(`/api/projects/${slug}/credentials/${encodeURIComponent(id)}/signout`, { method: "POST", body: "{}" }),
+  /** Take the controls of a login's browser: the live view. */
+  startHands: (slug: string, id: string, url?: string) => req<{ hands: string; token: string; can: HandsCan }>(`/api/projects/${slug}/credentials/${encodeURIComponent(id)}/hands`, { method: "POST", body: JSON.stringify(url ? { url } : {}) }),
   handsInput: (slug: string, hands: string, token: string, input: HandsInput) => req<{ ok: boolean; message?: string | null }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/input`, { method: "POST", body: JSON.stringify({ token, ...input }) }),
   endHands: (slug: string, hands: string, token: string, signedIn: boolean) => req<{ ended: boolean }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/end`, { method: "POST", body: JSON.stringify({ token, signed_in: signedIn }), keepalive: true }),
-  /** Make an account the one its service uses when nothing names one. */
-  defaultAccount: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/accounts/${id}/default`, { method: "POST", body: "{}" }),
-  accountActivity: (slug: string, id: string, limit = 20) => req<AccountActivity>(`/api/projects/${slug}/accounts/${id}/activity?limit=${limit}`),
-  /** What the project picks once for an ability (a GA4 property), through one of its service's accounts. */
-  setAbilitySettings: (slug: string, ability: string, account: string, values: Record<string, string>) => req<{ ability: string; setting: AbilitySetting }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/settings`, { method: "PUT", body: JSON.stringify({ account, values }) }),
+  credentialActivity: (id: string, limit = 20) => req<CredentialActivity>(`/api/vault/${encodeURIComponent(id)}/activity?limit=${limit}`),
+  /** Abilities that could use the credentials (or one), matched by host. */
+  recommendations: (slug: string, credential?: string) => req<{ recommendations: Recommendation[] }>(`/api/projects/${slug}/recommendations${credential ? `?credential=${encodeURIComponent(credential)}` : ""}`),
+  /** The values a setting can take, read through the credential the ability's calls go through. */
+  abilityChoices: (slug: string, ability: string, name: string, credential?: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/choices/${name}${credential ? `?credential=${encodeURIComponent(credential)}` : ""}`),
+  /** Start an ability's own one-click sign-in for a need; `callback: false` means the user types what the page shows. */
+  abilityConnect: (slug: string, ability: string, b: { origin: string; need?: string; values?: Record<string, string> }) => req<{ url: string; callback: boolean; relayed: boolean; fields: string[]; template?: string }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/connect`, { method: "POST", body: JSON.stringify(b) }),
+  /** What the project picks once for an ability (a GA4 property, a site), and the credential its calls go through. */
+  setAbilitySettings: (slug: string, ability: string, credential: string, values: Record<string, string>) => req<{ ability: string; setting: AbilitySetting }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/settings`, { method: "PUT", body: JSON.stringify({ credential, values }) }),
 
   // Channels: everywhere the business's people are, what Seemo may do there, who it posts as
   channels: (slug: string) => req<ChannelsView>(`/api/projects/${slug}/channels`),
@@ -856,7 +820,7 @@ let demoIntake: Intake = { goal: "", goal_note: "", customers: "", time: "", net
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith("/api/signins")) return Promise.resolve({ signins: [{ id: "kiqr-cloud", name: "kiqr.cloud", signed_in: false, account: null, waiting: null }, { id: "unblockingapi", name: "UnblockingAPI", signed_in: false, account: null, waiting: null }], cloud_url: "https://kiqr.cloud" } as T);
-  if (/\/(chats|approvals|tasks|calendar|accounts|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|channels|hands|access)(\/|\?|$)/.test(path) || path.startsWith("/api/vault") || path === "/api/connect/providers" || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|credentials|recommendations|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|channels|hands|access)(\/|\?|$)/.test(path) || path.startsWith("/api/vault") || path === "/api/connect/providers" || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);
@@ -864,6 +828,7 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === "/api/projects") return Promise.resolve((demoState.created ? [demoProject] : []) as T);
   if (path.startsWith("/api/projects/") && path.split("/").length === 4) return Promise.resolve(demoProject as T);
   if (path.endsWith("/brand/kit")) return Promise.resolve({ site_name: "UnblockingAPI", palette: { dark: "#0b1220", light: "#f8fafc", accent: "#e11d74" }, logo: null, html_available: true } as T);
+  if (path.includes("/media/")) return demoMediaRequest<T>(path, init);
   if (path === "/api/asset-types" || path.includes("/assets")) return demoAssetRequest<T>(path, init);
   if (path.endsWith("/brief")) return Promise.resolve((init?.method === "PUT" ? JSON.parse(String(init.body)) : demoState.created ? demoBrief : null) as T);
   if (path.endsWith("/build")) return Promise.resolve({ stage: "crawling", pct: 0, eta_secs: null, max_pages: 200, found: 0, fetched: 0, queued: 0, read: 0, facts: 0, sections_done: 0, sections_total: 12, running: true, started_at: null, last_at: null, problem: null } as T);

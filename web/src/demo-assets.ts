@@ -1,5 +1,5 @@
 // The library the demo shows for unblockingapi.com: a few things Seemo has made from the brief.
-import type { Asset, AssetType, NewAsset, Spot } from "./api";
+import type { Asset, AssetType, MediaImport, MediaItem, MediaSource, NewAsset, Spot } from "./api";
 import { demoBrand } from "./demo-brief";
 
 const slot = (role: string, ...accept: string[]) => ({ role, accept });
@@ -14,6 +14,7 @@ export const demoTypes: AssetType[] = [
   { id: "audio", name: "Audio", plural: "Audio", icon: "audio-lines", description: "Songs, jingles, voice-overs and podcast clips.", preview: "audio", files: [slot("audio", "mp3")], image: "none", builtin: true },
   { id: "ad-campaign", name: "Ad campaign", plural: "Ad campaigns", icon: "megaphone", description: "Ad campaigns with ad groups, keywords and copy, for Google Ads, Meta and others.", preview: "campaign", files: [slot("campaign", "yaml")], image: "none", builtin: true },
   { id: "email", name: "Email", plural: "Emails", icon: "mail", description: "Newsletters and email campaigns.", preview: "article", files: [slot("body", "md")], image: "none", builtin: true },
+  { id: "media", name: "Media", plural: "Media", icon: "images", description: "Your own pictures, from your website or a folder, a drive or a bucket you connect, for Seemo to use in what it makes.", preview: "media", files: [slot("image", "png", "jpg", "webp", "gif", "svg"), slot("video", "mp4"), slot("audio", "mp3"), slot("document", "pdf")], image: "always", builtin: true },
 ];
 
 const ago = (h: number) => new Date(Date.now() - h * 36e5).toISOString();
@@ -37,6 +38,18 @@ const texts: Record<string, string> = {
 };
 
 let assets: Asset[] = [
+  {
+    id: "og-image",
+    type: "media",
+    title: "UnblockingAPI",
+    status: "draft",
+    tags: [],
+    created: { at: ago(26), by: "kiqr" },
+    updated_at: ago(26),
+    files: [{ ...file("image", "og-image.png", 48200), width: 1200, height: 630 }],
+    source: { origin: "website", item: demoBrand.images[0].url, url: demoBrand.images[0].url, page: demoBrand.images[0].page, alt: demoBrand.images[0].alt, imported_at: ago(26) },
+    publications: [],
+  },
   {
     id: "scrape-idealista-without-getting-blocked",
     type: "article",
@@ -159,6 +172,7 @@ const images: Record<string, string> = {
   "post/templates-launch-thread/card.png": img(2),
   "meme/its-a-javascript-shell/meme.png": img(0),
   "image/template-cards/card.png": img(3),
+  "media/og-image/og-image.png": img(0),
 };
 
 export function demoAssetFile(a: Pick<Asset, "type" | "id">, name: string) {
@@ -256,6 +270,53 @@ export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T
   if (init?.method === "PATCH") return ok(settle(body));
   if (init?.method === "PUT") return ok(settle(JSON.parse(String(init.body))));
   return ok(found);
+}
+
+// The website's pictures as a media source: the first three of the brand's images, the share image already in.
+const mediaItems: MediaItem[] = demoBrand.images.slice(0, 3).map((im, i) => ({
+  source: "website",
+  id: im.url,
+  name: im.url.split("/").pop() ?? im.url,
+  mime: "image/png",
+  bytes: [48200, 61400, 57900][i],
+  modified: null,
+  url: im.url,
+  alt: im.alt,
+  page: im.page,
+  imported: i === 0 ? "og-image" : null,
+}));
+
+/** Bring one website item into the demo's library, or find it there. */
+function importMedia(item: MediaItem): MediaImport {
+  const was = item.imported ? assets.find((a) => a.type === "media" && a.id === item.imported) : undefined;
+  if (was) return { ok: true, new: false, asset: { type: "media", id: was.id, title: was.title }, picture: null, note: "Already in the Library." };
+  const id = item.name.replace(/\.[a-z0-9]+$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-") || "picture";
+  images[`media/${id}/${item.name}`] = item.url ?? "";
+  const a: Asset = { id, type: "media", title: item.alt || item.name, status: "draft", tags: [], created: { at: ago(0), by: "kiqr" }, updated_at: ago(0), files: [{ ...file("image", item.name, item.bytes ?? 0), width: 1200, height: 630 }], source: { origin: "website", item: item.id, url: item.url, page: item.page, alt: item.alt, imported_at: ago(0) }, publications: [] };
+  assets = [a, ...assets];
+  item.imported = id;
+  return { ok: true, new: true, asset: { type: "media", id, title: a.title }, picture: null, note: "Added to the Library." };
+}
+
+/** `/media/…`: the website is the one source in the demo. */
+export function demoMediaRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const ok = (v: unknown) => Promise.resolve(v as T);
+  const [, rest = ""] = path.split("/media");
+  const website = (): MediaSource => ({ id: "website", name: "Website", icon: "globe", builtin: true, ready: true, found: mediaItems.length, imported: mediaItems.filter((i) => i.imported).length, note: "" });
+  if (rest === "/sources") return ok({ sources: [website()] });
+  if (rest === "/sources/website/items") return ok({ source: "website", items: mediaItems.map((i) => ({ ...i })) });
+  if (rest.startsWith("/sources/")) return Promise.reject(new Error("No such source."));
+  if (rest === "/import-site") {
+    const made = mediaItems.filter((i) => !i.imported).map((i) => importMedia(i).asset);
+    return ok({ imported: made.length, assets: made.map(({ id, title }) => ({ id, title })) });
+  }
+  if (rest === "/import") {
+    const b = init?.body ? JSON.parse(String(init.body)) : {};
+    const item = mediaItems.find((i) => i.id === b.id || (b.url && i.url === b.url));
+    if (!item) return Promise.reject(new Error("The demo only imports the website's pictures."));
+    return ok(importMedia(item));
+  }
+  return Promise.reject(new Error("404"));
 }
 
 /** The demo's assets as they stand, for the To do page and the calendar. */

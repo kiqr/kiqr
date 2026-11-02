@@ -1,12 +1,11 @@
-// The live view ("Take the controls"): what an account's hosted program (a
+// The live view ("Take the controls"): what a login's hosted program (a
 // browser) shows, a few pictures a second over the project's event stream,
 // and a person driving it for a moment to finish a sign-in the runner could
 // not (a captcha, a device check). A click on the picture clicks there; keys
 // typed while it has focus go to the page (text in short batches, Enter,
 // Backspace, Tab, Escape and the arrows one by one); the address bar opens a
 // page. "I'm signed in" ends it and has KIQR check; "Done" just ends it.
-// Pictures are painted and dropped, never kept. Opened from an account card,
-// the connect wizard, and `#hands=<account>` on the Accounts page.
+// Pictures are painted and dropped, never kept. Opened from a login in the Vault.
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "motion/react";
@@ -64,7 +63,7 @@ export function Hands({ slug, account, name, startUrl, onClose }: { slug: string
     return () => {
       gone = true;
       window.clearTimeout(timer.current);
-      // Closed some other way (the page left): free the account.
+      // Closed some other way (the page left): free the login.
       const s = live.current;
       if (s && !over.current) void api.endHands(slug, s.hands, s.token, false).catch(() => undefined);
     };
@@ -74,8 +73,8 @@ export function Hands({ slug, account, name, startUrl, onClose }: { slug: string
     slug,
     (e) => {
       const s = live.current;
-      // Events name the account (`account`) and the session (`hands`): only this one's.
-      if (!s || e.hands !== s.hands || (e.account != null && e.account !== account)) return;
+      // Events name the credential and the session (`hands`): only this one's.
+      if (!s || e.hands !== s.hands || (e.credential != null && e.credential !== account)) return;
       if (e.type === "hands_frame" && !over.current) {
         // Only the latest picture is held, to paint it.
         setFrame(`data:${String(e.mime || "image/png")};base64,${String(e.data ?? "")}`);

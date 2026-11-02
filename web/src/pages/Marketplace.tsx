@@ -1,16 +1,13 @@
 // The marketplace: what Seemo could do, from the index kiqr.cloud hosts plus
 // what ships with KIQR and is not installed yet. Installing is for the
-// machine. A service's abilities (one that signs in to an account) are listed
-// too, with Connect in place of Install: the connect wizard under Accounts
-// installs them with the account. Advanced: a folder or git URL, broken
-// folders.
+// machine; one that asks for a credential is given one per project on its
+// Access tab. Advanced: a folder or git URL, broken folders.
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, Plug, RefreshCw, Search, Terminal, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Download, FolderOpen, Loader2, RefreshCw, Search, Terminal, X } from "lucide-react";
 import { api, type Ability, type Scope } from "../api";
-import { AbilityIcon, Author, hasNewer, isService, OneClick, oneClick, serviceName } from "./abilityBits";
-import { connectPath, serviceOf } from "./Accounts";
+import { AbilityIcon, Author, hasNewer, isService, OneClick, oneClick } from "./abilityBits";
 
 const SHELVES: { id: string; label: string }[] = [
   { id: "all", label: "All" },
@@ -49,7 +46,7 @@ export function Marketplace({ slug, items, index, indexFetched, loaded, onOpen, 
         Marketplace <span className="n">{items.length}</span>
       </h2>
       <p className="cm-sec-ds">
-        More abilities, by KIQR and by others. Installed once for this machine and switched on per project. Services you connect (WordPress, Google, email…) are under <Link to={`/p/${slug}/accounts`}>Setup → Accounts</Link>.
+        More abilities, by KIQR and by others. Installed once for this machine and switched on per project. One that needs a login or a key asks for it from the <Link to={`/p/${slug}/vault`}>Vault</Link> once installed.
       </p>
       <div className="mk-bar">
         <label className="mk-search">
@@ -97,7 +94,7 @@ export function Marketplace({ slug, items, index, indexFetched, loaded, onOpen, 
   );
 }
 
-function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability; i: number; onOpen: (tab?: "connect") => void; onChange: () => void }) {
+function MarketCard({ slug: _slug, a, i, onOpen, onChange }: { slug: string; a: Ability; i: number; onOpen: (tab?: "connect") => void; onChange: () => void }) {
   const service = isService(a);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -166,7 +163,7 @@ function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability
             Publishes to {c}
           </span>
         ))}
-        {service ? <span className="chip dimmed">via your {serviceName(a)} account</span> : a.auth.length > 0 && <span className="chip dimmed">needs a key</span>}
+        {service ? <span className="chip dimmed">needs {a.access?.find((n) => !n.optional)?.describe ?? "a credential"}</span> : a.auth.length > 0 && <span className="chip dimmed">needs a key</span>}
       </p>
       {error && a.installed && (
         <p className="err" onClick={(e) => e.stopPropagation()}>
@@ -186,10 +183,6 @@ function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability
               </button>
             )}
           </>
-        ) : service ? (
-          <Link className="mk-install-btn" to={connectPath(slug, { service: serviceOf(a).id })}>
-            <Plug size={14} /> Connect
-          </Link>
         ) : (
           <button className={`mk-install-btn ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)}>
             <Download size={14} /> {open ? "Cancel" : "Install"}
@@ -208,12 +201,12 @@ function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability
   );
 }
 
-/** Install is for the machine: the code only. One that works through an account is connected under Accounts afterwards. */
+/** Install is for the machine: the code only. One that asks for a credential is given one per project afterwards (Access). */
 export function InstallPanel({ a, busy, error, onCancel, onInstall }: { a: Ability; busy: boolean; error: string | null; onCancel: () => void; onInstall: () => void }) {
   return (
     <motion.div className="mk-install" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }} onClick={(e) => e.stopPropagation()}>
       {isService(a) ? (
-        <p className="muted sm">Installed once for this machine. Then connect this project's {serviceName(a)} account under Accounts{a.connect ? ` with “${a.connect.label}”` : ""}.</p>
+        <p className="muted sm">Installed once for this machine. Then allow it {a.access?.find((n) => !n.optional)?.describe ?? "a credential"} from the Vault for this project, under Access.</p>
       ) : a.instructions.length > 0 || a.transport === "instructions" ? (
         <p className="muted sm">Instructions Seemo reads before this kind of work. Nothing to connect.</p>
       ) : null}

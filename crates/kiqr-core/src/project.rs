@@ -29,12 +29,14 @@ pub struct Project {
     pub ability_settings: BTreeMap<String, AbilitySetting>,
 }
 
-/// One ability's settings in a project: the account its choices were read
-/// through and the values (`property: "123"`), which fill its calls.
+/// One ability's settings in a project: the credential its calls go through
+/// (and its choices were read through) and the values (`property: "123"`),
+/// which fill its calls.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AbilitySetting {
-    pub account: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub credential: String,
     #[serde(flatten)]
     pub values: BTreeMap<String, serde_json::Value>,
 }
