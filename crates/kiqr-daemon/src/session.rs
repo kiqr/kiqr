@@ -211,7 +211,7 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     drop(cred);
     let outcome = match result {
         Ok(Some(b)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &format!("the site asks for a person: {b}"))).await,
-        Ok(None) => match run_check(app, slug, &c, &m).await {
+        Ok(None) => match check_again_if_unread(app, slug, &c, &m, &sess, run_check(app, slug, &c, &m).await).await {
             Ok((true, _, _)) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
             // What the check saw, in the model's words when it read the page, so the message says why.
             Ok((false, t, said)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &blocked(&sess, &t).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| match said {
@@ -225,6 +225,24 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     };
     app.redact.write().unwrap_or_else(|e| e.into_inner()).retain(|v| !struck.contains(v));
     Ok(outcome)
+}
+
+/// A check after signing in that found nothing to read (a page that is
+/// still loading, or one whose tab the browser lost: X's home has crashed the
+/// browser's page process right after a sign-in) is run once more, a few
+/// seconds later, on a fresh load of the same page. The login is kept by then.
+async fn check_again_if_unread(app: &App, slug: &str, c: &Account, m: &Manifest, sess: &kiqr_core::extensions::Session, first: Result<(bool, String, Option<String>)>) -> Result<(bool, String, Option<String>)> {
+    match first {
+        Ok((false, t, said)) if blocked(sess, &t).is_none() => {
+            tracing::info!(account = %c.id, said = ?said, "the check after signing in found nothing it could read; checking once more");
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            match run_check(app, slug, c, m).await {
+                Ok(again) => Ok(again),
+                Err(_) => Ok((false, t, said)),
+            }
+        }
+        other => other,
+    }
 }
 
 /// The `login` steps with the credentials in their context, one at a time so
