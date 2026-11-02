@@ -4,6 +4,8 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+## v0.5.0 — 2026-11-02
+
 - **The Vault, Channels and abilities replace accounts and the Audience.** There is no migration: accounts made by an earlier KIQR are not carried over; add their logins and keys to the Vault once.
   - **The Vault** (Setup → Vault) keeps every credential Seemo can be given (logins, API keys, app passwords, signed-in apps, mail servers, or any fields) encrypted in one file on this machine, each scoped to the domains it is for and shown with that site's icon. Values are never shown again; a login's password and two-factor key are typed by Seemo's sign-in runner and handed to nothing else. "Sign in with Google" and "Sign in with GitHub" (through kiqr.cloud) come first in its Add panel. `kiqr vault ls|add|set|rm|signin|signout|activity|recommend`.
   - **Channels** (Marketing → Channels) are everywhere your people are: your own profiles, pages, blog and mailing lists, and the communities you take part in. Each says what Seemo may do there (read, publish and reply: off, ask me first, or on its own) and who it posts as (its publisher, a credential from the Vault), or the one thing missing with its fix. The crawl adds the profiles it finds on your site as channels. Anywhere that is not a channel, Seemo asks first, and your yes adds it. `kiqr channels`.

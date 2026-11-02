@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "kiqr"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "kiqr-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1751,7 +1751,7 @@ dependencies = [
 
 [[package]]
 name = "kiqr-daemon"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
