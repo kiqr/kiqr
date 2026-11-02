@@ -34,9 +34,9 @@ export function LibraryPage() {
   // Cards without an image take the brand's accent, so the grid still looks like the business.
   const kit = useAsync(() => api.brandKit(slug).catch(() => null), [slug]);
   const brand = useAsync(() => api.brand(slug), [slug]);
-  // The Audience entries' names, for where each asset went.
-  const audience = useAsync(() => api.audience(slug).catch(() => ({ entries: [], kinds: [] })), [slug]);
-  const placeName = (id?: string) => audience.data?.entries.find((e) => e.id === id)?.label ?? id;
+  // The channels' names, for where each asset went.
+  const channels = useAsync(() => api.channels(slug).catch(() => ({ channels: [], kinds: [] })), [slug]);
+  const placeName = (id?: string) => channels.data?.channels.find((e) => e.id === id)?.label ?? id;
   const accent = kit.data?.palette?.accent;
   const [status, setStatus] = useState<AssetStatus | null>(null);
   // Posts open in a modal over the grid; the page behind stays where it was.
@@ -176,7 +176,7 @@ function TypeStrip({ slug, types, assets }: { slug: string; types: AssetType[]; 
   );
 }
 
-function AssetCard({ slug, a, whereTo, t, i, showType, accent, onOpen }: { slug: string; a: Asset; whereTo: (audience?: string) => string | undefined; t?: AssetType; i: number; showType: boolean; accent?: string; onOpen?: () => void }) {
+function AssetCard({ slug, a, whereTo, t, i, showType, accent, onOpen }: { slug: string; a: Asset; whereTo: (channel?: string) => string | undefined; t?: AssetType; i: number; showType: boolean; accent?: string; onOpen?: () => void }) {
   const Icon = assetIcon(t?.icon);
   const visual = a.files.find((f) => IMAGE.test(f.path));
   const src = visual ? api.assetFile(slug, a, visual.path) : "";
@@ -209,7 +209,7 @@ function AssetCard({ slug, a, whereTo, t, i, showType, accent, onOpen }: { slug:
             <StatusChip a={a} />
             {a.publications.map((p, k) => (
               <span key={k} className="chip ok" title={p.account}>
-                <Send size={11} /> {p.to ?? whereTo(p.audience) ?? p.account}
+                <Send size={11} /> {p.to ?? whereTo(p.channel) ?? p.account}
               </span>
             ))}
             <span className="when">

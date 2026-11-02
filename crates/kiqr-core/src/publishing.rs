@@ -1,4 +1,4 @@
-//! What publishing needs besides the account and the Audience entry: HTML
+//! What publishing needs besides the publisher and the channel: HTML
 //! for email bodies and blog posts, and campaign tags on links to the site.
 
 /// Markdown to simple HTML for email bodies and blog posts.

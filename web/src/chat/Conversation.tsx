@@ -208,21 +208,21 @@ function Steps({ slug, id, steps, live }: { slug: string; id: string; steps: Ste
 // ------------------------------------------------------------------ cards
 
 /** Where a publish goes and through whom, as the card carries it (`target`). */
-type PublishTarget = { audience?: string | null; label?: string; kind?: string; section?: string; account?: string; account_label?: string; new?: boolean };
+type PublishTarget = { channel?: string | null; label?: string; kind?: string; ownership?: string; account?: string; account_label?: string; new?: boolean };
 /** Where something happens through an action, when it names a spot (`spot`). */
-type ActionSpot = { kind?: string; kind_label?: string; label?: string; audience?: string | null; new?: boolean };
+type ActionSpot = { kind?: string; kind_label?: string; label?: string; channel?: string | null; new?: boolean };
 
-/** Where a publish goes, in words: "To r/homelab via u/acme_dev", "Send to Newsletter (412) from hello@kiqr.dev". */
+/** Where a publish goes, in words: "To r/homelab as u/acme_dev", "Send to Newsletter (412) from hello@kiqr.dev". */
 export function publishWhere(p: Record<string, unknown>): string {
   const t = (p.target ?? {}) as PublishTarget;
-  const via = t.account_label ? ` via ${t.account_label}` : "";
+  const via = t.account_label && t.account_label !== t.label ? ` as ${t.account_label}` : "";
   if (p.recipients != null) return `Send to ${t.label ?? "the list"} (${String(p.recipients)})${t.account_label ? ` from ${t.account_label}` : ""}`;
   return `To ${t.label ?? ""}${via}`;
 }
 
-/** The note on a card whose yes adds somewhere new to the Audience. */
+/** The note on a card whose yes makes somewhere new a channel. */
 function NewSpotNote() {
-  return <p className="new-spot sm">Not in your Audience yet; approving adds it.</p>;
+  return <p className="new-spot sm">Not one of your channels yet; approving adds it.</p>;
 }
 
 /** Who an email goes to, in words: "Send to Newsletter (412) from hello@kiqr.dev", or to an address. */
@@ -455,7 +455,7 @@ export function ApprovalCard({ slug, card, compact }: { slug: string; card: Card
         <>
           <p className="ttl">{String(p.label ?? "")}</p>
           {!!p.description && <p className="sched">{String(p.description)}</p>}
-          <p className="muted sm">It starts empty: you add people under Audience, and Seemo never sees their addresses.</p>
+          <p className="muted sm">It starts empty: you add people under Channels, and Seemo never sees their addresses.</p>
         </>
       ) : isAbility ? (
         <>

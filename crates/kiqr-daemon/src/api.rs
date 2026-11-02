@@ -55,7 +55,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::vault::routes())
         .merge(crate::access::routes())
         .merge(crate::accounts::routes())
-        .merge(crate::audience::routes())
+        .merge(crate::channels::routes())
         .merge(crate::networks::routes())
         .merge(crate::market::routes())
         .merge(crate::images::routes())
@@ -736,9 +736,9 @@ async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(
     draft_posts(&app, &slug, g.count, g.network.trim()).await
 }
 
-/// Posts for a network that just joined the Audience: three for it, once, when the
+/// Posts for a network that just became a channel: three for it, once, when the
 /// business profile is there and none were written for it yet. Nothing on the first run
-/// before anything is in the Audience: posts are written for the places the business
+/// before there are channels: posts are written for the places the business
 /// publishes, not for nowhere. Failures are logged, never shown here; the Library and
 /// Seemo's own line tell.
 pub(crate) async fn posts_for_new_account(app: &App, slug: &str, kind: &str) {

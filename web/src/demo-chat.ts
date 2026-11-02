@@ -1,6 +1,6 @@
 // Demo mode for Seemo: a saved conversation, a task, and a scripted reply
 // when you send something, so the chat screens work without a daemon.
-import type { Ability, AbilitiesView, AbilitySetting, Account, AccountKey, AccountState, AccountSummary, Allow, AudienceEntry, AudienceKind, CalendarItem, Campaign, Chat, ChatView, Contact, Credential, CredentialTemplate, KiqrEvent, KindInfo, ListSend, MailList, Message, Performance, Permission, Plan, PlanView, Run, SessionStatus, SpecField, Spot, Task, Todo } from "./api";
+import type { Ability, AbilitiesView, AbilitySetting, Account, AccountKey, AccountState, AccountSummary, CalendarItem, Campaign, Channel, ChannelKind, ChannelMode, Chat, ChatView, Contact, Credential, CredentialTemplate, KiqrEvent, KindInfo, ListSend, MailList, Message, Performance, Plan, PlanView, Run, SessionStatus, SpecField, Spot, Task, Todo } from "./api";
 import { demoAssetList, setDemoTargets, type DemoTarget } from "./demo-assets";
 
 const slug = "unblockingapi-com";
@@ -11,8 +11,6 @@ const DEMO_IMAGE =
     `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" font-family="Inter, sans-serif"><rect width="1600" height="900" fill="#0B1220"/><rect x="128" y="128" width="12" height="644" fill="#ef2f72"/><text x="188" y="330" fill="#FFFFFF" font-size="88" font-weight="700">One request.</text><text x="188" y="436" fill="#FFFFFF" font-size="88" font-weight="700">One credit.</text><text x="188" y="540" fill="#CBD5E1" font-size="36">No multipliers. Failed requests are free.</text><text x="188" y="744" fill="#ef2f72" font-size="30" font-weight="600">UnblockingAPI</text></svg>`,
   );
 
-const ACTS = ["reply", "publish", "manage"];
-const perm = (pairs: [string, Allow][]): Permission[] => pairs.map(([role, allow]) => ({ role, allow, acts: ACTS.includes(role) }));
 const key = (env: string, label: string, more: Partial<AccountKey> = {}): AccountKey => ({ env, label, help: "", optional: false, set: true, ...more });
 const IN_KIQR = { store: "kiqr", store_label: "KIQR", in_kiqr: true };
 const GOOGLE_CARD = { id: "google", name: "Google", icon: "chart", group: "numbers" };
@@ -26,19 +24,19 @@ const demoChoices: Record<string, { value: string; label: string }[]> = {
 };
 const session = (state: SessionStatus["state"], message: string, signedIn: string | null = null): SessionStatus => ({ state, message, checked_at: ago(12), signed_in_at: signedIn });
 
-/** A demo account before `settle` works out its state, readiness and Audience, as the daemon does on every read. */
-type Seed = Omit<Account, "state" | "ready" | "audience">;
+/** A demo account before `settle` works out its state, readiness and channels, as the daemon does on every read. */
+type Seed = Omit<Account, "state" | "ready" | "channels">;
 const seeds: Seed[] = [
   // One Google sign-in, read by Google Analytics and Search Console.
-  { id: "google", label: "Google", service: "google", default: true, created_by: "user", created_at: ago(4000), identity: "team@unblockingapi.com", allow: perm([["read", "auto"], ["measure", "auto"]]), auth: [key("GOOGLE_TOKEN", "Sign-in", { written: true })], connect: { label: "Sign in with Google", flow: "oauth2", needs: [], returns: ["GOOGLE_TOKEN"], https_only: false, via_cloud: true }, signed_in: true, service_card: GOOGLE_CARD, secrets: IN_KIQR, used_by: [{ id: "google-analytics", name: "Read Google Analytics", does: ["measure"] }, { id: "search-console", name: "Read Google Search Console", does: ["measure"] }] },
+  { id: "google", label: "Google", service: "google", default: true, created_by: "user", created_at: ago(4000), identity: "team@unblockingapi.com", auth: [key("GOOGLE_TOKEN", "Sign-in", { written: true })], connect: { label: "Sign in with Google", flow: "oauth2", needs: [], returns: ["GOOGLE_TOKEN"], https_only: false, via_cloud: true }, signed_in: true, service_card: GOOGLE_CARD, secrets: IN_KIQR, used_by: [{ id: "google-analytics", name: "Read Google Analytics", does: ["measure"] }, { id: "search-console", name: "Read Google Search Console", does: ["measure"] }] },
   // A mail account: it sends to the lists.
-  { id: "hello-mail", label: "hello@unblockingapi.com", service: "kiqr-smtp", default: true, created_by: "user", created_at: ago(300), identity: "hello@unblockingapi.com", allow: perm([["read", "auto"], ["publish", "ask"]]), auth: [key("SMTP_HOST", "Mail server"), key("SMTP_USER", "User name"), key("SMTP_PASSWORD", "Password")], signed_in: true, service_card: { id: "kiqr-smtp", name: "Email", icon: "mail", group: "email" }, secrets: IN_KIQR, used_by: [{ id: "kiqr-smtp", name: "Send email from your mail account", does: ["publish"] }] },
+  { id: "hello-mail", label: "hello@unblockingapi.com", service: "kiqr-smtp", default: true, created_by: "user", created_at: ago(300), identity: "hello@unblockingapi.com", auth: [key("SMTP_HOST", "Mail server"), key("SMTP_USER", "User name"), key("SMTP_PASSWORD", "Password")], signed_in: true, service_card: { id: "kiqr-smtp", name: "Email", icon: "mail", group: "email" }, secrets: IN_KIQR, used_by: [{ id: "kiqr-smtp", name: "Send email from your mail account", does: ["publish"] }] },
   // Signed in on KIQR's own browser from a login saved in KIQR.
-  { id: "x-unblockingapi", label: "@unblockingapi", service: "x", default: true, created_by: "user", created_at: ago(1500), identity: "@unblockingapi", allow: perm([["read", "auto"], ["reply", "ask"], ["publish", "ask"]]), auth: [], signed_in: true, service_card: { id: "x", name: "X", icon: "at-sign", group: "social" }, secrets: IN_KIQR, used_by: [{ id: "x-browser", name: "X in a browser", does: ["read", "reply", "publish"] }], has_session: true, session: session("signed_in", "signed in", ago(3000)), has_login: true, login_set: ["LOGIN_USERNAME", "LOGIN_PASSWORD", "LOGIN_TOTP_SECRET"], live_view: true, start_url: "https://x.com/login" },
+  { id: "x-unblockingapi", label: "@unblockingapi", service: "x", default: true, created_by: "user", created_at: ago(1500), identity: "@unblockingapi", auth: [], signed_in: true, service_card: { id: "x", name: "X", icon: "at-sign", group: "social" }, secrets: IN_KIQR, used_by: [{ id: "x-browser", name: "X in a browser", does: ["read", "reply", "publish"] }], has_session: true, session: session("signed_in", "signed in", ago(3000)), has_login: true, login_set: ["LOGIN_USERNAME", "LOGIN_PASSWORD", "LOGIN_TOTP_SECRET"], live_view: true, start_url: "https://x.com/login" },
   // Its login is saved, but the browser is signed out: the page offers Sign in.
-  { id: "reddit-team", label: "u/unblockingapi_team", service: "reddit", default: true, created_by: "user", created_at: ago(2000), identity: "u/unblockingapi_team", allow: perm([["read", "auto"], ["reply", "auto"], ["publish", "ask"]]), auth: [], signed_in: false, service_card: { id: "reddit", name: "Reddit", icon: "message-square-text", group: "social" }, secrets: IN_KIQR, used_by: [{ id: "reddit-browser", name: "Reddit in a browser", does: ["read", "reply", "publish"] }], has_session: true, session: session("signed_out", "signed out"), has_login: true, login_set: ["LOGIN_USERNAME", "LOGIN_PASSWORD"], live_view: true, start_url: "https://www.reddit.com/login" },
+  { id: "reddit-team", label: "u/unblockingapi_team", service: "reddit", default: true, created_by: "user", created_at: ago(2000), identity: "u/unblockingapi_team", auth: [], signed_in: false, service_card: { id: "reddit", name: "Reddit", icon: "message-square-text", group: "social" }, secrets: IN_KIQR, used_by: [{ id: "reddit-browser", name: "Reddit in a browser", does: ["read", "reply", "publish"] }], has_session: true, session: session("signed_out", "signed out"), has_login: true, login_set: ["LOGIN_USERNAME", "LOGIN_PASSWORD"], live_view: true, start_url: "https://www.reddit.com/login" },
   // The blog.
-  { id: "wordpress-site", label: "unblockingapi.com", service: "wordpress", default: true, created_by: "user", created_at: ago(2500), identity: "unblockingapi.com", allow: perm([["read", "auto"], ["publish", "ask"], ["manage", "off"]]), auth: [key("WP_URL", "Site address"), key("WP_USER", "User name"), key("WP_APP_PASSWORD", "Application password", { written: true })], signed_in: true, service_card: { id: "wordpress", name: "WordPress", icon: "globe", group: "website" }, secrets: IN_KIQR, used_by: [{ id: "wordpress", name: "Publish articles to WordPress", does: ["publish"] }] },
+  { id: "wordpress-site", label: "unblockingapi.com", service: "wordpress", default: true, created_by: "user", created_at: ago(2500), identity: "unblockingapi.com", auth: [key("WP_URL", "Site address"), key("WP_USER", "User name"), key("WP_APP_PASSWORD", "Application password", { written: true })], signed_in: true, service_card: { id: "wordpress", name: "WordPress", icon: "globe", group: "website" }, secrets: IN_KIQR, used_by: [{ id: "wordpress", name: "Publish articles to WordPress", does: ["publish"] }] },
 ];
 
 /** Whether an account works, by the daemon's one rule: keys, then the sign-in on its program. */
@@ -56,130 +54,151 @@ function stateOf(a: Seed): AccountState {
 }
 
 const demoAccounts: Account[] = [];
-/** Work out what the daemon would say about an account now: its state and the Audience entries through it. */
+/** Work out what the daemon would say about an account now: its state and the channels it publishes to. */
 function settle(a: Account | Seed): Account {
   const c = a as Account;
   c.state = stateOf(c);
   c.ready = c.state.ready;
-  c.audience = entries.filter((e) => e.account === c.id && !e.suggested).map((e) => ({ id: e.id, label: e.label, section: e.section }));
+  c.channels = allChannels().filter((e) => e.publisher === c.id && !e.suggested).map((e) => ({ id: e.id, label: e.label, domain: e.domain, ownership: e.ownership }));
   if (c.has_session) c.signed_in = c.session?.state === "signed_in";
   return c;
 }
 
-// ---- The Audience: where the business's people are
+// ---- Channels: where the business's people are
 
-/** What can go into the Audience here, by kind. `accounts` is filled from the accounts when read. */
-const KINDS: Omit<AudienceKind, "accounts">[] = [
-  { kind: "x", label: "X profile", name: "X", icon: "at-sign", section: "page", target: {}, account_is_target: true, service: "x", service_name: "X" },
-  { kind: "wordpress", label: "Blog", name: "WordPress", icon: "globe", section: "page", target: {}, account_is_target: true, service: "wordpress", service_name: "WordPress" },
-  { kind: "reddit", label: "Subreddit", name: "Reddit", icon: "message-square-text", section: "community", target: SUBREDDIT, account_is_target: false, service: "reddit", service_name: "Reddit" },
-  { kind: "list", label: "List", name: "Email list", icon: "mail", section: "list", target: {}, account_is_target: false },
+/** What can be added here, by kind, with the service whose accounts publish it. */
+const KINDS: (ChannelKind & { service?: string })[] = [
+  { kind: "x", label: "X profile", name: "X", icon: "at-sign", domain: "x.com", ownership: "owned", target: {}, account_is_target: true, publishes: true, ability: "x-browser", ability_name: "X in a browser", service: "x" },
+  { kind: "wordpress", label: "Blog", name: "WordPress", icon: "globe", domain: "", ownership: "owned", target: {}, account_is_target: true, publishes: true, ability: "wordpress", ability_name: "WordPress", service: "wordpress" },
+  { kind: "reddit", label: "Subreddit", name: "Reddit", icon: "message-square-text", domain: "reddit.com", ownership: "third_party", target: SUBREDDIT, account_is_target: false, publishes: true, ability: "reddit-browser", ability_name: "Reddit in a browser", service: "reddit" },
+  { kind: "list", label: "List", name: "Mailing list", icon: "mail", domain: "", ownership: "owned", target: {}, account_is_target: false, publishes: true },
 ];
 /** The service whose accounts send to lists. */
 const MAIL_SERVICE = "kiqr-smtp";
-const kindsView = (): AudienceKind[] => KINDS.map((k) => ({ ...k, accounts: demoAccounts.filter((c) => c.service === (k.kind === "list" ? MAIL_SERVICE : k.service)).map((c) => ({ id: c.id, label: c.label })) }));
+const kindsView = (): ChannelKind[] => KINDS.map(({ service: _s, ...k }) => k);
 
-/** An entry as kept, before the account it goes through is looked at. Lists are kept with their people below. */
-type Kept = Omit<AudienceEntry, "via">;
+/** A channel as kept, before its publisher and readiness are looked at. Lists are kept with their people below. */
+type Kept = Omit<Channel, "publisher_view" | "publishers" | "readiness">;
 const BLOG_OPTIONS = { status: { type: "string", enum: ["draft", "publish"], description: "Save it as a draft on the site, or publish it" } };
-const sub = (name: string, account: string, more: Partial<Kept> = {}): Kept => ({ id: `r-${name.toLowerCase()}`, label: `r/${name}`, section: "community", kind: "reddit", account, fields: { subreddit: name }, url: `https://www.reddit.com/r/${name}/`, added_by: "user", suggested: false, created_at: ago(3000), kind_name: "Reddit", kind_label: "Subreddit", icon: "message-square-text", publishes: true, network: true, ...more });
+const modes = (publish: ChannelMode, reply: ChannelMode) => ({ read: true, publish, reply, learn: false });
+const sub = (name: string, publisher: string, more: Partial<Kept> = {}): Kept => ({ id: `r-${name.toLowerCase()}`, label: `r/${name}`, ownership: "third_party", domain: "reddit.com", kind: "reddit", publisher, fields: { subreddit: name }, url: `https://www.reddit.com/r/${name}/`, ...modes("ask", "auto"), added_by: "user", suggested: false, created_at: ago(3000), kind_name: "Reddit", kind_label: "Subreddit", icon: "message-square-text", publishes: true, network: true, target: SUBREDDIT, ...more });
 const entries: Kept[] = [
-  { id: "x-unblockingapi", label: "@unblockingapi", section: "page", kind: "x", account: "x-unblockingapi", fields: {}, url: "https://x.com/unblockingapi", added_by: "account", suggested: false, created_at: ago(1500), publications: 4, last_published: ago(600), kind_name: "X", kind_label: "X profile", icon: "at-sign", publishes: true, network: true },
-  { id: "blog", label: "unblockingapi.com blog", section: "page", kind: "wordpress", account: "wordpress-site", fields: {}, url: "https://unblockingapi.com/blog/", description: "Articles and guides.", added_by: "account", suggested: false, created_at: ago(2500), publications: 6, last_published: ago(4000), kind_name: "WordPress", kind_label: "Blog", icon: "globe", publishes: true, network: false, options: BLOG_OPTIONS, prepared: ["excerpt"] },
+  // Posts on its own: the card in the chat is the record.
+  { id: "x-unblockingapi", label: "@unblockingapi", ownership: "owned", domain: "x.com", kind: "x", publisher: "x-unblockingapi", fields: {}, url: "https://x.com/unblockingapi", ...modes("auto", "ask"), added_by: "account", suggested: false, created_at: ago(1500), publications: 4, last_published: ago(600), kind_name: "X", kind_label: "X profile", icon: "at-sign", publishes: true, network: true, ability_name: "X in a browser" },
+  { id: "blog", label: "unblockingapi.com blog", ownership: "owned", domain: "unblockingapi.com", kind: "wordpress", publisher: "wordpress-site", fields: {}, url: "https://unblockingapi.com/blog/", description: "Articles and guides.", ...modes("ask", "off"), added_by: "account", suggested: false, created_at: ago(2500), publications: 6, last_published: ago(4000), kind_name: "WordPress", kind_label: "Blog", icon: "globe", publishes: true, network: false, options: BLOG_OPTIONS, ability_name: "WordPress" },
+  // Found on the website: no ability here publishes to LinkedIn yet.
+  { id: "linkedin", label: "UnblockingAPI on LinkedIn", ownership: "owned", domain: "linkedin.com", kind: "", publisher: "", fields: {}, url: "https://www.linkedin.com/company/unblockingapi", ...modes("ask", "ask"), added_by: "crawl", suggested: false, created_at: ago(5000), publishes: false },
+  // Its publisher is signed out: the row says so.
   sub("webscraping", "reddit-team", { publications: 2, last_published: ago(25) }),
-  sub("Python", "reddit-team", { created_at: ago(1800) }),
-  sub("datasets", "reddit-team", { added_by: "seemo", suggested: true, reason: "People ask here where to get data from sites that block scrapers; three such threads this week went unanswered." }),
-  sub("dataengineering", "reddit-team", { added_by: "seemo", suggested: true, reason: "Pipelines that pull from websites come up weekly, and the template library answers most of them." }),
+  // Nobody to post as yet.
+  sub("Python", "", { created_at: ago(1800) }),
+  sub("datasets", "", { added_by: "seemo", suggested: true, reason: "People ask here where to get data from sites that block scrapers; three such threads this week went unanswered." }),
+  sub("dataengineering", "", { added_by: "seemo", suggested: true, reason: "Pipelines that pull from websites come up weekly, and the template library answers most of them." }),
 ];
 
-type DemoList = MailList & { people: Contact[] };
-const person = (i: number, unsub = false): Contact => ({ email: `${["ana", "ben", "chloe", "dev", "eli", "fay", "gus", "hana", "ivo", "jon", "kim", "lou"][i % 12]}${i > 11 ? i : ""}@example.com`, name: ["Ana Ruiz", "Ben Ode", "Chloe Park", "Dev Rao", "Eli Stone", "Fay Lin", "Gus Berg", "Hana Ito", "Ivo Petrov", "Jon Hale", "Kim Moss", "Lou Amar"][i % 12], consent: "Signed up on the website", added: ago(10_000 - i * 30), unsubscribed: unsub ? ago(400) : null });
+type DemoList = MailList & { people: Contact[]; publish?: ChannelMode };
+const person = (i: number, unsub = false): Contact => ({ email: `${["ana", "ben", "chloe", "dev", "eli", "fay", "gus", "hana", "ivo", "jon", "kim", "lou"][i % 12]}${i > 11 ? i : ""}@example.com`, name: ["Ana Ruiz", "Ben Ode", "Chloe Park", "Dev Rao", "Eli Stone", "Fay Lin", "Gus Berg", "Hana Ito", "Ivo Petrov", "Jon Hale", "Kim Moss", "Lou Amar"][i % 12], consent: "Signed up on the website", added: ago(1000 + i * 600), unsubscribed: unsub ? ago(200) : null });
 const demoLists: DemoList[] = [
-  { id: "newsletter", label: "Newsletter", description: "Everyone who signed up on the website for product news.", account: "hello-mail", contacts: 412, unsubscribed: 3, created_at: ago(20_000), added_by: "user", people: Array.from({ length: 14 }, (_, i) => person(i, i === 4)) },
-  { id: "customers", label: "Customers", description: "Paying customers, for plan and product changes.", account: "hello-mail", contacts: 88, unsubscribed: 0, created_at: ago(9000), added_by: "user", people: Array.from({ length: 6 }, (_, i) => person(i + 3)) },
+  { id: "newsletter", label: "Newsletter", description: "Everyone who signed up on the website for product news.", publisher: "hello-mail", contacts: 412, unsubscribed: 3, created_at: ago(20_000), added_by: "user", people: Array.from({ length: 14 }, (_, i) => person(i, i === 4)) },
+  { id: "customers", label: "Customers", description: "Paying customers, for plan and product changes.", publisher: "hello-mail", contacts: 88, unsubscribed: 0, created_at: ago(9000), added_by: "user", people: Array.from({ length: 6 }, (_, i) => person(i + 3)) },
 ];
-const listView = ({ people: _p, ...l }: DemoList): MailList => l;
+const listView = ({ people: _p, publish: _m, ...l }: DemoList): MailList => l;
 const demoSends: Record<string, ListSend[]> = { newsletter: [{ key: "email-october-news", sent: 409, failed: 3, at: ago(8000), running: false }] };
-const listEntry = (l: DemoList): Kept => ({ id: l.id, label: l.label, section: "list", kind: "list", account: l.account, description: l.description, added_by: l.added_by ?? "user", suggested: false, created_at: l.created_at, contacts: l.contacts, unsubscribed: l.unsubscribed, kind_name: "Email list", icon: "mail", publishes: true, network: false });
+const listEntry = (l: DemoList): Kept => ({ id: l.id, label: l.label, ownership: "owned", domain: "", kind: "list", publisher: l.publisher, description: l.description, ...modes(l.publish ?? "ask", "off"), added_by: l.added_by ?? "user", suggested: false, created_at: l.created_at, contacts: l.contacts, unsubscribed: l.unsubscribed, kind_name: "Mailing list", icon: "mail", publishes: true, network: false });
 
-/** An entry as the daemon shows it: with the account that reaches it and whether that works. */
-function entryView(e: Kept): AudienceEntry {
-  const c = demoAccounts.find((x) => x.id === e.account);
-  if (!c) return { ...e, via: null, needs_account: true };
-  const allow = (role: string): Allow => c.allow?.find((p) => p.role === role)?.allow ?? "off";
+/** The service whose accounts publish a channel's kind (a list: mail). */
+const serviceOfKind = (kind: string) => (kind === "list" ? MAIL_SERVICE : KINDS.find((k) => k.kind === kind)?.service);
+
+/** Whether a channel can be published to now, as the daemon says it. */
+function readinessOf(e: Kept, c: Account | undefined): Channel["readiness"] {
+  if (e.suggested) return { state: "suggested", ready: false, text: "Suggested by Seemo: add it, or dismiss it", fix: { action: "add", label: "Add" } };
+  if (e.kind !== "list" && !serviceOfKind(e.kind)) return { state: "no_ability", ready: false, text: `No ability here publishes to ${e.domain || "this site"}`, fix: { action: "abilities", label: "Find one" } };
+  if (e.publish === "off") return { state: "publish_off", ready: false, text: "Publishing is off", fix: null };
+  if (!e.publisher) return { state: "no_publisher", ready: false, text: e.kind === "list" ? "No mail account to send from" : `No publisher: pick who Seemo posts as on ${e.domain || "it"}`, fix: { action: "publisher", label: "Pick a publisher" } };
+  if (!c) return { state: "publisher_gone", ready: false, text: "The account it published as is gone", fix: { action: "publisher", label: "Pick another" } };
   const st = stateOf(c);
-  return { ...e, via: { account: c.id, label: c.label, service: c.service, service_name: c.service_card?.name ?? c.service, state: st.state, ready: st.ready, allow: { publish: allow("publish"), reply: allow("reply") } } };
+  if (!st.ready) return { state: "publisher_not_ready", ready: false, text: st.says.replace(/\.$/, ""), fix: { action: "account", label: "See to it", account: c.id } };
+  return { state: "ready", ready: true, text: "", fix: null };
 }
-const allEntries = () => [...entries, ...demoLists.map(listEntry)];
-const audienceView = () => ({ entries: allEntries().map(entryView), kinds: kindsView() });
-const findEntry = (id: string) => allEntries().find((e) => e.id === id);
-/** How an entry of a kind reads, from its fields or the account. */
-const spotLabel = (kind: string, fields: Record<string, unknown>, account?: Account) => (kind === "reddit" ? `r/${String(fields.subreddit ?? "")}` : account?.label ?? kind);
 
-/** Add somewhere to the Audience, as `POST /audience` does: checked, not twice. */
-function addEntry(b: { kind: string; account?: string; fields?: Record<string, unknown>; label?: string; description?: string }, by: string): AudienceEntry {
-  const kind = String(b.kind ?? "").trim().toLowerCase();
+/** A channel as the daemon shows it: who publishes and whether that works, who could, and the one fix. */
+function channelView(e: Kept): Channel {
+  const c = demoAccounts.find((x) => x.id === e.publisher);
+  const service = serviceOfKind(e.kind);
+  const pub = (a: Account) => ({ account: a.id, label: a.label, service: a.service, state: stateOf(a).state, ready: stateOf(a).ready });
+  return { ...e, publisher_view: c ? pub(c) : null, publishers: service ? demoAccounts.filter((a) => a.service === service).map(pub) : [], readiness: readinessOf(e, c), can_learn: false };
+}
+const allChannels = (): Kept[] => [...entries, ...demoLists.map(listEntry)];
+const channelsView = () => ({ channels: allChannels().map(channelView), kinds: kindsView() });
+const findEntry = (id: string) => allChannels().find((e) => e.id === id);
+const emitChannel = (e: Kept, contacts?: number) => emit({ type: "channel_saved", channel: e.id, label: e.label, ownership: e.ownership, suggested: e.suggested, contacts });
+
+/** Add a channel, as `POST /channels` does: a list, a kind with its fields, or a link or site. Checked, not twice. */
+function addChannel(b: { kind?: string; url?: string; domain?: string; fields?: Record<string, unknown>; label?: string; description?: string; ownership?: string; publisher?: string }, by: string): Channel {
+  let kind = String(b.kind ?? "").trim().toLowerCase();
   if (kind === "list") {
     if (!String(b.label ?? "").trim()) throw new Error("a list needs a name");
     const id = String(b.label).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    if (demoLists.some((l) => l.id === id)) throw new Error(`the Audience already has this as ${b.label}`);
-    const l: DemoList = { id, label: String(b.label).trim(), description: b.description ?? "", account: b.account || demoAccounts.find((c) => c.service === MAIL_SERVICE)?.id || "", contacts: 0, unsubscribed: 0, created_at: ago(0), added_by: by, people: [] };
+    if (demoLists.some((l) => l.id === id)) throw new Error(`there is a list called '${b.label}' already`);
+    const l: DemoList = { id, label: String(b.label).trim(), description: b.description ?? "", publisher: b.publisher || demoAccounts.find((c) => c.service === MAIL_SERVICE)?.id || "", contacts: 0, unsubscribed: 0, created_at: ago(0), added_by: by, people: [] };
     demoLists.push(l);
-    const e = entryView(listEntry(l));
-    emit({ type: "audience_saved", entry: e.id, label: e.label, section: e.section, suggested: false, contacts: 0 });
-    return e;
+    emitChannel(listEntry(l), 0);
+    return channelView(listEntry(l));
   }
+  const url = String(b.url ?? "").trim();
+  const host = (url ? url.replace(/^[a-z]+:\/\//i, "").split(/[/?#]/)[0] : String(b.domain ?? "")).replace(/^www\./, "").toLowerCase();
+  let fields: Record<string, unknown> = { ...(b.fields ?? {}) };
+  // A link names its kind and fields: reddit.com/r/<name>, x.com/<handle>.
+  const r = /reddit\.com\/r\/([A-Za-z0-9_]{2,21})/i.exec(url);
+  if (!kind && r) (kind = "reddit"), (fields = { subreddit: r[1] });
+  else if (!kind && host === "x.com") kind = "x";
   const k = KINDS.find((x) => x.kind === kind);
-  if (!k) throw new Error(`nothing installed here declares '${kind}'`);
-  const c = b.account ? demoAccounts.find((x) => x.id === b.account) : demoAccounts.find((x) => x.service === k.service && x.default) ?? demoAccounts.find((x) => x.service === k.service);
-  if (!c) throw new Error(`connect a ${k.service_name} account first`);
-  const fields: Record<string, unknown> = {};
-  for (const [name, spec] of Object.entries(k.target)) {
-    const v = String(b.fields?.[name] ?? "").trim().replace(/^r\//i, "");
-    if (!v && !spec.optional) throw new Error(`${spec.label ?? name} is missing`);
-    if (v && spec.pattern && !new RegExp(spec.pattern).test(v)) throw new Error(`'${v}' is not a valid ${(spec.label ?? name).toLowerCase()}`);
-    if (v) fields[name] = v;
-  }
-  const same = (e: Kept) => e.kind === kind && e.account === c.id && JSON.stringify(e.fields ?? {}).toLowerCase() === JSON.stringify(fields).toLowerCase();
-  const had = entries.find(same);
-  if (had && !had.suggested) throw new Error(`the Audience already has this as ${had.label}`);
-  const label = String(b.label ?? "").trim() || spotLabel(kind, fields, c);
+  if (kind && !k) throw new Error(`nothing installed here declares '${kind}'`);
+  if (!k && !host) throw new Error("name the channel's site or give a link to it");
+  if (k?.kind === "reddit") {
+    const v = String(fields.subreddit ?? "").trim().replace(/^r\//i, "");
+    if (!/^[A-Za-z0-9_]{2,21}$/.test(v)) throw new Error(v ? `'${v}' is not a valid subreddit` : "Reddit needs subreddit");
+    fields = { subreddit: v };
+  } else fields = {};
+  const had = entries.find((e) => e.kind === (k?.kind ?? "") && JSON.stringify(e.fields ?? {}).toLowerCase() === JSON.stringify(fields).toLowerCase() && (k?.kind === "reddit" || (e.url ?? "") === url));
+  if (had && !had.suggested) throw new Error(`this is already the channel ${had.label}`);
+  const label = String(b.label ?? "").trim() || (k?.kind === "reddit" ? `r/${String(fields.subreddit)}` : url ? url.replace(/^[a-z]+:\/\/(www\.)?/i, "").replace(/\/$/, "") : host);
+  const ownership = (b.ownership === "owned" || b.ownership === "third_party" ? b.ownership : k?.ownership ?? "owned") as Kept["ownership"];
   const e: Kept = had
     ? Object.assign(had, { suggested: false, reason: undefined })
-    : { id: kind === "reddit" ? `r-${String(fields.subreddit).toLowerCase()}` : `${c.id}-${kind}`, label, section: k.section, kind, account: c.id, fields, url: kind === "reddit" ? `https://www.reddit.com/r/${String(fields.subreddit)}/` : undefined, description: b.description, added_by: by, suggested: false, created_at: ago(0), publications: 0, kind_name: k.name, kind_label: k.label, icon: k.icon, publishes: true, network: kind !== "wordpress", options: kind === "wordpress" ? BLOG_OPTIONS : undefined };
+    : { id: k?.kind === "reddit" ? `r-${String(fields.subreddit).toLowerCase()}` : label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), label, ownership, domain: k?.domain || host, kind: k?.kind ?? "", publisher: b.publisher ?? "", fields, url: url || (k?.kind === "reddit" ? `https://www.reddit.com/r/${String(fields.subreddit)}/` : undefined), description: b.description, ...modes("ask", "ask"), added_by: by, suggested: false, created_at: ago(0), kind_name: k?.name, kind_label: k?.label, icon: k?.icon, publishes: !!k?.publishes, network: k?.kind === "x" || k?.kind === "reddit", target: k?.target, ability_name: k?.ability_name };
   if (!had) entries.push(e);
-  emit({ type: "audience_saved", entry: e.id, label: e.label, section: e.section, suggested: false });
-  return entryView(e);
+  emitChannel(e);
+  return channelView(e);
 }
 
-/** Where a publish goes: an Audience entry, or a spot that joins the Audience with the yes. Used by the demo library. */
+/** Where a publish goes: a channel, or a spot that becomes one with the yes. Used by the demo library. */
 function resolveTarget(where: { target?: string; spot?: Spot }): DemoTarget | null {
   let e = where.target ? findEntry(where.target) : undefined;
   if (!e && where.spot?.kind) {
     const fields = where.spot.fields ?? {};
-    const c = where.spot.account ? demoAccounts.find((x) => x.id === where.spot!.account) : demoAccounts.find((x) => x.service === KINDS.find((k) => k.kind === where.spot!.kind)?.service);
-    e = entries.find((x) => x.kind === where.spot!.kind && (!c || x.account === c.id) && JSON.stringify(x.fields ?? {}) === JSON.stringify(fields) && !x.suggested);
+    e = entries.find((x) => x.kind === where.spot!.kind && JSON.stringify(x.fields ?? {}).toLowerCase() === JSON.stringify(fields).toLowerCase() && !x.suggested);
     if (!e) {
-      const made = addEntry({ kind: where.spot.kind, account: c?.id, fields }, "user");
+      const made = addChannel({ kind: where.spot.kind, fields, publisher: demoAccounts.find((x) => x.service === serviceOfKind(where.spot!.kind))?.id }, "user");
       e = findEntry(made.id);
     }
   }
   if (!e) return null;
-  const c = demoAccounts.find((x) => x.id === e!.account);
+  const c = demoAccounts.find((x) => x.id === e!.publisher);
   const ability = c?.used_by?.find((u) => u.does.includes("publish"))?.id ?? c?.used_by?.[0]?.id ?? "";
-  return { target: e.id, label: e.label, account: e.account, ability, url: e.url ?? null };
+  return { target: e.id, label: e.label, account: e.publisher, ability, url: e.url ?? null };
 }
 
 const demoActivity = { account: "x-unblockingapi", service: "x", today: 3, daily_cap: 20, activity: [
-  { at: ago(12), ability: "x-browser", role: "reply", tool: "reply", target: "a reply to @scrapingdev", audience: "x-unblockingapi", url: "https://x.com/unblockingapi" },
-  { at: ago(40), ability: "x-browser", role: "reply", tool: "reply", target: "a reply to @datawrangler", audience: "x-unblockingapi", url: null },
-  { at: ago(600), ability: "x-browser", role: "publish", tool: "post", target: "Templates launch thread", audience: "x-unblockingapi", url: "https://x.com/unblockingapi" },
+  { at: ago(12), ability: "x-browser", role: "reply", tool: "reply", target: "a reply to @scrapingdev", channel: "x-unblockingapi", url: "https://x.com/unblockingapi" },
+  { at: ago(40), ability: "x-browser", role: "reply", tool: "reply", target: "a reply to @datawrangler", channel: "x-unblockingapi", url: null },
+  { at: ago(600), ability: "x-browser", role: "publish", tool: "post", target: "Templates launch thread", channel: "x-unblockingapi", url: "https://x.com/unblockingapi" },
 ] };
 const demoAbilities: AbilitiesView = {"abilities": [{"id": "write", "name": "Write articles, posts and emails", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "Seemo writes in the brand's tone of voice from the business brief; everything lands in the library as a draft.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["writing"], "icon": "pen-tool", "cost": "model usage", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "builtin", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "core", "repo": null, "core": true, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [], "active_for": [], "instructions": [], "in_prompt": false, "error": null}, {"id": "business-profile", "name": "Crawl a website and build its business profile", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "Crawl the site, extract what it says, and write the profile, the brand and the business brief Seemo works from.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["web", "writing"], "icon": "brain", "cost": "model usage", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "builtin", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "core", "repo": null, "core": true, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [], "active_for": [], "instructions": [{"file": "crawl-site", "label": "Reading the site", "project_copy": false, "machine_copy": false}, {"file": "extract-facts", "label": "Extracting facts", "project_copy": false, "machine_copy": false}, {"file": "build-profile", "label": "Building the profile", "project_copy": false, "machine_copy": false}, {"file": "business-brief", "label": "Writing the brief", "project_copy": false, "machine_copy": false}], "in_prompt": false, "error": null}, {"id": "read-web", "name": "Read the web", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "Seemo reads one page at a time through KIQR's own fetcher.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["web"], "icon": "globe", "cost": "free", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "builtin", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "core", "repo": null, "core": true, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [], "active_for": [], "instructions": [], "in_prompt": false, "error": null}, {"id": "unblockingapi", "name": "Read blocked pages with UnblockingAPI", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "A real browser and residential proxies for the pages KIQR could not read. One credit per success.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "https://unblockingapi.com", "categories": ["web"], "icon": "shield-check", "cost": "about $0.001 per page", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "builtin", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "core", "repo": null, "core": true, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [{"env": "UNBLOCKINGAPI_KEY", "label": "UnblockingAPI key", "help": "https://unblockingapi.com", "optional": false, "set": "global"}], "active_for": [], "instructions": [], "in_prompt": false, "error": null}, {"id": "social-posts", "name": "Write social media posts", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "Ready-to-publish posts in the brand's tone of voice, each with its image.", "description": "Write a few ready-to-publish social media posts from the business brief, in the brand's tone of voice.", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["writing", "publishing"], "icon": "message-square-text", "cost": "model usage", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "builtin", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "core", "repo": null, "core": true, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [], "active_for": [], "instructions": [{"file": "social-posts", "label": "Writing the posts", "project_copy": false, "machine_copy": false}], "in_prompt": true, "error": null}, {"id": "tasks", "name": "Run tasks on a schedule", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "Seemo works later or repeatedly; every task is approved by you first.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["writing"], "icon": "list-checks", "cost": "model usage", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "builtin", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "core", "repo": null, "core": true, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [], "active_for": [], "instructions": [], "in_prompt": true, "error": null}, {"id": "kiqr-render", "name": "Create images with the built-in renderer", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "On-brand images Seemo designs and KIQR renders here. Free, on from the start.", "description": "How to make an on-brand image for a post, an article cover or a standalone visual with the built-in renderer, or with a generator when the user wants a photo or an illustration.", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["images"], "icon": "image", "cost": "free", "provides": [{"ability": "image", "label": "Make images"}], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "builtin", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "shipped", "repo": null, "core": true, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": "~/.kiqr/abilities/make-images", "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [], "active_for": ["image"], "instructions": [{"file": "make-images", "label": "Create images with the built-in renderer", "project_copy": false, "machine_copy": false}], "in_prompt": true, "error": null}, {"id": "kiqr-smtp", "name": "Send email from your mail account", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "Email over SMTP. Each project connects its own account. Every send asks you first.", "description": "", "version": "0.1.0", "latest": "0.2.0", "homepage": "", "categories": ["email", "publishing"], "icon": "mail", "cost": "free", "provides": [{"ability": "email", "label": "Send email"}], "publishes_to": ["Email"], "sources": [], "tools": 0, "trust": "official", "transport": "builtin", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "shipped", "repo": null, "core": false, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": "~/.kiqr/abilities/email-smtp", "git": false, "updatable": true, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [{"env": "SMTP_HOST", "label": "Mail server", "help": "Gmail: smtp.gmail.com", "optional": false, "set": "project"}, {"env": "SMTP_USER", "label": "User name", "help": "Usually your email address", "optional": false, "set": "project"}, {"env": "SMTP_PASSWORD", "label": "Password or app password", "help": "https://myaccount.google.com/apppasswords", "optional": true, "set": "project"}], "active_for": ["email"], "instructions": [], "in_prompt": false, "error": null}, {"id": "product-update-posts", "name": "Write product update posts", "author": "you", "author_url": null, "summary": "When asked for a post about something we shipped.", "description": "When asked for a post about something we shipped.", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["writing"], "icon": "book-open", "cost": "model usage", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "local", "transport": "instructions", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "yours", "repo": null, "core": false, "builtin": false, "installed": true, "scope": {"scope": "project", "project": "unblockingapi-com"}, "folder": "~/.kiqr/projects/unblockingapi-com/abilities/product-update-posts", "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [], "active_for": [], "instructions": [{"file": "product-update-posts", "label": "Write product update posts", "project_copy": true, "machine_copy": false}], "in_prompt": true, "error": null}], "market": [{"id": "fal-image", "name": "Create images with fal.ai", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "Photos and illustrations from a text prompt.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "https://fal.ai", "categories": ["images"], "icon": "image", "cost": "about $0.03 per image", "provides": [{"ability": "image", "label": "Make images"}], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "http", "runs_program": false, "command": null, "program_found": null, "hosts": ["fal.run", "fal.media"], "source": "shipped", "repo": null, "core": false, "builtin": false, "installed": false, "scope": null, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": false, "missing": ["FAL_KEY"], "auth": [{"env": "FAL_KEY", "label": "fal.ai API key", "help": "https://fal.ai/dashboard/keys", "optional": false, "set": null}], "active_for": [], "instructions": [], "in_prompt": false, "error": null}, {"id": "openai-image", "name": "Create images with OpenAI", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "gpt-image-1 behind your OpenAI key.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "https://platform.openai.com", "categories": ["images"], "icon": "image", "cost": "about $0.04 per image", "provides": [{"ability": "image", "label": "Make images"}], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "http", "runs_program": false, "command": null, "program_found": null, "hosts": ["api.openai.com"], "source": "shipped", "repo": null, "core": false, "builtin": false, "installed": false, "scope": null, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": false, "missing": ["OPENAI_API_KEY"], "auth": [{"env": "OPENAI_API_KEY", "label": "OpenAI API key", "help": "https://platform.openai.com/api-keys", "optional": false, "set": null}], "active_for": [], "instructions": [], "in_prompt": false, "error": null}, {"id": "playwright-browser", "name": "Drive a browser with Playwright", "author": "kiqr-cloud", "author_url": "https://github.com/kiqr-cloud", "summary": "A real browser Seemo can drive: sites without an API, screenshots, logged-in sessions.", "description": "", "version": "0.2.0", "latest": "0.2.0", "homepage": "https://github.com/microsoft/playwright-mcp", "categories": ["browser", "tools", "publishing"], "icon": "", "cost": "free", "provides": [], "publishes_to": [], "sources": [], "tools": 4, "trust": "verified", "transport": "mcp", "runs_program": true, "command": "npx @playwright/mcp@latest --headless", "program_found": null, "hosts": [], "source": "marketplace", "repo": "https://github.com/kiqr-cloud/ability-playwright.git", "core": false, "builtin": false, "installed": false, "scope": null, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": false, "missing": [], "auth": [], "active_for": [], "instructions": [], "in_prompt": false, "error": null}, {"id": "fal-video", "name": "Create video with fal.ai", "author": "kiqr-cloud", "author_url": "https://github.com/kiqr-cloud", "summary": "Short clips from a prompt. Slow and paid; Seemo says what it costs first.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "https://fal.ai", "categories": ["video"], "icon": "", "cost": "about $0.50 per clip", "provides": [{"ability": "video", "label": "Make video"}], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "http", "runs_program": false, "command": null, "program_found": null, "hosts": ["fal.run"], "source": "marketplace", "repo": "https://github.com/kiqr-cloud/ability-fal-video.git", "core": false, "builtin": false, "installed": false, "scope": null, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": false, "missing": ["FAL_KEY"], "auth": [{"env": "FAL_KEY", "label": "fal.ai API key", "help": "https://fal.ai/dashboard/keys", "optional": false, "set": null}], "active_for": [], "instructions": [], "in_prompt": false, "error": null}, {"id": "wordpress", "name": "Publish articles to WordPress", "author": "acme-digital", "author_url": "https://github.com/acme-digital", "summary": "Publish articles to your WordPress site as drafts or posts.", "description": "", "version": "0.3.1", "latest": "0.3.1", "homepage": "https://wordpress.org", "categories": ["publishing"], "icon": "", "cost": "free", "provides": [], "publishes_to": ["WordPress blog"], "sources": [], "tools": 1, "trust": "community", "transport": "http", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "marketplace", "repo": "https://github.com/acme-digital/kiqr-wordpress.git", "core": false, "builtin": false, "installed": false, "scope": null, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": false, "missing": ["WP_USER", "WP_APP_PASSWORD"], "auth": [{"env": "WP_USER", "label": "User name", "help": "", "optional": false, "set": null}, {"env": "WP_APP_PASSWORD", "label": "Application password", "help": "", "optional": false, "set": null}], "connect": {"label": "Connect with WordPress", "flow": "redirect", "needs": [], "returns": ["WP_APP_PASSWORD", "WP_USER"], "https_only": true}, "active_for": [], "instructions": [], "in_prompt": false, "error": null}, {"id": "weekly-report", "name": "Write the Monday report", "author": "acme-digital", "author_url": "https://github.com/acme-digital", "summary": "What was added, what ran, what to write next: a short report every Monday, in plain words.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["writing"], "icon": "book-open", "cost": "model usage", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "community", "transport": "instructions", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "marketplace", "repo": "https://github.com/acme-digital/kiqr-abilities.git", "core": false, "builtin": false, "installed": false, "scope": null, "folder": null, "git": false, "machine_off": false, "paused": false, "ready": false, "missing": [], "auth": [], "active_for": [], "instructions": [{"file": "weekly-report", "label": "Write the Monday report", "project_copy": false, "machine_copy": false}], "in_prompt": false, "error": null}], "contracts": [{"id": "image", "label": "Make images", "tool": "create_image", "configured": null, "active": {"id": "kiqr-render", "name": "Create images with the built-in renderer"}, "candidates": [{"id": "kiqr-render", "name": "Create images with the built-in renderer", "ready": true}]}, {"id": "video", "label": "Make video", "tool": "create_video", "configured": null, "active": null, "candidates": []}, {"id": "music", "label": "Make music", "tool": "create_music", "configured": null, "active": null, "candidates": []}, {"id": "email", "label": "Send email", "tool": "send_email", "configured": null, "active": {"id": "kiqr-smtp", "name": "Send email from your mail account"}, "candidates": [{"id": "kiqr-smtp", "name": "Send email from your mail account", "ready": true}]}], "broken": [], "guide": {"id": "seemo-agent", "name": "Seemo's own guide", "author": "KIQR", "author_url": "https://github.com/kiqr", "summary": "How Seemo works inside KIQR: the tools, when to act and when to make a task, how to ask for a yes, how to report.", "description": "", "version": "0.1.0", "latest": "0.1.0", "homepage": "", "categories": ["writing"], "icon": "book-open", "cost": "model usage", "provides": [], "publishes_to": [], "sources": [], "tools": 0, "trust": "official", "transport": "instructions", "runs_program": false, "command": null, "program_found": null, "hosts": [], "source": "core", "repo": null, "core": true, "builtin": true, "installed": true, "scope": {"scope": "global"}, "folder": "~/.kiqr/abilities/seemo-agent", "git": false, "machine_off": false, "paused": false, "ready": true, "missing": [], "auth": [], "active_for": [], "instructions": [{"file": "seemo-agent", "label": "How Seemo works inside KIQR", "project_copy": false, "machine_copy": false}], "in_prompt": false, "error": null}, "index": "https://kiqr.cloud/marketplace/index.json", "env_file": "~/.kiqr/.env", "project_env_file": "~/.kiqr/projects/unblockingapi-com/.env"};
 // The services behind the demo's abilities, as the grid of things to connect shows them.
-const DEMO_SERVICES: Record<string, { name: string; icon: string; group: string; allow?: Record<string, Allow> }> = {
-  "kiqr-smtp": { name: "Email", icon: "mail", group: "email", allow: { publish: "ask" } },
-  wordpress: { name: "WordPress", icon: "globe", group: "website", allow: { publish: "ask" } },
+const DEMO_SERVICES: Record<string, { name: string; icon: string; group: string }> = {
+  "kiqr-smtp": { name: "Email", icon: "mail", group: "email" },
+  wordpress: { name: "WordPress", icon: "globe", group: "website" },
   "fal-image": { name: "fal.ai", icon: "image", group: "tools" },
   "openai-image": { name: "OpenAI", icon: "image", group: "tools" },
   "fal-video": { name: "fal.ai video", icon: "video", group: "tools" },
@@ -187,7 +206,7 @@ const DEMO_SERVICES: Record<string, { name: string; icon: string; group: string;
 };
 for (const a of [...demoAbilities.abilities, ...demoAbilities.market]) {
   const s = DEMO_SERVICES[a.id];
-  if (s) Object.assign(a, { service: a.id, service_card: { id: a.id, name: s.name, icon: s.icon, group: s.group }, allow: s.allow ?? {} });
+  if (s) Object.assign(a, { service: a.id, service_card: { id: a.id, name: s.name, icon: s.icon, group: s.group } });
 }
 {
   // More services in the marketplace, so the grid of things to connect has something in every group.
@@ -199,7 +218,7 @@ for (const a of [...demoAbilities.abilities, ...demoAbilities.market]) {
     ["bitwarden", "Passwords from Bitwarden", "Seemo signs in to sites with logins from your vault, never seeing them.", "bitwarden", "passwords", []],
   ];
   for (const [id, name, summary, service, group, channels] of more)
-    demoAbilities.market.push({ ...base, id, name, summary, author: "KIQR", author_url: "https://github.com/kiqr", trust: "official", publishes_to: channels, sources: group === "numbers" ? ["traffic"] : [], categories: [group], homepage: "", repo: `https://github.com/kiqr/marketplace`, connect: { label: `Connect with ${name.replace(/^(Post to|Read|Passwords from) /, "")}`, flow: "oauth2", needs: [], returns: [], https_only: false, via_cloud: true }, auth: [{ env: `${service.toUpperCase().replace(/-/g, "_")}_TOKEN`, label: "Sign-in", help: "", optional: false, set: null }], missing: [], service, service_card: { id: service, name: name.replace(/^(Post to|Read|Passwords from) /, ""), icon: group === "numbers" ? "chart" : "globe", group }, allow: channels.length ? { publish: "ask", reply: "ask" } : {} });
+    demoAbilities.market.push({ ...base, id, name, summary, author: "KIQR", author_url: "https://github.com/kiqr", trust: "official", publishes_to: channels, sources: group === "numbers" ? ["traffic"] : [], categories: [group], homepage: "", repo: `https://github.com/kiqr/marketplace`, connect: { label: `Connect with ${name.replace(/^(Post to|Read|Passwords from) /, "")}`, flow: "oauth2", needs: [], returns: [], https_only: false, via_cloud: true }, auth: [{ env: `${service.toUpperCase().replace(/-/g, "_")}_TOKEN`, label: "Sign-in", help: "", optional: false, set: null }], missing: [], service, service_card: { id: service, name: name.replace(/^(Post to|Read|Passwords from) /, ""), icon: group === "numbers" ? "chart" : "globe", group } });
 }
 
 {
@@ -241,7 +260,6 @@ for (const a of [...demoAbilities.abilities, ...demoAbilities.market]) {
       missing: [],
       service,
       service_card: { id: service, name: card, icon: group === "sites" ? "globe" : service === "x" ? "at-sign" : "message-square-text", group },
-      allow: channels.length ? { publish: "ask", reply: "ask" } : {},
       _programs: programs(),
     } as Ability);
 }
@@ -252,7 +270,6 @@ const demoPrograms = (a: Ability) => (a as Ability & { _programs?: Ability["prog
 function demoNewAccount(ab: Ability | undefined, body: Record<string, unknown>): Account {
   const card = ab?.service_card ?? { id: ab?.id ?? "service", name: ab?.name ?? "Account", group: "tools" };
   const roles = ["read", ...(ab?.publishes_to.length || ab?.kinds?.some((k) => k.publishes) ? ["reply", "publish"] : []), ...(ab?.sources.length ? ["measure"] : [])];
-  const chosen = { ...(ab?.allow ?? {}), ...((body.allow as Record<string, Allow>) ?? {}) };
   const program = !!ab && !!demoPrograms(ab);
   const c = settle({
     id: `account-${n++}`,
@@ -261,7 +278,6 @@ function demoNewAccount(ab: Ability | undefined, body: Record<string, unknown>):
     default: !demoAccounts.some((x) => x.service === card.id),
     created_by: "user",
     created_at: ago(0),
-    allow: roles.map((role) => ({ role, allow: chosen[role] ?? (ACTS.includes(role) ? "ask" : "auto"), acts: ACTS.includes(role) })),
     auth: (ab?.auth ?? []).map((k) => ({ env: k.env, label: k.label, help: k.help, optional: k.optional, options: k.options, placeholder: k.placeholder, set: true })),
     connect: ab?.connect ?? null,
     signed_in: !program,
@@ -271,8 +287,12 @@ function demoNewAccount(ab: Ability | undefined, body: Record<string, unknown>):
     ...(program ? { has_session: true, session: session("signed_out", "signed out"), has_login: false, login_set: [], live_view: true, identity: String((body.secrets as Record<string, string> | undefined)?.SITE_URL ?? "") || undefined } : {}),
   });
   demoAccounts.push(c);
-  // A kind whose account is the spot (an X profile) gets its Audience entry with the account.
-  for (const k of KINDS.filter((k) => k.account_is_target && k.service === c.service)) addEntry({ kind: k.kind, account: c.id }, "account");
+  // A kind whose account is the spot (an X profile): the channel waiting on its site gets it as its publisher, else a new one.
+  for (const k of KINDS.filter((k) => k.account_is_target && k.service === c.service)) {
+    const waiting = entries.find((e) => !e.publisher && e.ownership === "owned" && (e.kind === k.kind || (!e.kind && !!k.domain && e.domain === k.domain)));
+    if (waiting) Object.assign(waiting, { publisher: c.id, kind: k.kind }), emitChannel(waiting);
+    else addChannel({ kind: k.kind, publisher: c.id, label: c.label, url: k.kind === "x" ? `https://x.com/${c.label.replace(/^@/, "")}` : undefined }, "account");
+  }
   settle(c);
   emit({ type: "account_saved", account: c.id, label: c.label });
   return c;
@@ -284,7 +304,6 @@ for (const a of demoAbilities.market.filter((x) => x.id === "google-analytics" |
   Object.assign(a, {
     service: "google",
     service_card: GOOGLE_CARD,
-    allow: { measure: "auto" },
     auth: [{ env: "GOOGLE_TOKEN", label: "Sign-in", help: "", optional: false, set: null }],
     connect: { label: "Sign in with Google", flow: "oauth2", needs: [], returns: ["GOOGLE_TOKEN"], https_only: false, via_cloud: true },
     settings: a.id === "google-analytics" ? GA_SETTINGS : SC_SETTINGS,
@@ -431,11 +450,11 @@ const demoPlan: Plan = {
 const demoCampaigns: Campaign[] = [
   { id: "launch-visual-editor", title: "Launch: Visual Editor", goal: "Fifty sign-ups from the launch week and one thread on Hacker News that lives.", objective: "turn-templates-into-sign-ups", objective_title: "Turn templates into sign-ups", channels: ["linkedin", "reddit", "email"], start: "2026-11-03", end: "2026-11-14", status: "active", created_by: "chat:demo-chat-1", created_at: ago(500), updated_at: ago(40), assets: [{ type: "post", id: "tap-a-field-get-json", title: "Tap a field, get JSON", status: "draft", updated_at: ago(36) }], tasks: [{ id: "monday-linkedin-post", title: "Monday LinkedIn post", status: "active", next_run: nextMonday(), runs: 0 }] },
 ];
-/** Replies on Reddit: one in the Audience, which Seemo may post on its own (the card is the record), and one in a community the Audience does not have yet, which asks first. */
+/** Replies on Reddit: one in a channel where Seemo may reply on its own (the card is the record), and one in a community that is no channel yet, which asks first. */
 const REPLY_TEXT = "A 403 on every page with requests usually means the site checks the TLS fingerprint and headers, not just the IP. Try a real browser (Playwright) first; if that passes, it's fingerprinting. (I work on UnblockingAPI, which does this for you, but Playwright alone may be enough here.)";
 const replies: Message[] = [
   { id: "r1", at: ago(30), role: "user", text: "Find threads where people are stuck on blocked pages and reply where it helps." },
-  { id: "r2", at: ago(28), role: "seemo", text: "I found two. The r/webscraping one is in your Audience and u/unblockingapi_team may reply there on its own, so I posted it. The other is in r/learnpython, which is not in your Audience yet, so I'm asking first.", steps: [{ tool: "read_url", label: "Reading r/webscraping", ok: true }, { tool: "read_url", label: "Reading r/learnpython", ok: true }, { tool: "publish_asset", label: "Publishing a reply", ok: true, asset: { type: "reply", id: "r-webscraping-cloudflare" } }] },
+  { id: "r2", at: ago(28), role: "seemo", text: "I found two. The r/webscraping channel lets me reply on my own, so I posted it. The other is in r/learnpython, which is not one of your channels yet, so I'm asking first.", steps: [{ tool: "read_url", label: "Reading r/webscraping", ok: true }, { tool: "read_url", label: "Reading r/learnpython", ok: true }, { tool: "publish_asset", label: "Publishing a reply", ok: true, asset: { type: "reply", id: "r-webscraping-cloudflare" } }] },
   {
     id: "r3",
     at: ago(27),
@@ -448,7 +467,7 @@ const replies: Message[] = [
       status: "approved",
       payload: {
         asset: { type: "reply", id: "r-webscraping-cloudflare", title: "r/webscraping: 'Cloudflare blocks my scraper after 50 requests'", status: "ready" },
-        target: { audience: "r-webscraping", label: "r/webscraping", kind: "reddit", section: "community", fields: { subreddit: "webscraping" }, url: "https://www.reddit.com/r/webscraping/", account: "reddit-team", account_label: "u/unblockingapi_team", new: false },
+        target: { channel: "r-webscraping", label: "r/webscraping", kind: "reddit", ownership: "third_party", fields: { subreddit: "webscraping" }, url: "https://www.reddit.com/r/webscraping/", account: "reddit-team", account_label: "u/unblockingapi_team", new: false },
         excerpt: "If it's Cloudflare's managed challenge, rotating datacenter proxies won't help; it scores the browser, not just the IP.",
         asks_first: false,
         auto: true,
@@ -478,7 +497,7 @@ const replies: Message[] = [
         account: "u/unblockingapi_team",
         args: { subreddit: "learnpython", post: "https://www.reddit.com/r/learnpython/comments/1h2x3y4/", text: REPLY_TEXT },
         fields: [{ key: "post", value: "https://www.reddit.com/r/learnpython/comments/1h2x3y4/" }, { key: "text", value: REPLY_TEXT }],
-        spot: { kind: "reddit", kind_label: "Subreddit", fields: { subreddit: "learnpython" }, label: "r/learnpython", audience: null, new: true },
+        spot: { kind: "reddit", kind_label: "Subreddit", fields: { subreddit: "learnpython" }, label: "r/learnpython", channel: null, new: true },
         asks_first: true,
       },
     },
@@ -517,7 +536,7 @@ const emit = (e: Record<string, unknown>) => {
 };
 setDemoTargets({ resolve: resolveTarget, emit });
 
-/** The user's answer to a card: the card changes in its chat, and a new spot Seemo acted in joins the Audience. */
+/** The user's answer to a card: the card changes in its chat, and a new spot Seemo acted in becomes a channel. */
 function resolveCard(id: string, decision: string) {
   const status = decision === "approve" ? "approved" : "declined";
   for (const [chat, list] of Object.entries(transcripts)) {
@@ -529,8 +548,8 @@ function resolveCard(id: string, decision: string) {
       const spot = p.spot?.new ? { ...p.spot, account: p.connection } : p.target?.new ? p.target : null;
       if (spot) {
         try {
-          const e = addEntry({ kind: spot.kind, account: spot.account, fields: spot.fields }, "seemo");
-          result = { audience: e.id, url: p.args?.post ?? null };
+          const e = addChannel({ kind: spot.kind, publisher: spot.account, fields: spot.fields }, "seemo");
+          result = { channel: e.id, url: p.args?.post ?? null };
         } catch {
           // Already there: nothing to add.
         }
@@ -831,35 +850,78 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
     return Promise.resolve({ name, set: !!body.value } as T);
   }
   if (/\/secrets\//.test(path)) return Promise.resolve({ name: path.split("/").pop(), set: !!body.value } as T);
-  // The Audience: entries, what can be added, a suggestion's Add and Dismiss.
-  const audM = /\/audience(?:\/([^/?]+))?(?:\?|$)/.exec(path);
-  if (audM) {
-    const id = audM[1] ? decodeURIComponent(audM[1]) : null;
+  // Channels: the list, what can be added, one channel, a suggestion's Add and Dismiss; a list's people.
+  const chanM = /\/channels(?:\/([^/?]+))?(?:\/(contacts|import|unsubscribe|sends|learn))?(?:\?|$)/.exec(path);
+  if (chanM) {
+    const id = chanM[1] ? decodeURIComponent(chanM[1]) : null;
+    const sub = chanM[2];
     try {
-      if (!id && method === "POST") return Promise.resolve(addEntry(body, "user") as T);
-      if (!id) return Promise.resolve(audienceView() as T);
+      if (!id && method === "POST") return Promise.resolve(addChannel(body, "user") as T);
+      if (!id) return Promise.resolve(channelsView() as T);
       const e = findEntry(id);
-      if (!e) return Promise.reject(new Error(`nothing in the Audience is called '${id}'`));
+      if (!e) return Promise.reject(new Error(`there is no channel '${id}'`));
       const list = demoLists.find((l) => l.id === id);
+      if (sub === "learn") return Promise.resolve({ started: true } as T);
+      if (sub && list) {
+        const l = list;
+        const count = () => ((l.contacts = Math.max(l.contacts, l.people.length)), (l.unsubscribed = l.people.filter((p) => p.unsubscribed).length), listView(l));
+        if (sub === "contacts") {
+          if (method === "POST") {
+            const fresh = (body.contacts as Contact[]).filter((c) => c.email.includes("@") && !l.people.some((p) => p.email === c.email)).map((c) => ({ ...c, consent: body.consent, added: ago(0), unsubscribed: null }));
+            l.people.unshift(...fresh);
+            l.contacts += fresh.length;
+            return Promise.resolve({ added: fresh.length, list: count() } as T);
+          }
+          if (method === "DELETE") {
+            const had = l.people.length;
+            l.people = l.people.filter((p) => p.email !== body.email);
+            if (l.people.length < had) l.contacts -= 1;
+            return Promise.resolve({ removed: l.people.length < had, list: count() } as T);
+          }
+          return Promise.resolve({ list: l.id, contacts: l.people } as T);
+        }
+        if (sub === "import") {
+          const rows = String(body.csv).split(/\r?\n/).map((r) => r.split(",").map((x) => x.trim().replace(/^"|"$/g, ""))).filter((r) => r.some((x) => x.includes("@")));
+          const fresh = rows.map((r) => ({ email: r.find((x) => x.includes("@"))!, name: r.find((x) => x && !x.includes("@")) ?? "", consent: body.consent, added: ago(0), unsubscribed: null })).filter((c) => !l.people.some((p) => p.email === c.email));
+          l.people.unshift(...fresh);
+          l.contacts += fresh.length;
+          return Promise.resolve({ found: rows.length, added: fresh.length, list: count() } as T);
+        }
+        if (sub === "unsubscribe") {
+          const p = l.people.find((x) => x.email === body.email);
+          if (p) p.unsubscribed = ago(0);
+          return Promise.resolve({ unsubscribed: !!p, list: count() } as T);
+        }
+        if (sub === "sends") return Promise.resolve({ list: l.id, sends: demoSends[l.id] ?? [] } as T);
+      }
       if (method === "DELETE") {
         if (list) demoLists.splice(demoLists.indexOf(list), 1);
         else entries.splice(entries.indexOf(e), 1);
         demoAccounts.forEach(settle);
-        emit({ type: "audience_deleted", entry: id, label: e.label, suggested: e.suggested });
+        emit({ type: "channel_deleted", channel: id });
         return Promise.resolve(undefined as T);
       }
       if (method === "PUT") {
-        const kept = list ?? e;
+        const kept: Kept | DemoList = list ?? e;
         if (typeof body.label === "string" && body.label.trim()) kept.label = body.label.trim();
         if (typeof body.description === "string") kept.description = body.description;
-        if (typeof body.account === "string" && demoAccounts.some((c) => c.id === body.account)) kept.account = body.account;
-        if (body.add && !list) Object.assign(e, { suggested: false, reason: undefined, created_at: ago(0) });
+        if (typeof body.publisher === "string") {
+          const svc = serviceOfKind(e.kind);
+          if (body.publisher && !demoAccounts.some((c) => c.id === body.publisher && c.service === svc)) return Promise.reject(new Error(`that account cannot publish to ${e.label}`));
+          kept.publisher = body.publisher;
+        }
+        if (list && typeof body.publish === "string") list.publish = body.publish;
+        if (!list) {
+          for (const f of ["publish", "reply", "ownership"] as const) if (typeof body[f] === "string") Object.assign(e, { [f]: body[f] });
+          for (const f of ["read", "learn"] as const) if (typeof body[f] === "boolean") Object.assign(e, { [f]: body[f] });
+          if (body.add) Object.assign(e, { suggested: false, reason: undefined, created_at: ago(0) });
+        }
         demoAccounts.forEach(settle);
-        const v = entryView(list ? listEntry(list) : e);
-        emit({ type: "audience_saved", entry: v.id, label: v.label, section: v.section, suggested: v.suggested, contacts: v.contacts });
+        const v = channelView(list ? listEntry(list) : e);
+        emitChannel(v, v.contacts);
         return Promise.resolve(v as T);
       }
-      return Promise.resolve(entryView(e) as T);
+      return Promise.resolve(channelView(e) as T);
     } catch (err) {
       return Promise.reject(err);
     }
@@ -873,27 +935,21 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
     const mine = activityM[1] === demoActivity.account;
     return Promise.resolve({ account: activityM[1], service: c?.service ?? "", today: mine ? demoActivity.today : 0, daily_cap: mine ? demoActivity.daily_cap : null, activity: mine ? demoActivity.activity : [] } as T);
   }
-  const acctM = /\/accounts\/([^/?]+)(?:\/(allow|default|learn))?$/.exec(path);
+  const acctM = /\/accounts\/([^/?]+)(?:\/(default))?$/.exec(path);
   if (acctM) {
     const i = demoAccounts.findIndex((x) => x.id === acctM[1]);
     const c = demoAccounts[i];
     if (!c) return Promise.reject(new Error(`no account '${acctM[1]}'`));
-    const allow = (given: Record<string, Allow>) => {
-      for (const [role, v] of Object.entries(given)) c.allow = (c.allow ?? []).map((p) => (p.role === role ? { ...p, allow: p.acts || v !== "ask" ? v : "auto" } : p));
-    };
-    if (acctM[2] === "learn") return Promise.resolve({ started: true } as T);
     if (acctM[2] === "default") demoAccounts.filter((x) => x.service === c.service).forEach((x) => (x.default = x.id === c.id));
-    if (acctM[2] === "allow") allow(body as Record<string, Allow>);
     if (!acctM[2] && method === "DELETE") {
       demoAccounts.splice(i, 1);
-      // Its pages go with it; communities and lists stay and say they need an account.
-      for (const e of entries.filter((e) => e.account === c.id && KINDS.find((k) => k.kind === e.kind)?.account_is_target)) entries.splice(entries.indexOf(e), 1);
+      // Its channels stay (they are the business's people) and say they need a publisher.
+      for (const e of allChannels().filter((e) => e.publisher === c.id)) (demoLists.find((l) => l.id === e.id) ?? entries.find((x) => x.id === e.id))!.publisher = "";
       emit({ type: "account_deleted", account: c.id, label: c.label });
       return Promise.resolve(undefined as T);
     }
     if (!acctM[2] && method === "PUT") {
       if (typeof body.label === "string" && body.label.trim()) Object.assign(c, { label: body.label.trim(), label_set: true });
-      if (body.allow) allow(body.allow as Record<string, Allow>);
       if (body.secrets?.store) c.secrets = { ...body.secrets, store_label: body.secrets.store === "kiqr" ? "KIQR" : String(body.secrets.item ?? body.secrets.store), in_kiqr: body.secrets.store === "kiqr" };
     }
     if (method !== "GET") emit({ type: "account_saved", account: c.id, label: c.label });
@@ -906,60 +962,6 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
     }
     const service = /service=([^&]+)/.exec(path)?.[1];
     return Promise.resolve({ accounts: demoAccounts.map(settle).filter((c) => !service || c.service === decodeURIComponent(service)) } as T);
-  }
-  const listM = /\/lists(?:\/([^/?]+))?(?:\/(contacts|import|unsubscribe|sends))?$/.exec(path);
-  if (listM) {
-    const [, id, sub] = listM;
-    if (!id) {
-      if (method === "POST") {
-        try {
-          addEntry({ kind: "list", label: body.label, description: body.description, account: body.account }, "user");
-        } catch (err) {
-          return Promise.reject(err);
-        }
-        return Promise.resolve(listView(demoLists[demoLists.length - 1]) as T);
-      }
-      return Promise.resolve({ lists: demoLists.map(listView) } as T);
-    }
-    const l = demoLists.find((x) => x.id === decodeURIComponent(id));
-    if (!l) return Promise.reject(new Error(`no list '${id}'`));
-    const count = () => ((l.contacts = Math.max(l.contacts, l.people.length)), (l.unsubscribed = l.people.filter((p) => p.unsubscribed).length), listView(l));
-    if (sub === "contacts") {
-      if (method === "POST") {
-        const fresh = (body.contacts as Contact[]).filter((c) => c.email.includes("@") && !l.people.some((p) => p.email === c.email)).map((c) => ({ ...c, consent: body.consent, added: ago(0), unsubscribed: null }));
-        l.people.unshift(...fresh);
-        l.contacts += fresh.length;
-        return Promise.resolve({ added: fresh.length, list: count() } as T);
-      }
-      if (method === "DELETE") {
-        const had = l.people.length;
-        l.people = l.people.filter((p) => p.email !== body.email);
-        if (l.people.length < had) l.contacts -= 1;
-        return Promise.resolve({ removed: l.people.length < had, list: count() } as T);
-      }
-      return Promise.resolve({ list: l.id, contacts: l.people } as T);
-    }
-    if (sub === "import") {
-      const rows = String(body.csv).split(/\r?\n/).map((r) => r.split(",").map((x) => x.trim().replace(/^"|"$/g, ""))).filter((r) => r.some((x) => x.includes("@")));
-      const fresh = rows.map((r) => ({ email: r.find((x) => x.includes("@"))!, name: r.find((x) => x && !x.includes("@")) ?? "", consent: body.consent, added: ago(0), unsubscribed: null })).filter((c) => !l.people.some((p) => p.email === c.email));
-      l.people.unshift(...fresh);
-      l.contacts += fresh.length;
-      return Promise.resolve({ found: rows.length, added: fresh.length, list: count() } as T);
-    }
-    if (sub === "unsubscribe") {
-      const p = l.people.find((x) => x.email === body.email);
-      if (p) p.unsubscribed = ago(0);
-      return Promise.resolve({ unsubscribed: !!p, list: count() } as T);
-    }
-    if (sub === "sends") return Promise.resolve({ list: l.id, sends: demoSends[l.id] ?? [] } as T);
-    if (method === "DELETE") {
-      demoLists.splice(demoLists.indexOf(l), 1);
-      demoAccounts.forEach(settle);
-      emit({ type: "audience_deleted", entry: l.id, label: l.label, suggested: false });
-      return Promise.resolve(undefined as T);
-    }
-    if (method === "PUT") Object.assign(l, { label: body.label || l.label, description: body.description ?? l.description });
-    return Promise.resolve(listView(l) as T);
   }
   if (path.endsWith("/email")) return Promise.resolve({ sent: true, to: body.to, subject: body.subject, connection: "Email (SMTP)" } as T);
   if (path.startsWith("/api/secrets/")) return Promise.resolve({ name: path.split("/").pop(), set: !!body.value } as T);
@@ -1014,7 +1016,7 @@ export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T
     }
     for (const a of demoAssetList().filter((a) => a.status === "scheduled" && a.publish_at)) {
       const e = a.target ? findEntry(a.target) : undefined;
-      const c = demoAccounts.find((c) => c.id === e?.account);
+      const c = demoAccounts.find((c) => c.id === e?.publisher);
       items.push({ kind: "publish", asset: { type: a.type, id: a.id, title: a.title }, target: a.target ?? null, target_label: e?.label ?? a.target ?? "", via: c?.label ?? null, title: a.title, at: a.publish_at!, schedule_text: `to ${e?.label ?? a.target}${c && c.label !== e?.label ? ` via ${c.label}` : ""}` });
     }
     items.sort((x, y) => x.at.localeCompare(y.at));

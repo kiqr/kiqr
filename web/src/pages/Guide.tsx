@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "motion/react";
 import { ArrowRight, BarChart3, CalendarClock, Cable, Check, Cloud, Loader2, Mail, MessageSquare, MessageSquareText, Newspaper, Plug, Reply, SkipForward, Sparkles, Target, Undo2, type LucideIcon } from "lucide-react";
-import { api, AUDIENCE_EVENTS, useAsync, useEvents, type Asset, type Intake } from "../api";
+import { api, CHANNEL_EVENTS, useAsync, useEvents, type Asset, type Intake } from "../api";
 import { useNetworks } from "../networks";
 import { openSeemo } from "../SeemoWidget";
 import { ASK_FOR_PLAN } from "./Plan";
@@ -96,7 +96,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
   const assets = useAsync(() => api.assets(slug).catch(() => [] as Asset[]), [slug]);
   const planView = useAsync(() => api.plan(slug).catch(() => null), [slug]);
   const accounts = useAsync(() => api.accounts(slug).catch(() => null), [slug]);
-  const audience = useAsync(() => api.audience(slug).catch(() => null), [slug]);
+  const channels = useAsync(() => api.channels(slug).catch(() => null), [slug]);
   const signIns = useSignIns();
   const tasks = useAsync(() => api.tasks(slug).catch(() => []), [slug]);
   const perf = useAsync(() => api.performance(slug).catch(() => null), [slug]);
@@ -116,7 +116,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       if (e.type === "plan_saved") planView.reload();
       if (e.type === "task_saved" || e.type === "task_deleted") tasks.reload();
       if (e.type === "account_saved" || e.type === "account_deleted") accounts.reload();
-      if (AUDIENCE_EVENTS.includes(e.type)) audience.reload();
+      if (CHANNEL_EVENTS.includes(e.type)) channels.reload();
       if (e.type === "metrics_snapshot") perf.reload();
       if (e.type === "intake_saved") (intake.reload(), setup.reload());
       if (["extension_installed", "extension_removed", "extension_paused", "account_saved", "connect_finished"].includes(e.type)) setup.reload();
@@ -171,15 +171,10 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
   const said = saidKinds.map((k) => networks.find((n) => n.kind === k)?.name ?? k);
   const sugs = setup.data?.suggestions ?? [];
   const toSetUp = sugs.filter((s) => !s.ready);
-  // Where content can go: the Audience's entries that publish, and the accounts of services that reach a kind.
-  const entries = (audience.data?.entries ?? []).filter((e) => !e.suggested && e.publishes !== false);
-  const kinds = audience.data?.kinds ?? [];
-  const accountsOf = (kind: string) => {
-    const service = kinds.find((k) => k.kind === kind)?.service;
-    return (accounts.data?.accounts ?? []).filter((c) => (service && c.service === service) || kinds.some((k) => k.kind === kind && k.accounts.some((x) => x.id === c.id)));
-  };
-  const reaches = (kind: string) => entries.some((e) => e.kind === kind) || accountsOf(kind).length > 0;
-  const ch = entries.filter((e) => e.via);
+  // Where content can go: the channels that publish and have someone to post as.
+  const entries = (channels.data?.channels ?? []).filter((e) => !e.suggested && e.publishes !== false);
+  const ch = entries.filter((e) => e.publisher_view);
+  const reaches = (kind: string) => ch.some((e) => e.kind === kind);
   const connected = saidKinds.length ? saidKinds.some(reaches) : ch.length > 0;
   const measured = (perf.data?.sources ?? []).some((s) => s.provider && s.id !== "kiqr");
   const rhythm = RHYTHM[i?.time ?? ""] ?? RHYTHM[""];
@@ -300,7 +295,7 @@ export function Guide({ slug, hideWhenComplete, onComplete }: { slug: string; hi
       text: approved
         ? "Approved. They go out where and when you picked."
         : !ch.length
-          ? `${drafts ? `${drafts} draft${drafts === 1 ? " waits" : "s wait"} for you. ` : ""}A post is approved for where it goes in your Audience, so connect an account and add a page or community first.`
+          ? `${drafts ? `${drafts} draft${drafts === 1 ? " waits" : "s wait"} for you. ` : ""}A post is approved for the channel it goes to, so add a channel and pick who Seemo posts as there first.`
           : drafts
           ? `${drafts} draft${drafts === 1 ? "" : "s"} wait below. Approve one for an account, or ask Seemo to change it.`
           : writing

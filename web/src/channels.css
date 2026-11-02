@@ -1,4 +1,4 @@
-/* Marketing → Audience: the sections, their rows, Seemo's suggestions, the add form. */
+/* Marketing → Channels: rows, Seemo's suggestions, the drawer's parts, the add form. Rows and drawers are the Vault's (vault.css). */
 .au-sec { margin-top: 22px; }
 .au-sec h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; margin: 0 0 2px; }
 .au-sec h2 .n { font: 500 11px/1 var(--mono); color: var(--dim); }
@@ -45,3 +45,27 @@ a.au-via:hover { color: var(--fg); text-decoration: none; }
 @media (max-width: 640px) {
   .au-count { text-align: left; min-width: 0; }
 }
+
+/* Channels */
+.ch-hint { margin: -6px 0 10px; }
+.ch-list-ic { color: var(--accent); background: var(--accent-soft); border-color: rgba(94,234,212,.22); }
+.ch-row .chip { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; flex: none; }
+.ch-modes { display: flex; gap: 6px; flex: none; }
+.ch-mode { font-size: 11.5px; color: var(--muted); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); white-space: nowrap; }
+.ch-mode.auto { color: var(--accent); border-color: rgba(94,234,212,.3); background: var(--accent-soft); }
+.ch-mode.ask { color: var(--accent-2); border-color: rgba(129,140,248,.3); background: rgba(129,140,248,.1); }
+.ch-mode.off { color: var(--dim); }
+@media (max-width: 640px) { .ch-modes { display: none; } }
+.ch-need { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border-radius: var(--r); background: var(--warn-soft); border: 1px solid color-mix(in oklab, var(--warn) 30%, transparent); color: var(--warn); font-size: 13.5px; }
+.ch-need .grow { flex: 1; min-width: 160px; color: var(--fg); }
+.ch-pub { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ch-pub .input { flex: 1; min-width: 200px; }
+.ch-pub.none { padding: 10px 12px; border-radius: var(--r); border: 1px dashed var(--line-2); }
+.ch-about { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.ch-learn, .ch-people { align-self: flex-start; }
+.ch-what { align-self: flex-start; flex-wrap: wrap; }
+.ch-url { display: flex; align-items: center; gap: 8px; }
+.ch-url .input { flex: 1; }
+.vt-detail .cap { margin: 0; }
+.au-sugg + .acx-groups, .au-sugg ~ .acx-groups { margin-top: 22px; }
+.acc-field > .seg { align-self: flex-start; }

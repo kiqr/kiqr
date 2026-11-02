@@ -5,7 +5,7 @@
 mod access;
 mod accounts;
 mod agent;
-mod audience;
+mod channels;
 mod api;
 mod build;
 mod builtin;

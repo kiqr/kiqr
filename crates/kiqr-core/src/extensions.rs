@@ -260,27 +260,27 @@ pub struct ExtraTool {
 /// inbox. Everything KIQR knows about one (its name, the text limit, the image
 /// size, how a post looks there, what names a spot on it) comes from the
 /// ability that declares it, never from KIQR's code. Where exactly a post goes
-/// is an Audience entry of the kind (`crate::audience`), never the account.
+/// is a channel of the kind (`crate::channels`), never the account.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Kind {
     pub kind: String,
     /// What one spot of the kind is called ("Subreddit", "Page", "Blog").
     pub label: String,
-    /// Where an Audience entry of the kind is listed: `page` (the business's
+    /// What a channel of the kind usually is: `page` (the business's
     /// own: a profile, a page, a blog), `community` (somewhere it takes part:
     /// a subreddit, a group) or `list` (people it emails). Default `page`.
     pub section: String,
     /// The fields that name a spot (a subreddit): name → {label, help,
     /// placeholder, optional, enum, pattern}. A publish there carries them as
-    /// arguments; an Audience entry holds them. Empty: the account is the spot.
+    /// arguments; a channel holds them. Empty: the account is the spot.
     pub target: BTreeMap<String, Value>,
     /// How a URL argument of a call names the spot: arg → a pattern with the
     /// target's fields in braces (`post_url: "reddit.com/r/{subreddit}/"`), so a
     /// reply to a post is known to be in r/selfhosted.
     pub target_from: BTreeMap<String, String>,
     /// The account itself is the one spot (an X profile): connecting it makes
-    /// its Audience entry.
+    /// its channel.
     pub account_is_target: bool,
     /// A link to a spot, a template over the target's fields.
     pub url: String,
@@ -304,7 +304,7 @@ pub struct Kind {
 
 /// What a tool may do on an account.
 pub const ROLES: &[&str] = &["publish", "read", "reply", "manage"];
-/// Where an Audience entry is listed.
+/// What a channel of a kind usually is (`page` and `list` are owned, `community` third-party).
 pub const SECTIONS: &[&str] = &["page", "community", "list"];
 
 impl ExtraTool {
@@ -1937,7 +1937,7 @@ kinds:
         assert!(parse_manifest(&sub.replace("{sub}/", "{nope}/")).unwrap_err().to_string().contains("target_from"));
         assert!(parse_manifest(&sub.replace("section: community", "section: forum")).unwrap_err().to_string().contains("section"));
         assert!(parse_manifest(&sub.replace("section: community", "account_is_target: true")).unwrap_err().to_string().contains("no target fields"));
-        assert!(parse_manifest(&WP.replace("kind: wordpress", "kind: list")).is_err(), "list is the Audience's own kind");
+        assert!(parse_manifest(&WP.replace("kind: wordpress", "kind: list")).is_err(), "list is the channels' own kind");
     }
 
     #[test]

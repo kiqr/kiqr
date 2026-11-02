@@ -13,7 +13,7 @@ use axum::{
     Json, Router,
 };
 use kiqr_core::accounts::Account;
-use kiqr_core::audience::Entry;
+use kiqr_core::channels::Channel;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{Manifest, Provide};
 use kiqr_core::lists::{self, Contact};
@@ -23,31 +23,23 @@ use serde_json::{json, Value};
 
 pub fn routes() -> Router<App> {
     Router::new()
-        .route("/api/projects/{slug}/lists", get(index).post(create))
-        .route("/api/projects/{slug}/lists/{id}", get(show).put(update).delete(remove))
-        .route("/api/projects/{slug}/lists/{id}/contacts", get(contacts).post(add_contacts).delete(remove_contact))
-        .route("/api/projects/{slug}/lists/{id}/import", post(import))
-        .route("/api/projects/{slug}/lists/{id}/unsubscribe", post(unsubscribe))
-        .route("/api/projects/{slug}/lists/{id}/sends", get(sends))
+        .route("/api/projects/{slug}/channels/{id}/contacts", get(contacts).post(add_contacts).delete(remove_contact))
+        .route("/api/projects/{slug}/channels/{id}/import", post(import))
+        .route("/api/projects/{slug}/channels/{id}/unsubscribe", post(unsubscribe))
+        .route("/api/projects/{slug}/channels/{id}/sends", get(sends))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 
-fn load(app: &App, slug: &str, id: &str) -> Result<Entry, ApiError> {
+fn load(app: &App, slug: &str, id: &str) -> Result<Channel, ApiError> {
     lists::load(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))
 }
 
-fn emit(app: &App, slug: &str, l: &Entry) {
+fn emit(app: &App, slug: &str, l: &Channel) {
     let v = lists::view(l, app.store.home(), slug);
-    app.bus.emit(Some(slug), EventKind::AudienceSaved { entry: l.id.clone(), label: l.label.clone(), section: l.section.clone(), suggested: false, contacts: Some(v.contacts) });
-}
-
-async fn index(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Value> {
-    let _ = Project::load(&app.store, &slug)?;
-    let home = app.store.home();
-    Ok(Json(json!({ "lists": lists::all(&app.store, &slug)?.iter().map(|l| lists::view(l, home, &slug)).collect::<Vec<_>>() })))
+    crate::channels::emit(app, slug, l, Some(v.contacts));
 }
 
 #[derive(Deserialize, Default)]
@@ -55,61 +47,13 @@ async fn index(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Va
 pub struct NewList {
     pub label: String,
     pub description: String,
-    /// The mail account it is sent from; empty: the project's default one, if any.
+    /// The mail account it is sent from; empty: the first one here that sends email.
     pub account: String,
 }
 
-/// A list in the Audience, sent from a mail account.
-pub async fn create_list(app: &App, slug: &str, b: NewList, by: &str) -> Result<Entry, ApiError> {
-    let label = b.label.trim().to_string();
-    if lists::find(&app.store, slug, &label).is_some() {
-        return Err(bad(format!("there is a list called '{label}' already")));
-    }
-    // From the account named, else the first account here that sends email.
-    let mut account = b.account.trim().to_string();
-    if account.is_empty() {
-        for c in Account::list(&app.store, slug).unwrap_or_default() {
-            if crate::audience::sends_to_lists(app, slug, &c.service).await {
-                account = c.id;
-                break;
-            }
-        }
-    }
-    crate::audience::create(app, slug, crate::audience::NewEntry { kind: kiqr_core::audience::LIST.into(), label, description: b.description, account, ..Default::default() }, by).await
-}
-
-async fn create(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewList>) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let l = create_list(&app, &slug, b, "user").await?;
-    Ok((StatusCode::CREATED, Json(json!(lists::view(&l, app.store.home(), &slug)))))
-}
-
-async fn show(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
-    let l = load(&app, &slug, &id)?;
-    Ok(Json(crate::audience::view(&app, &slug, &l).await))
-}
-
-async fn update(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(b): Json<NewList>) -> ApiResult<Value> {
-    let mut l = load(&app, &slug, &id)?;
-    if !b.label.trim().is_empty() {
-        if lists::find(&app.store, &slug, b.label.trim()).is_some_and(|o| o.id != l.id) {
-            return Err(bad(format!("there is a list called '{}' already", b.label.trim())));
-        }
-        l.label = b.label.trim().to_string();
-    }
-    l.description = b.description.trim().to_string();
-    l.save(&app.store, &slug)?;
-    app.store.commit(&format!("list({slug}): {}", l.label)).await?;
-    emit(&app, &slug, &l);
-    Ok(Json(crate::audience::view(&app, &slug, &l).await))
-}
-
-/// Remove a list and everyone on it.
-async fn remove(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> Result<StatusCode, ApiError> {
-    load(&app, &slug, &id)?;
-    let l = Entry::delete(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    app.store.commit(&format!("list({slug}): remove {}", l.label)).await?;
-    app.bus.emit(Some(&slug), EventKind::AudienceDeleted { entry: l.id });
-    Ok(StatusCode::NO_CONTENT)
+/// A list: a channel of kind `list`, sent by a mail account.
+pub async fn create_list(app: &App, slug: &str, b: NewList, by: &str) -> Result<Channel, ApiError> {
+    crate::channels::create(app, slug, crate::channels::NewChannel { kind: kiqr_core::channels::LIST.into(), label: b.label, description: b.description, publisher: b.account, ..Default::default() }, by).await
 }
 
 /// The people on it. Only the UI reads this; Seemo sees counts.
@@ -221,7 +165,7 @@ async fn sends(State(app): State<App>, Path((slug, id)): Path<(String, String)>)
 /// Start sending to everyone on the list through the account, one message
 /// each, in the background. People already in this send's log are skipped,
 /// so a stopped run picks up where it left. Returns how many are to go.
-pub async fn send(app: &App, slug: &str, c: &Account, m: &Manifest, provide: &Provide, l: &Entry, subject: &str, text_md: &str, asset: Option<crate::publish::AssetRef>, by: &str) -> Result<usize, ApiError> {
+pub async fn send(app: &App, slug: &str, c: &Account, m: &Manifest, provide: &Provide, l: &Channel, subject: &str, text_md: &str, asset: Option<crate::publish::AssetRef>, by: &str) -> Result<usize, ApiError> {
     let home = app.store.home();
     let key = send_key(subject, asset.as_ref());
     let job = format!("list-send:{slug}/{}/{key}", l.id);
@@ -237,7 +181,7 @@ pub async fn send(app: &App, slug: &str, c: &Account, m: &Manifest, provide: &Pr
         return Err(bad(if done.is_empty() { format!("nobody is on {} yet", l.label) } else { format!("everyone on {} has had \"{subject}\" already", l.label) }));
     }
     let business = Project::load(&app.store, slug).map(|p| p.name).unwrap_or_default();
-    // Every message says why it came and how to leave; the user marks who left under Audience.
+    // Every message says why it came and how to leave; the user marks who left on the list's channel.
     let footer = format!("\n\n---\n\nYou get this because you are on the {} list of {}. Reply with \"unsubscribe\" to leave it.", l.label, business);
     let text = format!("{}{footer}", text_md.trim_end());
     let html = kiqr_core::publishing::markdown_to_html(&text);
@@ -266,9 +210,9 @@ pub async fn send(app: &App, slug: &str, c: &Account, m: &Manifest, provide: &Pr
                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
             }
         }
-        let a = kiqr_core::accounts::Activity { at: chrono::Utc::now(), ability: m.id.clone(), role: "publish".into(), tool: "email".into(), target: format!("list:{}:{}", list.id, send_key(&subject, asset.as_ref())), audience: list.id.clone(), url: None };
+        let a = kiqr_core::accounts::Activity { at: chrono::Utc::now(), ability: m.id.clone(), role: "publish".into(), tool: "email".into(), target: format!("list:{}:{}", list.id, send_key(&subject, asset.as_ref())), channel: list.id.clone(), url: None };
         let _ = c.record(&home, &slug, &a);
-        app.bus.emit(Some(&slug), EventKind::AccountActed { account: c.id.clone(), ability: m.id.clone(), role: "publish".into(), target: a.target.clone(), audience: list.id.clone(), url: None });
+        app.bus.emit(Some(&slug), EventKind::AccountActed { account: c.id.clone(), ability: m.id.clone(), role: "publish".into(), target: a.target.clone(), channel: list.id.clone(), url: None });
         let text = if failed == 0 { format!("\"{subject}\" went to all {sent} people on {}.", list.label) } else { format!("\"{subject}\" went to {sent} people on {}; {failed} could not be sent (the list page shows who).", list.label) };
         app.bus.emit(Some(&slug), EventKind::SeemoSays { text });
         tracing::info!(slug, list = %list.id, sent, failed, by = %by, "sent to a list");

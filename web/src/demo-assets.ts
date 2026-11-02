@@ -62,7 +62,7 @@ let assets: Asset[] = [
     updated_at: ago(70),
     files: [file("body", "post.md", 380), file("media", "card.png", 120000)],
     target: "x-unblockingapi",
-    publications: [{ audience: "x-unblockingapi", account: "x-unblockingapi", ability: "x-browser", url: "https://x.com/unblockingapi", at: ago(70) }],
+    publications: [{ channel: "x-unblockingapi", account: "x-unblockingapi", ability: "x-browser", url: "https://x.com/unblockingapi", at: ago(70) }],
   },
   {
     id: "its-a-javascript-shell",
@@ -87,7 +87,7 @@ let assets: Asset[] = [
     updated_at: ago(25),
     files: [file("body", "reply.md", 420)],
     target: "r-webscraping",
-    publications: [{ audience: "r-webscraping", account: "reddit-team", ability: "reddit-browser", url: "https://www.reddit.com/r/webscraping/", at: ago(25), run: "reddit-replies/2026-10-22T10-00" }],
+    publications: [{ channel: "r-webscraping", account: "reddit-team", ability: "reddit-browser", url: "https://www.reddit.com/r/webscraping/", at: ago(25), run: "reddit-replies/2026-10-22T10-00" }],
   },
   {
     id: "residential-vs-datacenter-proxies",
@@ -169,9 +169,9 @@ export function demoAssetText(a: Pick<Asset, "type" | "id">, name: string) {
   return texts[`${a.type}/${a.id}/${name}`] ?? "";
 }
 
-/** Where a publish goes: an Audience entry, or a spot that joins the Audience with the yes. */
+/** Where a publish goes: a channel, or a spot that becomes one with the yes. */
 export type DemoTarget = { target: string; label: string; account: string; ability: string; url: string | null };
-/** The demo's Audience lives with Seemo's demo (demo-chat), which hands over how to find a target and how to tell listeners. */
+/** The demo's channels live with Seemo's demo (demo-chat), which hands over how to find a target and how to tell listeners. */
 let targets: { resolve: (where: { target?: string; spot?: Spot }) => DemoTarget | null; emit: (e: Record<string, unknown>) => void } = { resolve: () => null, emit: () => {} };
 export function setDemoTargets(t: typeof targets) {
   targets = t;
@@ -227,7 +227,7 @@ export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T
   const body = init?.body ? JSON.parse(String(init.body)) : {};
   // Where: the entry or spot given, else the one it was approved for.
   const where = (): DemoTarget | null => (body.target || body.spot ? targets.resolve({ target: body.target, spot: body.spot }) : found.target ? targets.resolve({ target: found.target }) : null);
-  const nowhere = () => Promise.reject(new Error("say where it goes: somewhere in the Audience, or a new spot"));
+  const nowhere = () => Promise.reject(new Error("say where it goes: a channel, or a new spot"));
   try {
     if (action === "approve") {
       const t = where();
@@ -246,8 +246,8 @@ export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T
     if (action === "publish") {
       const t = where();
       if (!t) return nowhere();
-      settle({ target: t.target, publish_at: null, publish_error: null, publications: [...found.publications, { audience: t.target, account: t.account, ability: t.ability, url: t.url, at: ago(0) }] });
-      targets.emit({ type: "asset_published", asset: { type, id }, audience: t.target, account: t.account, url: t.url });
+      settle({ target: t.target, publish_at: null, publish_error: null, publications: [...found.publications, { channel: t.target, account: t.account, ability: t.ability, url: t.url, at: ago(0) }] });
+      targets.emit({ type: "asset_published", asset: { type, id }, channel: t.target, account: t.account, url: t.url });
       return ok({ published: true, url: t.url, detail: "sent", target: t.target, target_label: t.label });
     }
   } catch (e) {

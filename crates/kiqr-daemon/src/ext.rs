@@ -206,7 +206,7 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         }
         if let Some((_, m)) = reg.provider(slug, a.id, cfg.abilities.get(a.id).map(String::as_str), |m| !off.contains(&m.id) && ready_in(app, Some(slug), m)) {
             let cost = m.provides.get(a.id).and_then(|p| p.cost.as_deref());
-            out.push(with_connection_arg(a.spec(&m.name, cost), &Account::of(&app.store, slug, m.service()), ""));
+            out.push(with_connection_arg(a.spec(&m.name, cost), &Account::of(&app.store, slug, m.service())));
         }
     }
     for (_, m) in reg.connections(slug) {
@@ -241,11 +241,6 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
         }
         let conns = Account::of(&app.store, slug, m.service());
         for t in &m.tools {
-            // A role every account of the service switched off is not offered at all.
-            let role = if t.role.is_empty() { "read" } else { t.role.as_str() };
-            if !conns.is_empty() && conns.iter().all(|c| c.allow(role) == kiqr_core::accounts::Allow::Off) {
-                continue;
-            }
             let mut name = t.name.clone();
             if out.iter().any(|s| s.name == name) {
                 name = format!("{}_{}", m.id.replace('-', "_"), t.name);
@@ -261,17 +256,15 @@ pub async fn tool_specs(app: &App, slug: &str, allowed: &[Group]) -> Vec<ToolSpe
                 cost: t.provide.cost.clone(),
             });
             let last = out.pop().expect("just pushed");
-            out.push(with_connection_arg(last, &conns, role));
+            out.push(with_connection_arg(last, &conns));
         }
     }
     out
 }
 
 /// With more than one account of an ability in the project, its tools take
-/// `connection`: which one, by name; the default when left out. Accounts
-/// that switched the tool's role off are not offered.
-fn with_connection_arg(mut spec: ToolSpec, conns: &[Account], role: &str) -> ToolSpec {
-    let conns: Vec<&Account> = conns.iter().filter(|c| role.is_empty() || c.allow(role) != kiqr_core::accounts::Allow::Off).collect();
+/// `connection`: which one, by name; the default when left out.
+fn with_connection_arg(mut spec: ToolSpec, conns: &[Account]) -> ToolSpec {
     if conns.len() < 2 {
         return spec;
     }
@@ -883,13 +876,23 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
             bail!("{} has no {} picked yet; the user picks it under Performance (or on the ability)", m.name, missing.join(", ").to_lowercase());
         }
     }
-    // What the account allows: a role switched off is refused, whoever asks; and an account on a
-    // hosted program that is not signed in does nothing, reading included (it would read the sign-in page).
-    if let Some(c) = &conn {
-        let role = role_of(m, tool);
-        if c.allow(&role) == kiqr_core::accounts::Allow::Off {
-            bail!("Seemo may not {role} on {}; the user can allow it on the account", c.label);
+    // The channel the call happens in decides: a role it switched off is refused, whoever asks.
+    // And an account on a hosted program that is not signed in does nothing, reading included
+    // (it would read the sign-in page).
+    let role = role_of(m, tool);
+    let spot = match &conn {
+        Some(c) => {
+            let kinds = crate::channels::kinds_of(app, slug, &c.service).await;
+            crate::channels::spot_of(&app.store, slug, c, &kinds, tool.unwrap_or_default(), &args, false).ok().flatten()
         }
+        None => None,
+    };
+    if let Some(s) = &spot {
+        if s.mode(&role) == kiqr_core::channels::Mode::Off {
+            bail!("Seemo may not {role} in {}; the user can allow it on the channel", s.label);
+        }
+    }
+    if let Some(c) = &conn {
         if m.transport == Transport::Mcp {
             let st = crate::accounts::state(app, slug, c).await;
             if !st.ready() {
@@ -901,15 +904,9 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         (Some(c), true) => Some(account_turn(slug, &c.id).await),
         _ => None,
     };
-    // The Audience entry the call happens in, for the log.
-    let audience = match &conn {
-        Some(c) => {
-            let kinds: Vec<extensions::Kind> = crate::audience::kinds_of(app, slug, &c.service).await.into_iter().map(|(_, k)| k).collect();
-            crate::audience::spot_of(&app.store, slug, c, &kinds, tool.unwrap_or_default(), &args, false).ok().flatten().and_then(|s| s.entry).map(|e| e.id).unwrap_or_default()
-        }
-        None => String::new(),
-    };
-    let act = conn.as_ref().and_then(|c| action(m, tool, &args, &target_env(app, slug, m, c), audience));
+    // The channel the call happens in, for the log.
+    let channel = spot.and_then(|s| s.channel).map(|e| e.id).unwrap_or_default();
+    let act = conn.as_ref().and_then(|c| action(m, tool, &args, &target_env(app, slug, m, c), channel));
     if let (Some(c), Some(a)) = (&conn, &act) {
         if let Err((why, e)) = check_action(app, slug, m, c, a).await {
             app.bus.emit(Some(slug), EventKind::ActionRefused { account: c.id.clone(), ability: m.id.clone(), why: why.to_string(), message: e.to_string() });
@@ -922,7 +919,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         if let Err(e) = c.record(app.store.home(), slug, &a) {
             tracing::warn!(account = %c.id, "could not log an action: {e:#}");
         }
-        app.bus.emit(Some(slug), EventKind::AccountActed { account: c.id.clone(), ability: a.ability, role: a.role, target: a.target, audience: a.audience, url: a.url });
+        app.bus.emit(Some(slug), EventKind::AccountActed { account: c.id.clone(), ability: a.ability, role: a.role, target: a.target, channel: a.channel, url: a.url });
     }
     Ok(out)
 }
@@ -979,9 +976,13 @@ pub(crate) async fn action_preview(app: &App, slug: &str, payload: &Value) -> Re
     let t = m.tools.iter().find(|t| t.name == tool).filter(|t| t.acts()).ok_or_else(|| bad(format!("{} has no tool '{tool}' that acts", m.name)))?;
     let args = payload["args"].clone();
     let conn = pick_connection(app, slug, &m, args["connection"].as_str()).map_err(|e| bad(e.to_string()))?.ok_or_else(|| bad(format!("{} has no account here yet", m.name)))?;
-    // Where it happens, and whether the Audience has it: on its own only there.
-    let kinds: Vec<extensions::Kind> = crate::audience::kinds_of(app, slug, &conn.service).await.into_iter().map(|(_, k)| k).collect();
-    let spot = crate::audience::spot_of(&app.store, slug, &conn, &kinds, tool, &args, true).map_err(|e| bad(e.to_string()))?;
+    // Where it happens: the channel's mode decides; somewhere that is no channel asks.
+    let kinds = crate::channels::kinds_of(app, slug, &conn.service).await;
+    let spot = crate::channels::spot_of(&app.store, slug, &conn, &kinds, tool, &args, true).map_err(|e| bad(e.to_string()))?;
+    let mode = spot.as_ref().map(|s| s.mode(&t.role)).unwrap_or(kiqr_core::channels::Mode::Ask);
+    if mode == kiqr_core::channels::Mode::Off {
+        return Err(bad(format!("Seemo may not {} in {}; the user can allow it on the channel", t.role, spot.as_ref().map(|s| s.label.as_str()).unwrap_or("this channel"))));
+    }
     let shown: Vec<Value> = args.as_object().map(|o| o.iter().filter(|(k, _)| k.as_str() != "connection" && k.as_str() != "by").map(|(k, v)| json!({ "key": k, "value": v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()) })).collect()).unwrap_or_default();
     Ok(json!({
         "ability": m.id,
@@ -995,10 +996,10 @@ pub(crate) async fn action_preview(app: &App, slug: &str, payload: &Value) -> Re
         "account": conn.label,
         "args": args,
         "fields": shown,
-        // Where it happens; somewhere new goes into the Audience with the yes.
+        // Where it happens; somewhere new becomes a channel with the yes.
         "spot": spot.as_ref().map(|s| s.view()),
-        // On its own only where the user let Seemo act on its own for this role, and only in the Audience: the card is the record.
-        "asks_first": conn.allow(&t.role) != kiqr_core::accounts::Allow::Auto || spot.as_ref().is_some_and(|s| s.entry.is_none()),
+        // On its own only where the channel lets Seemo act on its own for this role: the card is the record.
+        "asks_first": mode != kiqr_core::channels::Mode::Auto,
     }))
 }
 
@@ -1013,10 +1014,10 @@ pub(crate) async fn do_action(app: &App, slug: &str, preview: &Value) -> Result<
     .ok_or_else(|| bad(format!("the ability '{id}' is not installed or is off here")))?;
     let t = m.tools.iter().find(|t| t.name == tool).cloned().ok_or_else(|| bad(format!("{} has no tool '{tool}'", m.name)))?;
     let out = execute(app, slug, &m, &t.provide, None, Some(tool), &preview["args"], preview["connection"].as_str()).await.map_err(|e| bad(format!("{e:#}")))?;
-    // A spot the user said yes to is one Seemo goes to again: it joins the Audience.
+    // A spot the user said yes to is one Seemo goes to again: it becomes a channel.
     if preview["spot"]["new"].as_bool() == Some(true) {
         if let Ok(c) = Account::load(&app.store, slug, preview["connection"].as_str().unwrap_or_default()) {
-            crate::audience::add_spot(app, slug, &c, &preview["spot"], "seemo").await;
+            crate::channels::add_spot(app, slug, &c, &preview["spot"], "seemo").await;
         }
     }
     let url = out.text.clone().filter(|x| x.starts_with("http")).or_else(|| ["html_url", "url", "link"].iter().find_map(|k| out.json.get(*k).and_then(|u| u.as_str()).map(str::to_string)));
@@ -1034,14 +1035,14 @@ pub(crate) async fn account_turn(slug: &str, id: &str) -> tokio::sync::OwnedMute
 
 /// What a call does on its account, when it does more than read: the tool's
 /// `role` (or `publish` for a channel kind's publish tool) and its `target`.
-fn action(m: &Manifest, tool: Option<&str>, args: &Value, env: &impl Fn(&str) -> Option<String>, audience: String) -> Option<Activity> {
+fn action(m: &Manifest, tool: Option<&str>, args: &Value, env: &impl Fn(&str) -> Option<String>, channel: String) -> Option<Activity> {
     let role = role_of(m, tool);
     if role == "read" {
         return None;
     }
     let t = tool.and_then(|n| m.tools.iter().find(|t| t.name == n));
     let target = t.map(|t| extensions::fill(&t.target, args, env)).unwrap_or_default().trim().to_string();
-    Some(Activity { at: chrono::Utc::now(), ability: m.id.clone(), role, tool: tool.unwrap_or_default().to_string(), target, audience, url: None })
+    Some(Activity { at: chrono::Utc::now(), ability: m.id.clone(), role, tool: tool.unwrap_or_default().to_string(), target, channel, url: None })
 }
 
 /// What a call of a tool does on its account: the tool's `role`, `publish` for a kind's publish tool, else reading.

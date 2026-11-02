@@ -30,8 +30,8 @@ projects/*/accounts/*/.env
 projects/*/accounts/*/data/
 projects/*/accounts/*/activity.jsonl
 # The people on a list and what was sent to them: personal data stays on this machine.
-projects/*/audience/*/contacts.csv
-projects/*/audience/*/sends/
+projects/*/channels/*/contacts.csv
+projects/*/channels/*/sends/
 ";
 
 const ENV_TEMPLATE: &str = "\

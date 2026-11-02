@@ -1,6 +1,6 @@
 // What you can do with an asset, by where it stands. Nobody sets the status:
-// it follows from the facts. Approve picks where it goes, an Audience entry or
-// somewhere new that joins the Audience with the yes (Ready), Schedule sets the
+// it follows from the facts. Approve picks where it goes, a channel or
+// somewhere new that becomes one with the yes (Ready), Schedule sets the
 // time (Scheduled), Publish sends it (Published). Unpublish, Archive and
 // Bring back are the only steps backwards. The same block sits under a post
 // in the chat, in the Library's modal, on the asset page and on the To do page.
@@ -8,10 +8,10 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, Archive, ArchiveRestore, CalendarClock, Check, ExternalLink, Loader2, MapPin, Send, Undo2 } from "lucide-react";
 import { FieldInput } from "./FieldInput";
-import { api, SECTIONS, type Asset, type AssetStatus, type AudienceEntry, type AudienceKind, type Spot } from "../api";
+import { api, type Asset, type AssetStatus, type Channel, type ChannelKind, type Spot } from "../api";
 import { networkOf, useNetworks } from "../networks";
 import { ago } from "./Project";
-import { connectHref, entryText, filled, SpotFields, useAudience } from "./Audience";
+import { channelText, filled, SpotFields, useChannels } from "./Channels";
 import { openSeemo } from "../SeemoWidget";
 
 export const STATUSES: AssetStatus[] = ["draft", "ready", "scheduled", "published", "archived"];
@@ -39,25 +39,35 @@ function defaultAt() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Where an asset can go now: the Audience entries that publish, those of the post's network first (all when none fits). */
-function fitting(a: Asset, entries: AudienceEntry[], netKind: string | undefined) {
+/** Where an asset can go now: the channels that publish, those of the post's network first (all when none fits). */
+function fitting(a: Asset, channels: Channel[], netKind: string | undefined) {
   const kind = netKind ?? a.tags[0]?.toLowerCase();
-  const hit = kind ? entries.filter((e) => e.kind === kind) : [];
-  return hit.length ? hit : entries;
+  const hit = kind ? channels.filter((e) => e.kind === kind) : [];
+  return hit.length ? hit : channels;
 }
 
-/** A select of Audience entries, grouped by section: "r/selfhosted · via u/acme_dev". */
-function EntryPicker({ entries, value, onChange }: { entries: AudienceEntry[]; value: string; onChange: (id: string) => void }) {
+/** Why a channel cannot take it now, in a few words; nothing when it can. */
+function blocked(c: Channel): string {
+  return c.readiness.ready ? "" : ` (${c.readiness.text.charAt(0).toLowerCase()}${c.readiness.text.slice(1)})`;
+}
+
+/** A select of channels, owned first: "r/selfhosted · as u/acme_dev". */
+function ChannelPicker({ channels, value, onChange }: { channels: Channel[]; value: string; onChange: (id: string) => void }) {
   return (
     <select className="input sm" value={value} onChange={(e) => onChange(e.target.value)} aria-label="Where it goes">
-      {SECTIONS.map((s) => {
-        const of = entries.filter((e) => e.section === s.id);
+      {(
+        [
+          ["owned", "Owned"],
+          ["third_party", "Third-party"],
+        ] as const
+      ).map(([o, label]) => {
+        const of = channels.filter((e) => e.ownership === o);
         return of.length ? (
-          <optgroup key={s.id} label={s.label}>
+          <optgroup key={o} label={label}>
             {of.map((e) => (
-              <option key={e.id} value={e.id} disabled={!e.via?.ready}>
-                {entryText(e)}
-                {!e.via ? " (needs an account)" : !e.via.ready ? " (its account does not work now)" : ""}
+              <option key={e.id} value={e.id} disabled={!e.readiness.ready}>
+                {channelText(e)}
+                {blocked(e)}
               </option>
             ))}
           </optgroup>
@@ -67,70 +77,44 @@ function EntryPicker({ entries, value, onChange }: { entries: AudienceEntry[]; v
   );
 }
 
-/** Somewhere the Audience does not have yet: a kind, the account, the fields that name it. The yes adds it. */
-function SpotForm({ slug, kinds, busy, onApprove, onCancel }: { slug: string; kinds: AudienceKind[]; busy: boolean; onApprove: (spot: Spot) => void; onCancel: () => void }) {
-  const usable = kinds.filter((k) => k.section !== "list" && k.publishes !== false);
-  const [kindId, setKindId] = useState(usable.find((k) => k.accounts.length)?.kind ?? usable[0]?.kind ?? "");
-  const kind = usable.find((k) => k.kind === kindId);
-  const [account, setAccount] = useState("");
+/** Somewhere that is no channel yet: a kind and the fields that name it. The yes makes it a channel. */
+function SpotForm({ kinds, busy, onApprove, onCancel }: { kinds: ChannelKind[]; busy: boolean; onApprove: (spot: Spot) => void; onCancel: () => void }) {
+  const [kindId, setKindId] = useState(kinds[0]?.kind ?? "");
+  const kind = kinds.find((k) => k.kind === kindId);
   const [fields, setFields] = useState<Record<string, string>>({});
-  const accountId = account || kind?.accounts[0]?.id || "";
-  const missing = !kind || !accountId || (!kind.account_is_target && Object.entries(kind.target ?? {}).some(([n, s]) => !s.optional && !(fields[n] ?? "").trim()));
+  const missing = !kind || Object.entries(kind.target ?? {}).some(([n, s]) => !s.optional && !(fields[n] ?? "").trim());
   return (
     <div className="aa-spot">
       <div className="au-form">
         <label className="acc-field">
           <span className="nm">What it is</span>
-          <select className="input" value={kindId} onChange={(e) => (setKindId(e.target.value), setAccount(""), setFields({}))}>
-            {SECTIONS.filter((s) => s.id !== "list").map((s) => {
-              const of = usable.filter((k) => k.section === s.id);
-              return of.length ? (
-                <optgroup key={s.id} label={s.label}>
-                  {of.map((k) => (
-                    <option key={k.kind} value={k.kind}>
-                      {k.name || k.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ) : null;
-            })}
-          </select>
+          <FieldInput value={kindId} onChange={(v) => (setKindId(v), setFields({}))} options={kinds.map((k) => k.kind)} labels={Object.fromEntries(kinds.map((k) => [k.kind, k.name || k.label]))} ariaLabel="Kind" plain />
         </label>
-        {kind && kind.accounts.length > 0 && (
-          <label className="acc-field">
-            <span className="nm">Through</span>
-            <FieldInput value={accountId} onChange={setAccount} options={kind.accounts.map((x) => x.id)} labels={Object.fromEntries(kind.accounts.map((x) => [x.id, x.label]))} ariaLabel="Account" plain />
-          </label>
-        )}
-        {kind && kind.accounts.length > 0 && <SpotFields slug={slug} kind={kind} account={accountId} values={fields} onChange={setFields} />}
+        {kind && <SpotFields kind={kind} values={fields} onChange={setFields} />}
       </div>
-      {kind && kind.accounts.length === 0 && (
-        <p className="muted sm">
-          <Link to={connectHref(slug, kind.service)}>Connect a {kind.service_name ?? kind.name} account first</Link>
-        </p>
-      )}
       <div className="aa-row">
-        <button className="btn p sm" disabled={busy || missing} onClick={() => kind && onApprove({ kind: kind.kind, account: accountId, fields: filled(fields) })}>
+        <button className="btn p sm" disabled={busy || missing} onClick={() => kind && onApprove({ kind: kind.kind, fields: filled(fields) })}>
           <Check size={14} /> Approve for it
         </button>
         <button className="btn t sm" onClick={onCancel}>
           Cancel
         </button>
-        <span className="new-spot">It joins your Audience.</span>
+        <span className="new-spot">It becomes a channel.</span>
       </div>
     </div>
   );
 }
 
 export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: Asset; compact?: boolean; onChange: () => void }) {
-  const view = useAudience(slug);
+  const view = useChannels(slug);
   const networks = useNetworks(slug);
-  const entries = (view.data?.entries ?? []).filter((e) => !e.suggested);
-  const publishing = entries.filter((e) => e.publishes);
-  const kinds = view.data?.kinds ?? [];
-  const canSpot = kinds.some((k) => k.section !== "list" && k.accounts.length > 0);
+  const entries = (view.data?.channels ?? []).filter((e) => !e.suggested);
+  const publishing = entries.filter((e) => e.publishes && e.publish !== "off");
+  // Somewhere new: a kind whose spots have names (a subreddit), published to by an ability here.
+  const kinds = (view.data?.kinds ?? []).filter((k) => k.kind !== "list" && k.publishes && !k.account_is_target && Object.keys(k.target ?? {}).length > 0);
+  const canSpot = kinds.length > 0;
   const fits = fitting(a, publishing, networkOf(a, networks)?.kind);
-  const usable = fits.filter((e) => e.via?.ready);
+  const usable = fits.filter((e) => e.readiness.ready);
   const [pick, setPick] = useState("");
   const [mode, setMode] = useState<"" | "schedule" | "where" | "spot">("");
   const [at, setAt] = useState(defaultAt);
@@ -167,7 +151,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   };
   const spin = (what: string, Icon: typeof Check) => (busy === what ? <Loader2 size={14} className="spin" /> : <Icon size={14} />);
   const approveSpot = (spot: Spot) => void run("approve", () => api.approveAsset(slug, a, { spot }));
-  const spotForm = mode === "spot" && <SpotForm slug={slug} kinds={kinds} busy={!!busy} onApprove={approveSpot} onCancel={() => setMode("")} />;
+  const spotForm = mode === "spot" && <SpotForm kinds={kinds} busy={!!busy} onApprove={approveSpot} onCancel={() => setMode("")} />;
   const elsewhere = canSpot && mode !== "spot" && (
     <button className="btn t sm" disabled={!!busy} onClick={() => setMode("spot")}>
       <MapPin size={14} /> Somewhere else…
@@ -206,8 +190,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
       <>
         <div className="aa-row">
           <span className="muted sm">
-            Approve it once there is somewhere to send it: add a page or community to <Link to={`/p/${slug}/audience`}>your Audience</Link>
-            {canSpot ? "." : <>, through an account (<Link to={connectHref(slug)}>connect one</Link>).</>}
+            Approve it once there is somewhere to send it: <Link to={`/p/${slug}/channels#add`}>add a channel</Link>.
           </span>
           {elsewhere}
           {archive}
@@ -219,13 +202,13 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
         <div className="aa-row">
           {mode !== "spot" &&
             (fits.length === 1 ? (
-              <button className="btn p sm" disabled={!!busy || !fits[0].via?.ready} title={fits[0].via?.ready ? entryText(fits[0]) : `${entryText(fits[0])}: its account does not work now`} onClick={() => void run("approve", () => api.approveAsset(slug, a, { target: fits[0].id }))}>
+              <button className="btn p sm" disabled={!!busy || !fits[0].readiness.ready} title={fits[0].readiness.ready ? channelText(fits[0]) : `${fits[0].label}: ${fits[0].readiness.text}`} onClick={() => void run("approve", () => api.approveAsset(slug, a, { target: fits[0].id }))}>
                 {spin("approve", Check)} Approve for {fits[0].label}
               </button>
             ) : (
               <>
-                <EntryPicker entries={fits} value={chosenId} onChange={setPick} />
-                <button className="btn p sm" disabled={!!busy || !chosen?.via?.ready} onClick={() => chosen && void run("approve", () => api.approveAsset(slug, a, { target: chosen.id }))}>
+                <ChannelPicker channels={fits} value={chosenId} onChange={setPick} />
+                <button className="btn p sm" disabled={!!busy || !chosen?.readiness.ready} onClick={() => chosen && void run("approve", () => api.approveAsset(slug, a, { target: chosen.id }))}>
                   {spin("approve", Check)} Approve
                 </button>
               </>
@@ -235,7 +218,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
         </div>
         {fits.length > 0 && usable.length === 0 && mode !== "spot" && (
           <p className="muted sm">
-            The account behind {fits.length === 1 ? "it" : "these"} does not work right now. <Link to={`/p/${slug}/accounts`}>See accounts</Link>.
+            {fits.length === 1 ? `${fits[0].readiness.text}.` : "None of these can be published to right now."} <Link to={`/p/${slug}/channels${fits.length === 1 ? `#channel=${encodeURIComponent(fits[0].id)}` : ""}`}>See to it</Link>.
           </p>
         )}
         {spotForm}
@@ -251,13 +234,13 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
               <CalendarClock size={11} /> {whenAt(a.publish_at)} to {ownText}
             </span>
           ) : (
-            <span className="chip acc" title={own ? entryText(own) : undefined}>
+            <span className="chip acc" title={own ? channelText(own) : undefined}>
               <Check size={11} /> Approved for {ownText}
             </span>
           )}
           {mode === "where" ? (
             <>
-              {others.length > 0 ? <EntryPicker entries={others} value={others.some((e) => e.id === chosenId) ? chosenId : others[0].id} onChange={setPick} /> : <span className="muted sm">Nowhere else in your Audience.</span>}
+              {others.length > 0 ? <ChannelPicker channels={others} value={others.some((e) => e.id === chosenId) ? chosenId : others[0].id} onChange={setPick} /> : <span className="muted sm">No other channel publishes this.</span>}
               {others.length > 0 && (
                 <button
                   className="btn g sm"
@@ -320,7 +303,7 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
           {a.publications.map((p, i) => (
             <li key={i}>
               <Send size={12} />
-              <span>{p.to ?? entries.find((e) => e.id === p.audience)?.label ?? p.audience ?? p.account}</span>
+              <span>{p.to ?? entries.find((e) => e.id === p.channel)?.label ?? p.channel ?? p.account}</span>
               {p.url ? (
                 <a href={p.url} target="_blank" rel="noreferrer">
                   open <ExternalLink size={11} />

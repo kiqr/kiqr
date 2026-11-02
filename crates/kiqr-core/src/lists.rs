@@ -1,10 +1,10 @@
-//! Lists: the people a project emails. A list is an Audience entry of kind
-//! `list` (`crate::audience`), sent from the mail account it names; its
+//! Lists: the people a project emails. A list is a channel of kind `list`
+//! (`crate::channels`), sent by its publisher (a mail account); its
 //! people sit beside it in `contacts.csv` and what was sent in `sends/`, never
 //! committed: personal data stays on this machine and out of history. The
 //! daemon sends one message per contact.
 
-use crate::audience::{Entry, LIST};
+use crate::channels::{Channel, LIST, Ownership};
 use crate::paths::Home;
 use crate::Store;
 use anyhow::{bail, Result};
@@ -34,17 +34,17 @@ impl Contact {
     }
 }
 
-/// What the UI and Seemo see of a list: the entry plus the counts, never the addresses.
+/// What the UI and Seemo see of a list: the channel plus the counts, never the addresses.
 #[derive(Clone, Debug, Serialize)]
 pub struct ListView {
     #[serde(flatten)]
-    pub list: Entry,
+    pub list: Channel,
     pub contacts: usize,
     pub unsubscribed: usize,
 }
 
 pub fn dir(home: &Home, slug: &str, id: &str) -> PathBuf {
-    home.audience_dir(slug).join(id)
+    home.channels_dir(slug).join(id)
 }
 
 fn contacts_file(home: &Home, slug: &str, id: &str) -> PathBuf {
@@ -52,12 +52,12 @@ fn contacts_file(home: &Home, slug: &str, id: &str) -> PathBuf {
 }
 
 /// The project's lists.
-pub fn all(store: &Store, slug: &str) -> Result<Vec<Entry>> {
-    Ok(Entry::all(store, slug)?.into_iter().filter(Entry::is_list).collect())
+pub fn all(store: &Store, slug: &str) -> Result<Vec<Channel>> {
+    Ok(Channel::all(store, slug)?.into_iter().filter(Channel::is_list).collect())
 }
 
-pub fn load(store: &Store, slug: &str, id: &str) -> Result<Entry> {
-    let e = Entry::load(store, slug, id).map_err(|_| anyhow::anyhow!("no list '{id}'"))?;
+pub fn load(store: &Store, slug: &str, id: &str) -> Result<Channel> {
+    let e = Channel::load(store, slug, id).map_err(|_| anyhow::anyhow!("no list '{id}'"))?;
     if !e.is_list() {
         bail!("'{}' is not a list", e.label);
     }
@@ -65,17 +65,17 @@ pub fn load(store: &Store, slug: &str, id: &str) -> Result<Entry> {
 }
 
 /// A list by id or name, any case.
-pub fn find(store: &Store, slug: &str, name: &str) -> Option<Entry> {
+pub fn find(store: &Store, slug: &str, name: &str) -> Option<Channel> {
     let n = name.trim();
     all(store, slug).unwrap_or_default().into_iter().find(|l| l.id == n || l.label.eq_ignore_ascii_case(n))
 }
 
-/// A new list, sent from `account` (a mail account; empty until one is picked).
-pub fn new_list(store: &Store, slug: &str, label: &str, description: &str, account: &str, by: &str) -> Entry {
-    Entry { id: Entry::new_id(store, slug, label), label: label.trim().to_string(), section: "list".into(), kind: LIST.into(), account: account.to_string(), description: description.trim().to_string(), added_by: by.to_string(), ..Default::default() }
+/// A new list, sent by `publisher` (a mail account; empty until one is picked).
+pub fn new_list(store: &Store, slug: &str, label: &str, description: &str, publisher: &str, by: &str) -> Channel {
+    Channel { id: Channel::new_id(store, slug, label), label: label.trim().to_string(), ownership: Ownership::Owned, kind: LIST.into(), publisher: publisher.to_string(), description: description.trim().to_string(), added_by: by.to_string(), ..Default::default() }
 }
 
-pub fn view(e: &Entry, home: &Home, slug: &str) -> ListView {
+pub fn view(e: &Channel, home: &Home, slug: &str) -> ListView {
     let all = contacts(home, slug, &e.id);
     let unsubscribed = all.iter().filter(|c| !c.active()).count();
     ListView { list: e.clone(), contacts: all.len() - unsubscribed, unsubscribed }
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(from_csv("a@b.co\nc@d.org\n", "").len(), 2, "no header: addresses alone");
         assert!(find(&store, "acme", "NEWSLETTER").is_some());
         assert!(remove(&home, "acme", "newsletter", "bob@example.com").unwrap());
-        Entry::delete(&store, "acme", "newsletter").unwrap();
+        Channel::delete(&store, "acme", "newsletter").unwrap();
         assert!(all(&store, "acme").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

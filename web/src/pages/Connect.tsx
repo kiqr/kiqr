@@ -5,7 +5,7 @@
 // them in again or add another; sign in once (a button, or the few keys it
 // needs); pick what its abilities read through it (the GA4 property) when
 // they need that; choose what Seemo may do there; and Done says what joined
-// the Audience. A one-button sign-in makes no account until it comes back:
+// channels. A one-button sign-in makes no account until it comes back:
 // the daemon makes it and `connect_finished` names it. Opened from "Connect
 // an account" and from every place that used to send the user to install or
 // add something for a service; `?service=` or `?group=` (or the props)
@@ -14,11 +14,11 @@
 // is and signs in, with the live view when a person is needed.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { AnimatePresence, motion } from "motion/react";
-import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Download, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal, Users } from "lucide-react";
-import { api, useAsync, useEvents, ACCOUNT_EVENTS, AUDIENCE_EVENTS, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability, type Account, type ProgramStatus } from "../api";
+import { motion } from "motion/react";
+import { AlertCircle, ArrowLeft, Check, Download, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal, Users } from "lucide-react";
+import { api, useAsync, useEvents, ACCOUNT_EVENTS, CHANNEL_EVENTS, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability, type Account, type ProgramStatus } from "../api";
 import { ConnectButton } from "./ConnectButton";
-import { AccountKeys, accountIdentity, accountService, ActOnOwn, byGroup, Fields, LoginEditor, permissionSummary, PermissionMatrix, sentence, serviceOf, SettingField, settingsPicked, settingValues, signInNow, signsInByHand, StateChip, stateChip, type Field } from "./Accounts";
+import { AccountKeys, accountIdentity, accountService, byGroup, Fields, LoginEditor, sentence, serviceOf, SettingField, settingsPicked, settingValues, signInNow, signsInByHand, StateChip, stateChip, type Field } from "./Accounts";
 import { Hands, startUrlOf } from "./Hands";
 import { LogPane, SystemProgram, useMachine, useProgramLog } from "./Programs";
 import { isService, serviceIcon } from "./abilityBits";
@@ -232,12 +232,12 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
   );
 }
 
-type Stage = "again" | "signin" | "session" | "measures" | "allow" | "done";
+type Stage = "again" | "signin" | "session" | "measures" | "done";
 
 /**
  * From a picked service to Done: sign one of its accounts in again or add
  * another, sign in, the program's sign-in when it has one, what its
- * abilities read through it, what Seemo may do, and what joined the Audience.
+ * abilities read through it, and the channels it publishes to.
  */
 function Flow({ slug, service, existing, withService, backLabel, onBack, onPrograms, onFinish, onAccount }: { slug: string; service: Service; existing: Account[]; withService?: boolean; backLabel?: string; onBack: () => void; onPrograms?: () => void; onFinish: (id: string) => void; /** The account being set up, once it exists (a site behind a login has one before it signs in). */ onAccount?: (id: string | null) => void }) {
   const measured = measuring(service);
@@ -247,7 +247,7 @@ function Flow({ slug, service, existing, withService, backLabel, onBack, onProgr
   const [startUrl, setStartUrl] = useState<string | undefined>(undefined);
   useEffect(() => onAccount?.(id), [id]);
   const names = [...(withService ? ["Service"] : []), "Sign in", ...(measured.length ? ["Measures"] : []), "What Seemo may do", "Done"];
-  const cur = stage === "measures" ? "Measures" : stage === "allow" ? "What Seemo may do" : stage === "done" ? "Done" : "Sign in";
+  const cur = stage === "measures" ? "Measures" : stage === "done" ? "Done" : "Sign in";
   const signedIn = (acc: string, url?: string) => (setId(acc), setStartUrl(url), setStage("session"));
   return (
     <>
@@ -274,9 +274,8 @@ function Flow({ slug, service, existing, withService, backLabel, onBack, onProgr
           onPrograms={onPrograms}
         />
       )}
-      {stage === "session" && id && <SessionStep slug={slug} id={id} startUrl={startUrl} onDone={() => setStage(measured.length ? "measures" : "allow")} />}
-      {stage === "measures" && id && <Measures slug={slug} abilities={measured} account={id} onDone={() => setStage("allow")} />}
-      {stage === "allow" && id && <Permissions slug={slug} id={id} onDone={() => setStage("done")} />}
+      {stage === "session" && id && <SessionStep slug={slug} id={id} startUrl={startUrl} onDone={() => setStage(measured.length ? "measures" : "done")} />}
+      {stage === "measures" && id && <Measures slug={slug} abilities={measured} account={id} onDone={() => setStage("done")} />}
       {stage === "done" && id && <Done slug={slug} id={id} onFinish={() => onFinish(id)} />}
     </>
   );
@@ -299,7 +298,7 @@ function Again({ service, existing, onAgain, onNew, backLabel, onBack }: { servi
             <b>
               <LogIn size={13} /> Sign {one ? "it" : accountIdentity(a) || a.label} in again
             </b>
-            <small>{stateChip(a.state).text}. Its permissions and Audience stay as they are.</small>
+            <small>{stateChip(a.state).text}. Its channels stay as they are.</small>
           </button>
         ))}
         <button onClick={onNew}>
@@ -664,59 +663,17 @@ function Measures({ slug, abilities, account, onDone }: { slug: string; abilitie
   );
 }
 
-/** What Seemo may do there: one switch, and every permission folded under it. Saved as it is changed. */
-function Permissions({ slug, id, onDone }: { slug: string; id: string; onDone: () => void }) {
-  const [a, load] = useAccount(slug, id);
-  const [all, setAll] = useState(false);
-  return (
-    <motion.div className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-      {!a ? (
-        <Loader2 size={16} className="spin" />
-      ) : (
-        <>
-          <div className="cw-head">
-            <div>
-              <h2>
-                What Seemo may do on {accountService(a).name}
-                {accountIdentity(a) ? ` (${accountIdentity(a)})` : ""}
-              </h2>
-              <p className="muted sm">{permissionSummary(a)}. Change it here or on the account at any time.</p>
-            </div>
-          </div>
-          <ActOnOwn slug={slug} a={a} onChange={load} />
-          <button className="acx-more" onClick={() => setAll((v) => !v)} aria-expanded={all}>
-            {all ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Every permission
-          </button>
-          <AnimatePresence initial={false}>
-            {all && (
-              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }} style={{ overflow: "hidden" }}>
-                <PermissionMatrix slug={slug} a={a} onChange={load} />
-              </motion.div>
-            )}
-          </AnimatePresence>
-          <p className="muted sm">“Ask me first” puts a card in the chat and waits for your yes. “On its own” still puts the card there, as the record, and only ever applies in your Audience.</p>
-          <div className="acts">
-            <button className="btn p" onClick={onDone}>
-              Next
-            </button>
-          </div>
-        </>
-      )}
-    </motion.div>
-  );
-}
-
 /**
- * Done: the account, how it stands, and what joined the Audience through it.
+ * Done: the account, how it stands, and the channels it publishes to.
  * Only an account that reaches people (it publishes, or something joined)
- * speaks of the Audience; one that measures (Google) does not. While the
+ * speaks of channels; one that measures (Google) does not. While the
  * project's first build runs, the app is closed, so there is no link into it.
  */
 function Done({ slug, id, onFinish }: { slug: string; id: string; onFinish: () => void }) {
-  const [a] = useAccount(slug, id, AUDIENCE_EVENTS);
+  const [a] = useAccount(slug, id, CHANNEL_EVENTS);
   const build = useAsync(() => api.build(slug), [slug]);
   if (!a) return <Loader2 size={16} className="spin" />;
-  const joined = a.audience ?? [];
+  const joined = a.channels ?? [];
   const name = accountIdentity(a);
   const reaches = joined.length > 0 || !!a.can_publish;
   const open = reaches && build.data?.stage === "ready";
@@ -736,7 +693,7 @@ function Done({ slug, id, onFinish }: { slug: string; id: string; onFinish: () =
       {joined.length > 0 && (
         <div className="cw-joined">
           <p className="sm">
-            <Users size={13} /> Joined your Audience:
+            <Users size={13} /> Seemo posts as it on:
           </p>
           <ul>
             {joined.map((x) => (
@@ -745,11 +702,11 @@ function Done({ slug, id, onFinish }: { slug: string; id: string; onFinish: () =
           </ul>
         </div>
       )}
-      {joined.length === 0 && reaches && <p className="muted sm">Nothing joined your Audience through it yet. Add the pages, communities and lists it reaches there, or Seemo suggests them as it finds them.</p>}
+      {joined.length === 0 && reaches && <p className="muted sm">No channel publishes as it yet. Pick it as a channel's publisher on the Channels page.</p>}
       <div className="acts">
         {open && (
-          <Link className="btn g" to={`/p/${slug}/audience`}>
-            <Users size={14} /> Open your Audience
+          <Link className="btn g" to={`/p/${slug}/channels`}>
+            <Users size={14} /> Open Channels
           </Link>
         )}
         <button className="btn p" onClick={onFinish}>

@@ -1,7 +1,7 @@
 // Setup → Accounts: who Seemo signs in as for this project, grouped by kind
 // of service (Social, Website and blog, Email, Numbers…). Each card says
 // whether it works, what Seemo may do there in one line with one switch,
-// which Audience entries it reaches, and keeps the rest under Details.
+// which channels it publishes to, and keeps the rest under Details.
 // "Connect an account" opens the wizard. `#hands=<id>` opens the live view of
 // that account (from To do).
 import { useMemo } from "react";
@@ -18,7 +18,7 @@ export function AccountsPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const data = useAsync(() => api.accounts(slug), [slug]);
-  useEvents(slug, (e) => [...ACCOUNT_EVENTS, "audience_saved", "audience_deleted"].includes(e.type) && data.reload(), { demo: false });
+  useEvents(slug, (e) => [...ACCOUNT_EVENTS, "channel_saved", "channel_deleted"].includes(e.type) && data.reload(), { demo: false });
   useEvents(null, (e) => ["extension_installed", "extension_removed"].includes(e.type) && data.reload(), { demo: false });
   // The wizard lands here with the new account: `#account=<id>` lights its card.
   const highlight = /#account=([^&]+)/.exec(location.hash)?.[1] ?? null;

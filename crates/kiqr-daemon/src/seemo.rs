@@ -647,7 +647,7 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                 Err(e) => return Err(e),
             },
             "list" => match crate::lists::create_list(&app, &slug, crate::lists::NewList { label: approval.payload["label"].as_str().unwrap_or("").to_string(), description: approval.payload["description"].as_str().unwrap_or("").to_string(), account: approval.payload["account"].as_str().unwrap_or("").to_string() }, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
-                Ok(l) => Decision { status: "approved".into(), result: json!({ "created": true, "list": l.id, "label": l.label, "note": "The list is in the Audience and empty. The user adds people there; you never handle addresses." }) },
+                Ok(l) => Decision { status: "approved".into(), result: json!({ "created": true, "list": l.id, "label": l.label, "note": "The list is a channel now, and empty. The user adds people there; you never handle addresses." }) },
                 Err(e) => return Err(e),
             },
             "plan" => match crate::marketing::approve_plan(&app, &slug, &approval).await {
@@ -964,12 +964,12 @@ async fn calendar(State(app): State<App>, Path(slug): Path<String>, Query(r): Qu
             items.push(json!({ "kind": "task", "task": t.id, "title": t.title, "at": at, "schedule_text": t.schedule.describe(tz) }));
         }
     }
-    // Publishes the daemon will do: scheduled assets, with the Audience entry they go to and the account that reaches it.
+    // Publishes the daemon will do: scheduled assets, with the channel they go to and who publishes there.
     for a in assets::list(&app.store, &slug)?.into_iter().filter(|a| a.status == assets::Status::Scheduled) {
         let Some(at) = a.publish_at.filter(|t| *t >= from - chrono::Duration::seconds(1) && *t <= to) else { continue };
-        let entry = a.target.as_deref().and_then(|t| kiqr_core::audience::Entry::load(&app.store, &slug, t).ok());
+        let entry = a.target.as_deref().and_then(|t| kiqr_core::channels::Channel::load(&app.store, &slug, t).ok());
         let label = entry.as_ref().map(|e| e.label.clone()).unwrap_or_else(|| a.target.clone().unwrap_or_default());
-        let via = entry.as_ref().and_then(|e| kiqr_core::accounts::Account::load(&app.store, &slug, &e.account).ok()).map(|c| c.label);
+        let via = entry.as_ref().and_then(|e| kiqr_core::accounts::Account::load(&app.store, &slug, &e.publisher).ok()).map(|c| c.label);
         // The account is the spot (an X profile, a blog): its name once.
         let where_ = match &via { Some(v) if *v != label => format!("to {label} via {v}"), _ => format!("to {label}") };
         items.push(json!({ "kind": "publish", "asset": { "type": a.kind, "id": a.id, "title": a.title }, "title": a.title, "at": at, "target": a.target, "target_label": label, "via": via, "schedule_text": where_ }));

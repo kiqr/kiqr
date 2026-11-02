@@ -389,31 +389,23 @@ async fn setup_summary(app: &App, slug: &str) -> String {
     let mut accounts: Vec<String> = Vec::new();
     for c in kiqr_core::accounts::Account::list(&app.store, slug).unwrap_or_default() {
         let st = crate::accounts::state(app, slug, &c).await;
-        // What Seemo may do there, in the words of the account: "publish on its own, reply asks, manage off".
-        let may: Vec<String> = crate::accounts::permissions(app, slug, &c).await.into_iter().filter(|(r, _, _)| r != "read").map(|(r, a, acts)| match (a, acts) {
-            (kiqr_core::accounts::Allow::Auto, true) => format!("{r} on its own"),
-            (kiqr_core::accounts::Allow::Ask, _) => format!("{r} asks"),
-            (kiqr_core::accounts::Allow::Off, _) => format!("{r} off"),
-            (kiqr_core::accounts::Allow::Auto, false) => r,
-        }).collect();
-        accounts.push(format!("{} ({}{}; {})", c.label, c.service, if may.is_empty() { String::new() } else { format!("; {}", may.join(", ")) }, if st.ready() { "ready".to_string() } else { st.word().replace('_', " ") }));
+        accounts.push(format!("{} ({}; {})", c.label, c.service, if st.ready() { "ready".to_string() } else { st.word().replace('_', " ") }));
     }
-    // Where the business's people are, by section, as labels with the account that reaches each.
+    // Where the business's people are: each channel, who I post as there and what I may do.
     let mut aud: Vec<String> = Vec::new();
-    for sec in kiqr_core::extensions::SECTIONS {
-        let names: Vec<String> = kiqr_core::audience::Entry::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| !e.suggested && e.section == *sec).map(|e| if e.is_list() { e.label } else { format!("{} via {}", e.label, kiqr_core::accounts::Account::load(&app.store, slug, &e.account).map(|c| c.label).unwrap_or_else(|_| "no account".into())) }).collect();
-        if !names.is_empty() {
-            aud.push(format!("{sec}s: {}", names.join(", ")));
-        }
+    for e in kiqr_core::channels::Channel::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| !e.suggested) {
+        let who = kiqr_core::accounts::Account::load(&app.store, slug, &e.publisher).map(|c| format!("as {}", c.label)).unwrap_or_else(|_| "no publisher".into());
+        let owner = if e.owned() { "owned" } else { "third-party" };
+        aud.push(format!("{} ({owner}, {who}; publish {}, reply {}{})", e.label, e.publish.word(), e.reply.word(), if e.read { "" } else { ", no reading" }));
     }
     let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
     format!(
-        "- Abilities on and ready: {}\n- Installed but not set up: {}\n- Off here: {}\n- Accounts, who I sign in as (what I may do there): {}\n- Audience, where the people are (on my own only here; anywhere else asks): {}",
+        "- Abilities on and ready: {}\n- Installed but not set up: {}\n- Off here: {}\n- Accounts, who I sign in as: {}\n- Channels, where the people are (auto: on my own; ask: after a yes; off: never; anywhere else asks): {}",
         list(&ready),
         list(&not_ready),
         list(&off),
         list(&accounts),
-        if aud.is_empty() { "empty".to_string() } else { aud.join("; ") }
+        if aud.is_empty() { "none yet".to_string() } else { aud.join("; ") }
     )
 }
 

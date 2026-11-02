@@ -155,7 +155,8 @@ export function CredentialChip({ c }: { c: Credential }) {
   );
 }
 
-function Drawer({ title, icon, sub, onClose, children }: { title: string; icon?: string; sub?: string; onClose: () => void; children: React.ReactNode }) {
+/** A modal for one thing (a credential, a channel) or an Add panel; `icon` is a domain whose favicon heads it. */
+export function Drawer({ title, icon, iconNode, sub, onClose, children }: { title: string; icon?: string; iconNode?: React.ReactNode; sub?: string; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -168,9 +169,7 @@ function Drawer({ title, icon, sub, onClose, children }: { title: string; icon?:
           {icon !== undefined ? (
             <Favicon domain={icon} size={46} />
           ) : (
-            <span className="ic">
-              <KeyRound size={22} />
-            </span>
+            <span className="ic">{iconNode ?? <KeyRound size={22} />}</span>
           )}
           <div className="min0">
             <h2>{title}</h2>

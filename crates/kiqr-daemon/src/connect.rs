@@ -87,9 +87,6 @@ struct StartBody {
     /// For a new one: its name.
     #[serde(default)]
     label: String,
-    /// Permissions chosen at setup: role → auto | ask | off.
-    #[serde(default)]
-    allow: std::collections::BTreeMap<String, String>,
     /// The UI's origin (`window.location.origin`); the callback is under it.
     origin: String,
     /// The `needs` values typed first (the site), saved before the flow starts.
@@ -121,7 +118,7 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
         None => None,
     };
     // A new account: nothing is written until the sign-in comes back with its values.
-    let draft = conn.is_none().then(|| crate::accounts::NewAccount { service: m.service().to_string(), label: b.label.clone(), allow: b.allow.clone(), secrets: b.values.iter().filter(|(k, v)| c.needs.contains(k) && !v.trim().is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect(), ..Default::default() });
+    let draft = conn.is_none().then(|| crate::accounts::NewAccount { service: m.service().to_string(), label: b.label.clone(), secrets: b.values.iter().filter(|(k, v)| c.needs.contains(k) && !v.trim().is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect(), ..Default::default() });
     let callback_url = format!("{}/api/connect/callback", origin.origin().ascii_serialization());
     // kiqr.cloud holds the provider's app: it builds the page, the provider comes back through its relay.
     if c.flow == Flow::Cloud {

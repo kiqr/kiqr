@@ -1,29 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
-import {
-  BarChart3,
-  Brain,
-  CalendarDays,
-  Check,
-  ChevronsUpDown,
-  Globe,
-  Inbox,
-  Library,
-  ListChecks,
-  MessagesSquare,
-  Network,
-  Plug,
-  KeyRound,
-  Plus,
-  Sparkles,
-  Settings,
-  SlidersHorizontal,
-  Swords,
-  Target,
-  Users,
-  type LucideIcon,
-} from "lucide-react";
+import { BarChart3, Brain, CalendarDays, Check, ChevronsUpDown, Globe, Inbox, Library, ListChecks, MessagesSquare, Network, Plug, KeyRound, Plus, Sparkles, Settings, SlidersHorizontal, Swords, Target, type LucideIcon, Radio } from "lucide-react";
 import { DEMO } from "./demo";
 import { api, useAsync, useEvents, type AssetType, type Project, type TypeCount } from "./api";
 import { assetIcon } from "./assetIcons";
@@ -56,7 +34,7 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
         { sub: "plan", label: "Plan", icon: Target },
         { sub: "performance", label: "Performance", icon: BarChart3 },
         { sub: "calendar", label: "Calendar", icon: CalendarDays },
-        { sub: "audience", label: "Audience", icon: Users },
+        { sub: "channels", label: "Channels", icon: Radio },
       ],
     },
     // What has been made.
@@ -152,7 +130,7 @@ export function Shell() {
                 {g.items.map((it) => {
                   const to = it.sub ? `/p/${current.slug}/${it.sub}` : `/p/${current.slug}`;
                   return (
-                    <NavLink key={it.sub} to={to} end={!it.sub.startsWith("library/") && it.sub !== "audience" && it.sub !== "accounts"}>
+                    <NavLink key={it.sub} to={to} end={!it.sub.startsWith("library/") && it.sub !== "channels" && it.sub !== "accounts"}>
                       {({ isActive }) => (
                         <>
                           {isActive && <motion.span layoutId="nav-active" className="hl" transition={{ type: "spring", stiffness: 500, damping: 40 }} />}

@@ -71,16 +71,16 @@ enum Command {
         #[arg(long)]
         title: Option<String>,
     },
-    /// Where the business's people are: its pages, communities and lists, each with the account that reaches it
-    Audience {
+    /// Channels: where the business's people are (owned profiles, pages and lists; third-party communities), what Seemo may do there and who it publishes as
+    Channels {
         #[command(subcommand)]
-        cmd: AudienceCmd,
+        cmd: ChannelsCmd,
     },
-    /// Publish an asset to an Audience entry: `kiqr publish <slug> <type>/<id> <entry>`
+    /// Publish an asset to a channel: `kiqr publish <slug> <type>/<id> <channel>`
     Publish {
         slug: String,
         asset: String,
-        /// An Audience entry, by id or name (`kiqr audience ls <slug>`)
+        /// A channel, by id or name (`kiqr channels ls <slug>`)
         target: String,
         #[arg(long, default_value = "")]
         note: String,
@@ -329,10 +329,8 @@ enum VaultCmd {
 
 #[derive(Subcommand)]
 enum AccountsCmd {
-    /// A project's accounts, with whether each works, what Seemo may do through it and the abilities that use it
+    /// A project's accounts, with whether each works and the abilities that use it
     Ls { slug: String },
-    /// What Seemo may do through an account: `kiqr accounts allow <slug> <account> publish auto|ask|off` (read, learn, measure: on|off)
-    Allow { slug: String, account: String, role: String, value: String },
     /// Sign an account in on its program now (check first; type the saved login when signed out); `kiqr accounts signin <slug> <account>`
     Signin { slug: String, account: String },
     /// Forget an account's sign-in: stop its program and wipe what it kept (the browser profile)
@@ -364,26 +362,33 @@ enum AccountsCmd {
 }
 
 #[derive(Subcommand)]
-enum AudienceCmd {
-    /// The Audience: pages, communities and lists, with the account that reaches each; suggestions last
+enum ChannelsCmd {
+    /// Owned and third-party channels, with what Seemo may do and who it publishes as; suggestions last
     Ls { slug: String },
-    /// Add somewhere: `kiqr audience add <slug> reddit subreddit=selfhosted [--account <account>]`
+    /// Add one by link, site or kind: `kiqr channels add <slug> https://x.com/acme`, `… add <slug> reddit subreddit=selfhosted`, `… add <slug> list --label Newsletter`
     Add {
         slug: String,
-        /// A kind an installed ability declares (`kiqr audience ls` lists them)
-        kind: String,
+        /// A link, a site (`x.com`), or a kind an installed ability declares (`list` for a mailing list)
+        what: String,
         /// `field=value` pairs, the kind's target fields
         fields: Vec<String>,
-        /// The account that reaches it; the service's default when left out
+        /// Who Seemo publishes as there (an account)
         #[arg(long)]
-        account: Option<String>,
+        publisher: Option<String>,
         #[arg(long)]
         label: Option<String>,
+        /// Someone else's (a subreddit, a forum), not the business's own
+        #[arg(long)]
+        third_party: bool,
     },
+    /// Change one setting: publish|reply off|ask|auto, read|learn on|off, publisher <account>|none, label <text>
+    Set { slug: String, channel: String, setting: String, value: String },
     /// Add a suggestion Seemo made
-    Accept { slug: String, entry: String },
-    /// Remove an entry (a list goes with everyone on it), or dismiss a suggestion
-    Rm { slug: String, entry: String },
+    Accept { slug: String, channel: String },
+    /// Read an owned source again now and write the profile from it
+    Learn { slug: String, channel: String },
+    /// Remove a channel (a list goes with everyone on it), or dismiss a suggestion
+    Rm { slug: String, channel: String },
 }
 
 #[derive(Subcommand)]
@@ -425,14 +430,14 @@ enum AssetsCmd {
     Show { slug: String, asset: String },
     /// Remove one asset and its files
     Rm { slug: String, asset: String },
-    /// Approve an asset for an Audience entry; it becomes ready: `kiqr assets approve <slug> post/x --target r-selfhosted`
+    /// Approve an asset for a channel; it becomes ready: `kiqr assets approve <slug> post/x --target r-selfhosted`
     Approve {
         slug: String,
         asset: String,
         #[arg(long)]
         target: String,
     },
-    /// Publish now, to the Audience entry it was approved for or the one given
+    /// Publish now, to the channel it was approved for or the one given
     Publish {
         slug: String,
         asset: String,
@@ -691,28 +696,30 @@ impl Client {
                 let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/render"), &body).await?;
                 println!("{} {}×{} via {} → {}/{} {}", v["file"].as_str().unwrap_or(""), v["width"], v["height"], v["renderer"].as_str().unwrap_or(""), v["asset"]["type"].as_str().unwrap_or(""), v["asset"]["id"].as_str().unwrap_or(""), v["url"].as_str().unwrap_or(""));
             }
-            Command::Audience { cmd } => match cmd {
-                AudienceCmd::Ls { slug } => {
-                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/audience")).await?;
-                    let all = v["entries"].as_array().cloned().unwrap_or_default();
+            Command::Channels { cmd } => match cmd {
+                ChannelsCmd::Ls { slug } => {
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/channels")).await?;
+                    let all = v["channels"].as_array().cloned().unwrap_or_default();
                     if all.is_empty() {
-                        println!("The Audience is empty. Add where the business's people are: kiqr audience add {slug} <kind> field=value");
+                        println!("No channels yet. Add where the business's people are: kiqr channels add {slug} https://x.com/yourname");
                     }
-                    for (sec, title) in [("page", "Pages"), ("community", "Communities"), ("list", "Lists")] {
-                        let these: Vec<&serde_json::Value> = all.iter().filter(|e| e["section"] == sec && e["suggested"].as_bool() != Some(true)).collect();
+                    for (own, title) in [("owned", "Owned"), ("third_party", "Third-party")] {
+                        let these: Vec<&serde_json::Value> = all.iter().filter(|e| e["ownership"] == own && e["suggested"].as_bool() != Some(true)).collect();
                         if these.is_empty() {
                             continue;
                         }
                         println!("{title}");
                         for e in these {
-                            let via = e["via"]["label"].as_str().map(|l| format!("via {l}{}", if e["via"]["ready"].as_bool() == Some(true) { String::new() } else { format!(" ({})", e["via"]["state"].as_str().unwrap_or("").replace('_', " ")) })).unwrap_or_else(|| "needs an account".into());
+                            let who = e["publisher_view"]["label"].as_str().map(|l| format!("as {l}")).unwrap_or_else(|| "no publisher".into());
+                            let ready = &e["readiness"];
+                            let warn = if ready["ready"].as_bool() == Some(true) { String::new() } else { format!("  ! {}", ready["text"].as_str().unwrap_or("")) };
                             let count = e["contacts"].as_u64().map(|n| format!("  {n} people")).unwrap_or_default();
-                            println!("  {:<24} {:<28} {via}{count}", e["id"].as_str().unwrap_or(""), e["label"].as_str().unwrap_or(""));
+                            println!("  {:<24} {:<28} publish {:<4} reply {:<4} {who}{count}{warn}", e["id"].as_str().unwrap_or(""), e["label"].as_str().unwrap_or(""), e["publish"].as_str().unwrap_or(""), e["reply"].as_str().unwrap_or(""));
                         }
                     }
                     let sugg: Vec<&serde_json::Value> = all.iter().filter(|e| e["suggested"].as_bool() == Some(true)).collect();
                     if !sugg.is_empty() {
-                        println!("Seemo suggests (kiqr audience accept {slug} <id>)");
+                        println!("Seemo suggests (kiqr channels accept {slug} <id>)");
                         for e in sugg {
                             println!("  {:<24} {:<28} {}", e["id"].as_str().unwrap_or(""), e["label"].as_str().unwrap_or(""), e["reason"].as_str().unwrap_or(""));
                         }
@@ -722,22 +729,45 @@ impl Client {
                         println!("Kinds: {}", kinds.join(", "));
                     }
                 }
-                AudienceCmd::Add { slug, kind, fields, account, label } => {
+                ChannelsCmd::Add { slug, what, fields, publisher, label, third_party } => {
                     let mut f = serde_json::Map::new();
                     for kv in fields {
                         let (k, v) = kv.split_once('=').ok_or_else(|| anyhow!("a field is key=value, got '{kv}'"))?;
                         f.insert(k.trim().to_string(), serde_json::Value::String(v.trim().to_string()));
                     }
-                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/audience"), &serde_json::json!({ "kind": kind, "fields": f, "account": account.unwrap_or_default(), "label": label.unwrap_or_default() })).await?;
-                    println!("added {} ({}){}", v["label"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""), v["via"]["label"].as_str().map(|l| format!(" via {l}")).unwrap_or_default());
+                    let mut body = serde_json::json!({ "fields": f, "publisher": publisher.unwrap_or_default(), "label": label.unwrap_or_default(), "ownership": if third_party { "third_party" } else { "" } });
+                    if what.contains("://") {
+                        body["url"] = serde_json::json!(what);
+                    } else if what.contains('.') {
+                        body["domain"] = serde_json::json!(what);
+                    } else {
+                        body["kind"] = serde_json::json!(what);
+                    }
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/channels"), &body).await?;
+                    let ready = &v["readiness"];
+                    println!("added {} ({}){}", v["label"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""), if ready["ready"].as_bool() == Some(true) { String::new() } else { format!(": {}", ready["text"].as_str().unwrap_or("")) });
                 }
-                AudienceCmd::Accept { slug, entry } => {
-                    let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/audience/{entry}"), &serde_json::json!({ "add": true })).await?;
-                    println!("{} is in the Audience", v["label"].as_str().unwrap_or(&entry));
+                ChannelsCmd::Set { slug, channel, setting, value } => {
+                    let body = match setting.as_str() {
+                        "publish" | "reply" | "label" | "description" | "url" | "ownership" | "ability" => serde_json::json!({ setting.clone(): value }),
+                        "publisher" => serde_json::json!({ "publisher": if value == "none" { "" } else { value.as_str() } }),
+                        "read" | "learn" => serde_json::json!({ setting.clone(): matches!(value.as_str(), "on" | "yes" | "true") }),
+                        _ => return Err(anyhow!("a channel's settings are publish, reply, read, learn, publisher, label, description, url, ownership and ability")),
+                    };
+                    let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/channels/{channel}"), &body).await?;
+                    println!("{}: publish {}, reply {}, read {}{}", v["label"].as_str().unwrap_or(&channel), v["publish"].as_str().unwrap_or(""), v["reply"].as_str().unwrap_or(""), if v["read"].as_bool() == Some(true) { "on" } else { "off" }, v["publisher_view"]["label"].as_str().map(|l| format!(", as {l}")).unwrap_or_default());
                 }
-                AudienceCmd::Rm { slug, entry } => {
-                    self.delete(&format!("/api/projects/{slug}/audience/{entry}")).await?;
-                    println!("Removed {entry}.");
+                ChannelsCmd::Accept { slug, channel } => {
+                    let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/channels/{channel}"), &serde_json::json!({ "add": true })).await?;
+                    println!("{} is a channel now", v["label"].as_str().unwrap_or(&channel));
+                }
+                ChannelsCmd::Learn { slug, channel } => {
+                    let _: serde_json::Value = self.post(&format!("/api/projects/{slug}/channels/{channel}/learn"), &serde_json::json!({})).await?;
+                    println!("Learning from {channel}; the profile is written again when it is done.");
+                }
+                ChannelsCmd::Rm { slug, channel } => {
+                    self.delete(&format!("/api/projects/{slug}/channels/{channel}")).await?;
+                    println!("Removed {channel}.");
                 }
             },
             Command::Publish { slug, asset, target, note } => {
@@ -760,8 +790,8 @@ impl Client {
             }
             Command::Lists { cmd } => match cmd {
                 ListsCmd::Ls { slug } => {
-                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/lists")).await?;
-                    let list = v["lists"].as_array().cloned().unwrap_or_default();
+                    let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/channels")).await?;
+                    let list: Vec<serde_json::Value> = v["channels"].as_array().cloned().unwrap_or_default().into_iter().filter(|c| c["kind"] == "list").collect();
                     if list.is_empty() {
                         println!("No lists yet. Add one: kiqr lists add {slug} Newsletter");
                     }
@@ -770,20 +800,20 @@ impl Client {
                     }
                 }
                 ListsCmd::Add { slug, label, description } => {
-                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/lists"), &serde_json::json!({ "label": label, "description": description })).await?;
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/channels"), &serde_json::json!({ "kind": "list", "label": label, "description": description })).await?;
                     println!("added {} ({}). Add people: kiqr lists import {slug} {} people.csv", v["label"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""));
                 }
                 ListsCmd::Import { slug, list, file, consent } => {
                     let csv = std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
-                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/lists/{list}/import"), &serde_json::json!({ "csv": csv, "consent": consent })).await?;
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/channels/{list}/import"), &serde_json::json!({ "csv": csv, "consent": consent })).await?;
                     println!("{} addresses in the file, {} new; {} is now {} people", v["found"], v["added"], v["list"]["label"].as_str().unwrap_or(&list), v["list"]["contacts"]);
                 }
                 ListsCmd::Unsubscribe { slug, list, email } => {
-                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/lists/{list}/unsubscribe"), &serde_json::json!({ "email": email })).await?;
+                    let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/channels/{list}/unsubscribe"), &serde_json::json!({ "email": email })).await?;
                     println!("{}", if v["unsubscribed"].as_bool() == Some(true) { format!("{email} has left {list}.") } else { format!("{email} is not on {list}.") });
                 }
                 ListsCmd::Rm { slug, list } => {
-                    self.delete(&format!("/api/projects/{slug}/lists/{list}")).await?;
+                    self.delete(&format!("/api/projects/{slug}/channels/{list}")).await?;
                     println!("Removed {list} and everyone on it.");
                 }
             },
@@ -815,10 +845,6 @@ impl Client {
             }
             Command::Accounts { cmd } => match cmd {
                 AccountsCmd::Ls { slug } => self.accounts_ls(&slug).await?,
-                AccountsCmd::Allow { slug, account, role, value } => {
-                    let v: serde_json::Value = self.put(&format!("/api/projects/{slug}/accounts/{account}/allow"), &serde_json::json!({ role.clone(): value })).await?;
-                    println!("{}: {}", v["label"].as_str().unwrap_or(&account), allow_text(&v));
-                }
                 AccountsCmd::Signin { slug, account } => {
                     let v: serde_json::Value = self.post(&format!("/api/projects/{slug}/accounts/{account}/signin"), &serde_json::json!({})).await?;
                     println!("{}", if v["started"].as_bool() == Some(true) { format!("Signing {account} in; `kiqr accounts ls {slug}` shows how it went.") } else { v["note"].as_str().unwrap_or("not started").to_string() });
@@ -1231,7 +1257,7 @@ impl Client {
                     let path = format!("/api/projects/{slug}/assets/{}/schedule", asset_path(&asset)?);
                     if clear {
                         self.delete(&path).await?;
-                        println!("{asset} is no longer scheduled; it stays approved for its Audience entry.");
+                        println!("{asset} is no longer scheduled; it stays approved for its channel.");
                     } else {
                         let at = at.ok_or_else(|| anyhow!("give --at <RFC 3339 time> or --clear"))?;
                         let a: serde_json::Value = self.post(&path, &serde_json::json!({ "at": at, "target": target.unwrap_or_default() })).await?;
@@ -1531,7 +1557,7 @@ impl Client {
             let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
             let used_by = c["used_by"].as_array().map(|u| u.iter().filter_map(|x| x["id"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
             let state = if c["ready"].as_bool() == Some(true) { "ready".to_string() } else { c["state"]["state"].as_str().unwrap_or("").replace('_', " ") };
-            println!("{:<24} {:<28} {:<16} {:<14} {}{}{}", s("id"), s("label"), s("service"), state, allow_text(&c), if used_by.is_empty() { String::new() } else { format!("  used by {used_by}") }, if c["default"].as_bool() == Some(true) { "  (default)" } else { "" });
+            println!("{:<24} {:<28} {:<16} {:<14}{}{}", s("id"), s("label"), s("service"), state, if used_by.is_empty() { String::new() } else { format!("  used by {used_by}") }, if c["default"].as_bool() == Some(true) { "  (default)" } else { "" });
         }
         Ok(())
     }
@@ -1546,27 +1572,6 @@ impl Client {
     }
 }
 
-/// What an account allows, in a few words: "publish on its own, reply asks, learn".
-fn allow_text(c: &serde_json::Value) -> String {
-    let parts: Vec<String> = c["allow"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter(|p| p["role"] != "read")
-                .map(|p| {
-                    let role = p["role"].as_str().unwrap_or("");
-                    match (p["allow"].as_str().unwrap_or(""), p["acts"].as_bool().unwrap_or(false)) {
-                        ("auto", true) => format!("{role} on its own"),
-                        ("ask", _) => format!("{role} asks"),
-                        ("off", _) => format!("{role} off"),
-                        _ => role.to_string(),
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if parts.is_empty() { "reads".to_string() } else { parts.join(", ") }
-}
 
 /// `article/whitening-guide` → the URL path segment, checked.
 fn asset_path(s: &str) -> Result<String> {
@@ -1727,12 +1732,12 @@ fn print_event(ev: &Event) {
         EventKind::HandsFrame { .. } => return,
         EventKind::HandsStarted { account, .. } => format!("hands    {account}: someone is at the controls"),
         EventKind::HandsEnded { account, message, .. } => format!("hands    {account}: done{}", if message.is_empty() { String::new() } else { format!(" ({message})") }),
-        EventKind::AudienceSaved { entry, label, section, suggested, contacts } => format!("audience {entry} \"{label}\" ({section}{}{})", if *suggested { ", suggested" } else { "" }, contacts.map(|n| format!(", {n} people")).unwrap_or_default()),
-        EventKind::AudienceDeleted { entry } => format!("audience {entry} removed"),
+        EventKind::ChannelSaved { channel, label, ownership, suggested, contacts } => format!("channel  {channel} \"{label}\" ({}{}{})", ownership.replace('_', "-"), if *suggested { ", suggested" } else { "" }, contacts.map(|n| format!(", {n} people")).unwrap_or_default()),
+        EventKind::ChannelDeleted { channel } => format!("channel  {channel} removed"),
         EventKind::ListSending { list, subject, sent, failed, total, done } => format!("sending  \"{subject}\" to {list}: {sent}/{total}{}{}", if *failed > 0 { format!(", {failed} failed") } else { String::new() }, if *done { ", done" } else { "" }),
-        EventKind::AccountActed { account, ability, role, target, audience, .. } => format!("{role:<8} {account} by {ability}{}{}", if target.is_empty() { String::new() } else { format!(" on {target}") }, if audience.is_empty() { String::new() } else { format!(" in {audience}") }),
+        EventKind::AccountActed { account, ability, role, target, channel, .. } => format!("{role:<8} {account} by {ability}{}{}", if target.is_empty() { String::new() } else { format!(" on {target}") }, if channel.is_empty() { String::new() } else { format!(" in {channel}") }),
         EventKind::ActionRefused { message, .. } => format!("refused  {message}"),
-        EventKind::AssetPublished { asset_type, id, audience, account, url } => format!("publish  {asset_type}/{id} → {} via {account}{}", if audience.is_empty() { "email" } else { audience.as_str() }, url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
+        EventKind::AssetPublished { asset_type, id, channel, account, url } => format!("publish  {asset_type}/{id} → {} as {account}{}", if channel.is_empty() { "email" } else { channel.as_str() }, url.as_ref().map(|u| format!(" {u}")).unwrap_or_default()),
         EventKind::AssetApproved { asset_type, id, target, at, .. } => match at {
             Some(at) => format!("schedule {asset_type}/{id} → {target} at {}", at.with_timezone(&chrono::Local).format("%a %-d %b %H:%M")),
             None => format!("approve  {asset_type}/{id} for {target}"),

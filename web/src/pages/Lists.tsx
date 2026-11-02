@@ -1,4 +1,4 @@
-// Marketing → Audience → a list: the people this project emails there. The
+// Marketing → Channels → a mailing list: the people this project emails there. The
 // addresses stay on this machine, outside the project's history; the page
 // shows them, adds people (pasted, or a CSV file read here and sent as text)
 // with how they agreed to hear from the business, marks those who asked to
@@ -7,21 +7,20 @@
 import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Check, FileUp, Loader2, Mail, Plus, Search, Send, Trash2, UserMinus, X } from "lucide-react";
-import { api, useAsync, useEvents, type Contact, type MailList } from "../api";
+import { api, useAsync, useEvents, type Channel, type Contact } from "../api";
 import { openSeemo } from "../SeemoWidget";
-import { useAudience } from "./Audience";
 import { ago } from "./Project";
 import "../profile.css";
 import "../accounts.css";
 
-/** What changes a list: its people, a send, the list itself. */
-const LIST_EVENTS = ["list_changed", "list_deleted", "list_sending", "audience_saved", "audience_deleted"];
+/** What changes a list: its people, a send, the channel itself or who sends it. */
+const LIST_EVENTS = ["list_sending", "channel_saved", "channel_deleted", "account_saved", "account_state_changed"];
 
 /** People on it who still hear from the business. */
-const reachable = (l: MailList) => l.contacts - l.unsubscribed;
+const reachable = (l: Pick<Channel, "contacts" | "unsubscribed">) => (l.contacts ?? 0) - (l.unsubscribed ?? 0);
 
 /** Start a chat that asks Seemo for an email to the list; the card for the send comes back there. */
-async function askForEmail(slug: string, l: MailList) {
+async function askForEmail(slug: string, l: Channel) {
   const c = await api.createChat(slug, `Email to ${l.label}`);
   openSeemo(c.id);
   await api.sendMessage(slug, c.id, `Write an email to the ${l.label} list (${reachable(l)} people) and propose sending it to them from our mail account.`);
@@ -47,13 +46,12 @@ function parsePeople(text: string): { email: string; name?: string }[] {
 
 export function ListPage({ slug, id }: { slug: string; id: string }) {
   const navigate = useNavigate();
-  const list = useAsync(() => api.list(slug, id), [slug, id]);
+  const list = useAsync(() => api.channel(slug, id), [slug, id]);
   const people = useAsync(() => api.contacts(slug, id), [slug, id]);
-  const audience = useAudience(slug);
   const sends = useAsync(() => api.listSends(slug, id).catch(() => ({ list: id, sends: [] })), [slug, id]);
   useEvents(slug, (e) => {
-    if (!LIST_EVENTS.includes(e.type) || (e.list && e.list !== id) || (e.entry && e.entry !== id)) return;
-    if (e.type === "list_deleted" || e.type === "audience_deleted") return navigate(`/p/${slug}/audience`);
+    if (!LIST_EVENTS.includes(e.type) || (e.list && e.list !== id) || (e.channel && e.channel !== id)) return;
+    if (e.type === "channel_deleted") return navigate(`/p/${slug}/channels`);
     if (e.type === "list_sending") return sends.reload();
     list.reload();
     people.reload();
@@ -63,8 +61,8 @@ export function ListPage({ slug, id }: { slug: string; id: string }) {
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const l = list.data;
-  // The account it is sent from, as the Audience says (whether it works now).
-  const via = audience.data?.entries.find((e) => e.id === id)?.via;
+  // The account it is sent from, and whether it works now.
+  const via = l?.publisher_view;
   const all = people.data?.contacts ?? [];
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -85,8 +83,8 @@ export function ListPage({ slug, id }: { slug: string; id: string }) {
   };
   const remove = async () => {
     try {
-      await api.deleteList(slug, id);
-      navigate(`/p/${slug}/audience`);
+      await api.removeChannel(slug, id);
+      navigate(`/p/${slug}/channels`);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -97,8 +95,8 @@ export function ListPage({ slug, id }: { slug: string; id: string }) {
       <div className="cm-head">
         <div>
           <p className="cap">
-            <Link to={`/p/${slug}/audience`}>
-              <ArrowLeft size={11} /> Audience
+            <Link to={`/p/${slug}/channels`}>
+              <ArrowLeft size={11} /> Channels
             </Link>
           </p>
           <h1 className="d2">{l?.label ?? "…"}</h1>
@@ -112,11 +110,9 @@ export function ListPage({ slug, id }: { slug: string; id: string }) {
                   Sent from <Link to={`/p/${slug}/accounts#account=${encodeURIComponent(via.account)}`}>{via.label}</Link>
                   {!via.ready && <span className="warn"> · it does not work right now</span>}
                 </>
-              ) : l.account ? (
-                <>Sent from {l.account}</>
               ) : (
                 <>
-                  No mail account sends it yet. <Link to={`/p/${slug}/audience`}>Pick one on the Audience page</Link>.
+                  No mail account sends it yet. <Link to={`/p/${slug}/channels#channel=${encodeURIComponent(id)}`}>Pick one</Link>.
                 </>
               )}
             </p>
@@ -175,7 +171,7 @@ export function ListPage({ slug, id }: { slug: string; id: string }) {
               </tbody>
             </table>
           )}
-          {l && l.contacts > all.length && <p className="muted sm">Showing {all.length} of {l.contacts}.</p>}
+          {l && (l.contacts ?? 0) > all.length && <p className="muted sm">Showing {all.length} of {l.contacts}.</p>}
         </div>
         <div className="ls-side">
           <AddPeople slug={slug} id={id} onDone={changed} />

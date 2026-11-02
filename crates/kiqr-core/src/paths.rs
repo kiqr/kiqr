@@ -86,9 +86,9 @@ impl Home {
     pub fn accounts_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("accounts")
     }
-    /// A project's Audience: `audience/<id>/entry.yaml` (committed); a list's `contacts.csv` and `sends/` (not).
-    pub fn audience_dir(&self, slug: &str) -> PathBuf {
-        self.project_dir(slug).join("audience")
+    /// A project's channels: `channels/<id>/channel.yaml` (committed); a list's `contacts.csv` and `sends/` (not).
+    pub fn channels_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("channels")
     }
     /// The Vault: `vault/vault.enc` (the credentials, encrypted), maybe `vault/key`,
     /// `vault/sessions/<credential>/` (a login's browser profile and status) and

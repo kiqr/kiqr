@@ -91,7 +91,7 @@ impl AssetType {
 
 /// Where an asset stands. Nobody sets it: it follows from the facts on the
 /// asset (`target`, `publish_at`, `publications`, `archived`), see
-/// [`Asset::derived_status`]. Draft until the user approves it for an Audience entry
+/// [`Asset::derived_status`]. Draft until the user approves it for a channel
 /// (Ready); Scheduled once a publish time is set; Published when it went
 /// out; Archived when put away.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,7 +126,7 @@ pub struct Asset {
     /// What it was made from: a content gap, a topic cluster, a brief version… Free-form.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub source: serde_json::Map<String, serde_json::Value>,
-    /// The Audience entry the user approved it for (`audience::Entry` id). Set, the asset is Ready.
+    /// The channel the user approved it for (`channels::Channel` id). Set, the asset is Ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// When the daemon publishes it there. Set, the asset is Scheduled.
@@ -192,9 +192,9 @@ pub struct AssetFile {
 /// Where an asset went out.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Publication {
-    /// The Audience entry it went to; empty for an email to one address.
+    /// The channel it went to; empty for an email to one address.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub audience: String,
+    pub channel: String,
     /// The account it went through.
     pub account: String,
     /// The ability that published it.
@@ -595,7 +595,7 @@ mod tests {
         let mut a = a;
         a.publish_at = Some(Utc::now() + chrono::Duration::hours(1));
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Scheduled);
-        a.publications.push(Publication { audience: "blog".into(), account: "blog".into(), ability: String::new(), from: None, to: None, url: None, at: Utc::now(), run: None });
+        a.publications.push(Publication { channel: "blog".into(), account: "blog".into(), ability: String::new(), from: None, to: None, url: None, at: Utc::now(), run: None });
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Published);
         a.archived = true;
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Archived);

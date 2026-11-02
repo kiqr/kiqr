@@ -2,7 +2,7 @@ import { useId } from "react";
 
 // One configuration field: a select when it has a fixed set of values (a
 // key's `options`, a target field's `enum`), free text otherwise. Every form
-// that sets up an ability, an account or the Audience goes through it, so a
+// that sets up an ability, an account or a channel goes through it, so a
 // choice is never typed by hand.
 type Props = {
   value: string;

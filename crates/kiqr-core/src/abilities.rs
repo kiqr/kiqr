@@ -117,7 +117,7 @@ pub fn all() -> Vec<Ability> {
             schema: || obj(
                 json!({
                     "to": { "type": "string", "description": "Recipient address, or several separated by commas; or leave it out and name a `list`" },
-                    "list": { "type": "string", "description": "A list of people (id or name from list_lists): one message each, sent in the background" },
+                    "list": { "type": "string", "description": "A list of people (id or name from list_channels): one message each, sent in the background" },
                     "from": { "type": "string", "description": "Which mail account sends it (id or name), when the project has several; the default when left out" },
                     "subject": { "type": "string" },
                     "text": { "type": "string", "description": "The body, Markdown" },

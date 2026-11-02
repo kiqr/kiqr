@@ -1,10 +1,9 @@
 //! Accounts: who Seemo signs in as. One named account of a service inside a
 //! project, used by every installed ability of that service (its manifest's
 //! `service`, else its id): one sign-in for all of them. An account knows its
-//! service, its name, where its secrets are kept and what Seemo may do through
-//! it (`allow`, one per role: on its own, ask first, off). It never knows where
-//! content goes: that is the Audience (`crate::audience`), and a task or a call
-//! names the spot itself.
+//! service, its name and where its secrets are kept. It never knows where
+//! content goes or what Seemo may do there: that is the channel
+//! (`crate::channels`), whose publisher it can be.
 //!
 //! `projects/<slug>/accounts/<id>/account.yaml`, committed; beside it `.env`
 //! (keys kept in KIQR, and tokens a sign-in got), `data/` (a hosted program's
@@ -23,7 +22,7 @@ use std::path::PathBuf;
 /// How far Seemo may go with one role on an account: on its own (the card
 /// is the record), after a yes (the card waits), or not at all. Roles that
 /// never act (`read`, `learn`, `measure`) know only `auto` (on) and `off`.
-/// Acting on its own applies only to spots in the Audience; anywhere else asks.
+/// Kept for manifests that still declare `allow:`; channels decide now (`crate::channels::Mode`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Allow {
@@ -212,41 +211,18 @@ pub struct Account {
     /// `user`, or `chat:<id>`.
     pub created_by: String,
     pub created_at: DateTime<Utc>,
-    /// What Seemo may do here, by role (`PERMISSIONS`); a role not listed has
-    /// its default (`Allow::default_for`). The manifest's `allow` fills it
-    /// when the account is made; the user changes it on the account.
-    pub allow: BTreeMap<String, Allow>,
     /// Where its secrets are kept.
     #[serde(skip_serializing_if = "Secrets::is_default")]
     pub secrets: Secrets,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_learned: Option<DateTime<Utc>>,
-    /// Documents read the last time.
-    #[serde(skip_serializing_if = "is_zero")]
-    pub learned: u32,
-}
-
-fn is_zero(n: &u32) -> bool {
-    *n == 0
 }
 
 impl Default for Account {
     fn default() -> Self {
-        Self { id: String::new(), label: String::new(), service: String::new(), default: false, created_by: "user".into(), created_at: Utc::now(), allow: BTreeMap::new(), secrets: Secrets::default(), last_learned: None, learned: 0 }
+        Self { id: String::new(), label: String::new(), service: String::new(), default: false, created_by: "user".into(), created_at: Utc::now(), secrets: Secrets::default() }
     }
 }
 
 impl Account {
-    /// What Seemo may do here with one role: the choice made, else the default.
-    pub fn allow(&self, role: &str) -> Allow {
-        self.allow.get(role).copied().unwrap_or_else(|| Allow::default_for(role))
-    }
-
-    /// Learning from it is on (the account is a source).
-    pub fn learns(&self) -> bool {
-        self.allow("learn") != Allow::Off
-    }
-
     /// Every account of a project, by label.
     pub fn list(store: &Store, slug: &str) -> Result<Vec<Account>> {
         let dir = store.home().accounts_dir(slug);
@@ -407,9 +383,9 @@ pub struct Activity {
     pub tool: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub target: String,
-    /// The Audience entry it went to, when it went to one.
+    /// The channel it happened in, when it was in one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub audience: String,
+    pub channel: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
@@ -511,16 +487,11 @@ mod tests {
         assert!(Account::load(&store, "acme", "u-acme").unwrap().default, "the next one becomes the default");
         assert!(Account { id: "x".into(), ..Default::default() }.save(&store, "acme").is_err(), "an account belongs to a service");
 
-        // Permissions: acting asks by default, the rest is on.
-        let mut acct = Account::default();
-        assert_eq!((acct.allow("publish"), acct.allow("reply"), acct.allow("read"), acct.allow("learn")), (Allow::Ask, Allow::Ask, Allow::Auto, Allow::Auto));
-        acct.allow.insert("learn".into(), Allow::Off);
-        assert!(!acct.learns());
         assert_eq!((Allow::parse("on"), Allow::parse("ASK"), Allow::parse("nope")), (Some(Allow::Auto), Some(Allow::Ask), None));
 
         // The log: what was done on what, and how much today.
         let me = Account::load(&store, "acme", "u-acme").unwrap();
-        let act = |role: &str, target: &str, at: DateTime<Utc>| Activity { at, ability: "reddit".into(), role: role.into(), tool: "reply".into(), target: target.into(), audience: String::new(), url: None };
+        let act = |role: &str, target: &str, at: DateTime<Utc>| Activity { at, ability: "reddit".into(), role: role.into(), tool: "reply".into(), target: target.into(), channel: String::new(), url: None };
         me.record(&home, "acme", &act("reply", "post-1", Utc::now())).unwrap();
         me.record(&home, "acme", &act("reply", "post-2", Utc::now() - chrono::Duration::days(2))).unwrap();
         me.record(&home, "acme", &act("read", "", Utc::now())).unwrap();

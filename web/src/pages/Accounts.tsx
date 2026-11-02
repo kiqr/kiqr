@@ -1,17 +1,16 @@
 // Accounts: who Seemo signs in as for this project (a Reddit login, a Google
-// account, a mail sender). Each has its own keys or a password manager item,
-// what Seemo may do there (its permissions) and one state by the one
-// readiness rule. An account never says where content goes: that is the
-// Audience, and the card only says which Audience entries it reaches. Every
+// account, a mail sender). Each has its own keys or a password manager item
+// and one state by the one readiness rule. An account never says where
+// content goes or what Seemo may do there: that is the
+// channel, and the card only says which channels it publishes to. Every
 // ability of the service shares the account. The pieces here are used by the
 // Accounts page, the connect wizard, the ability window and Performance.
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, ChevronDown, ChevronRight, ExternalLink, Hand, KeyRound, LogIn, LogOut, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Users, X } from "lucide-react";
-import { api, useEvents, ACCOUNT_EVENTS, LOGIN_KEYS, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type AccountState, type AccountStateWord, type Allow, type Permission, type ServiceCard, type SpecField } from "../api";
+import { Check, ChevronDown, ChevronRight, ExternalLink, Hand, KeyRound, LogIn, LogOut, Loader2, Pencil, Plus, Star, Trash2, Users, X } from "lucide-react";
+import { api, useEvents, ACCOUNT_EVENTS, LOGIN_KEYS, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type AccountState, type AccountStateWord, type ServiceCard, type SpecField } from "../api";
 import { Hands, startUrlOf } from "./Hands";
-import { Switch } from "./Switch";
 import { ago } from "./Project";
 import { ConnectButton } from "./ConnectButton";
 import { Hint, SecretField } from "./SecretField";
@@ -22,7 +21,6 @@ import "../settings.css";
 import "../accounts.css";
 
 export { ACCOUNT_EVENTS };
-export const LIST_EVENTS = ["list_changed", "list_deleted", "list_sending", "audience_saved", "audience_deleted"];
 
 const ROLE_WORDS: Record<string, string> = { publish: "publishes", read: "reads", reply: "replies", manage: "manages", learn: "learns from it", measure: "reads its numbers" };
 const DONE_WORDS: Record<string, string> = { publish: "Published", reply: "Replied", manage: "Changed", read: "Read" };
@@ -116,177 +114,6 @@ export function ownLabel(a: Account): boolean {
 
 // ---- Permissions
 
-const ROLE_LABEL: Record<string, string> = { read: "Read", reply: "Reply", publish: "Publish", manage: "Change settings and profile", learn: "Learn the business from it", measure: "Read its numbers into Performance" };
-const ROLE_HELP: Record<string, string> = {
-  read: "Look at what is there: posts, messages, pages, files.",
-  reply: "Answer comments and messages.",
-  publish: "Put new things out.",
-  manage: "Change the account itself: its profile, its settings.",
-  learn: "Read it now and then to keep the business profile current.",
-  measure: "Pull its numbers once a day.",
-};
-
-/** The verb for publishing on this account, by its service: post, send or publish. */
-function publishVerb(a: Account): { now: string; s: string } {
-  const g = accountService(a).group;
-  if (g === "email") return { now: "send", s: "sends" };
-  if (g === "social") return { now: "post", s: "posts" };
-  return { now: "publish", s: "publishes" };
-}
-function roleVerb(a: Account, role: string): string {
-  if (role === "publish") return publishVerb(a).now;
-  if (role === "reply") return "reply";
-  if (role === "manage") return "change things";
-  return role;
-}
-function roleLabel(a: Account, role: string): string {
-  if (role === "publish") return publishVerb(a).now === "send" ? "Send" : publishVerb(a).now === "post" ? "Post" : "Publish";
-  return ROLE_LABEL[role] ?? role;
-}
-function joinOr(words: string[], and = "or") {
-  return words.length < 2 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} ${and} ${words[words.length - 1]}`;
-}
-function third(v: string) {
-  return v === "reply" ? "replies" : v === "change things" ? "changes things" : `${v}s`;
-}
-
-/** The acting roles that are not off. */
-function acting(a: Account): Permission[] {
-  return (a.allow ?? []).filter((p) => p.acts && p.allow !== "off");
-}
-
-/** One plain line for what Seemo may do here. */
-export function permissionSummary(a: Account): string {
-  const on = acting(a);
-  if (!on.length) return (a.allow ?? []).some((p) => p.role === "read" && p.allow === "off") ? "Seemo does nothing here" : "Seemo only reads here";
-  const own = on.filter((p) => p.allow === "auto").map((p) => roleVerb(a, p.role));
-  const asks = on.filter((p) => p.allow === "ask").map((p) => roleVerb(a, p.role));
-  if (!asks.length) return `Seemo ${joinOr(own.map(third), "and")} here on its own`;
-  if (!own.length) return `Seemo asks before it ${joinOr(asks.map(third))} here`;
-  return `Seemo ${joinOr(own.map(third), "and")} here on its own and asks before it ${joinOr(asks.map(third))}`;
-}
-
-/** The one switch: every acting role that is not off goes on its own, or back to asking. On its own only ever applies in the Audience. */
-export function ActOnOwn({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
-  const on = acting(a);
-  const own = on.length > 0 && on.every((p) => p.allow === "auto");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  if (!on.length) return null;
-  const flip = async (want: boolean) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.setAllow(slug, a.id, Object.fromEntries(on.map((p) => [p.role, want ? "auto" : "ask"])) as Record<string, Allow>);
-      onChange();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <>
-      <label className="acx-own" title={own ? "Seemo acts when it decides to; each card stays in the chat as the record" : "Every action Seemo proposes waits for your yes"}>
-        <Switch on={own} disabled={busy} onChange={(v) => void flip(v)} />
-        <span>
-          Let Seemo act here on its own
-          <small>Only in your Audience; anywhere else Seemo asks first</small>
-        </span>
-      </label>
-      {error && <p className="err sm">{error}</p>}
-    </>
-  );
-}
-
-/** Every role, with a segmented choice: On its own / Ask me first / Off, or On / Off for one that never acts. */
-export function PermissionMatrix({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const set = async (role: string, v: Allow) => {
-    setBusy(role);
-    setError(null);
-    try {
-      await api.setAllow(slug, a.id, { [role]: v });
-      onChange();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  };
-  const perms = a.allow ?? [];
-  if (!perms.length) return <p className="muted sm">Nothing to choose here: Seemo only reads through it.</p>;
-  return (
-    <div className="acx-perms">
-      {perms.map((p) => {
-        const choices: { v: Allow; label: string }[] = p.acts
-          ? [
-              { v: "auto", label: "On its own" },
-              { v: "ask", label: "Ask me first" },
-              { v: "off", label: "Off" },
-            ]
-          : [
-              { v: "auto", label: "On" },
-              { v: "off", label: "Off" },
-            ];
-        return (
-          <div key={p.role} className="acx-perm">
-            <div className="min0">
-              <b>{roleLabel(a, p.role)}</b>
-              <span className="muted sm">{p.role === "learn" && a.learn?.label ? a.learn.label : ROLE_HELP[p.role] ?? ""}</span>
-            </div>
-            <div className="seg" role="radiogroup" aria-label={roleLabel(a, p.role)}>
-              {choices.map((c) => (
-                <button key={c.v} role="radio" aria-checked={p.allow === c.v} className={p.allow === c.v ? `on ${c.v}` : ""} disabled={busy === p.role} onClick={() => p.allow !== c.v && void set(p.role, c.v)}>
-                  {c.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-      {error && <p className="err sm">{error}</p>}
-    </div>
-  );
-}
-
-/** Choose permissions before anything is saved (the connect wizard): the same choices, kept in a map. */
-export function PermissionChoices({ perms, value, verb, onChange }: { perms: { role: string; acts: boolean }[]; value: Record<string, Allow>; verb?: (role: string) => string; onChange: (v: Record<string, Allow>) => void }) {
-  return (
-    <div className="acx-perms">
-      {perms.map((p) => {
-        const cur = value[p.role] ?? (p.acts ? "ask" : "auto");
-        const choices: { v: Allow; label: string }[] = p.acts
-          ? [
-              { v: "auto", label: "On its own" },
-              { v: "ask", label: "Ask me first" },
-              { v: "off", label: "Off" },
-            ]
-          : [
-              { v: "auto", label: "On" },
-              { v: "off", label: "Off" },
-            ];
-        return (
-          <div key={p.role} className="acx-perm">
-            <div className="min0">
-              <b>{verb?.(p.role) ?? ROLE_LABEL[p.role] ?? p.role}</b>
-              <span className="muted sm">{ROLE_HELP[p.role] ?? ""}</span>
-            </div>
-            <div className="seg" role="radiogroup">
-              {choices.map((c) => (
-                <button key={c.v} role="radio" aria-checked={cur === c.v} className={cur === c.v ? `on ${c.v}` : ""} onClick={() => onChange({ ...value, [p.role]: c.v })}>
-                  {c.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 // ---- Fields
 
 export type Field = { key: string; label: string; help?: string; placeholder?: string; optional?: boolean; options?: string[]; secret?: boolean };
@@ -314,15 +141,15 @@ export function Fields({ fields, values, onChange }: { fields: Field[]; values: 
 
 // ---- Where it reaches
 
-/** "Reaches: @acme, r/selfhosted (+2)", linking to the Audience; nothing when it reaches nowhere yet. */
+/** "Publishes to: @acme, r/selfhosted (+2)", linking to Channels; nothing when it publishes nowhere yet. */
 export function Reaches({ slug, a }: { slug: string; a: Account }) {
-  const all = a.audience ?? [];
+  const all = a.channels ?? [];
   if (!all.length) return null;
   const shown = all.slice(0, 3);
   return (
     <p className="acx-reach">
-      <span className="lb">Reaches:</span>{" "}
-      <Link to={`/p/${slug}/audience`} title="Open your Audience">
+      <span className="lb">Publishes to:</span>{" "}
+      <Link to={`/p/${slug}/channels`} title="Open Channels">
         {shown.map((x) => x.label).join(", ")}
         {all.length > shown.length && <span className="dim"> (+{all.length - shown.length})</span>}
       </Link>
@@ -654,36 +481,6 @@ export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Acco
         )}
       </p>
     </div>
-  );
-}
-
-/** Learning from it: when it last read, and Learn now. */
-function Learning({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
-  const [learning, setLearning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEvents(slug, (e) => e.type === "job_finished" && (e as { job?: string }).job === "learn" && (setLearning(false), onChange()), { demo: false });
-  if (!a.can_learn && !a.learn) return null;
-  if (!a.source) return null;
-  return (
-    <p className="muted sm acc-learned">
-      {learning ? (
-        <>
-          <Loader2 size={12} className="spin" /> Learning from it…
-        </>
-      ) : a.last_learned ? (
-        `Learned from ${a.learned ?? 0} document${a.learned === 1 ? "" : "s"} ${ago(a.last_learned)}; read again every week.`
-      ) : a.state.ready ? (
-        "Not read yet."
-      ) : (
-        "Read once it is ready."
-      )}
-      {a.state.ready && !learning && (
-        <button className="lnk-btn" onClick={() => api.learnAccount(slug, a.id).then(() => setLearning(true), (e) => setError((e as Error).message))}>
-          <RefreshCw size={11} /> Learn now
-        </button>
-      )}
-      {error && <span className="err"> {error}</span>}
-    </p>
   );
 }
 
@@ -1039,13 +836,7 @@ export function AccountCard({ slug, a, several, highlight, onChange }: { slug: s
 
       <StateFix slug={slug} a={a} onHands={() => setHands(true)} onChange={onChange} />
 
-      <div className="acx-say">
-        <p>{permissionSummary(a)}.</p>
-        <ActOnOwn slug={slug} a={a} onChange={onChange} />
-      </div>
-
       <Reaches slug={slug} a={a} />
-      <Learning slug={slug} a={a} onChange={onChange} />
 
       <button className="acx-more" onClick={() => setDetails((d) => !d)} aria-expanded={details}>
         {details ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Details
@@ -1053,10 +844,6 @@ export function AccountCard({ slug, a, several, highlight, onChange }: { slug: s
       <AnimatePresence initial={false}>
         {details && (
           <motion.div className="acx-details" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }}>
-            <section>
-              <p className="cap">What Seemo may do here</p>
-              <PermissionMatrix slug={slug} a={a} onChange={onChange} />
-            </section>
             {(a.used_by?.length ?? 0) > 0 && (
               <section>
                 <p className="cap">Used by</p>

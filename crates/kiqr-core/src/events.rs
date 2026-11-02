@@ -125,7 +125,7 @@ pub enum EventKind {
     /// An ability of a project was allowed to use a credential, or no longer. `by` is `user`, `publisher` or `connect`.
     GrantChanged { ability: String, credential: String, granted: bool, by: String },
 
-    // Abilities, accounts and the Audience.
+    // Abilities, accounts and channels.
     /// An ability made a file into an asset: `ability` is image, video or music.
     MediaCreated { ability: String, asset_type: String, id: String, file: String, provider: String },
     /// An account (who Seemo signs in as, on a service) was added or changed.
@@ -142,23 +142,23 @@ pub enum EventKind {
     HandsFrame { account: String, hands: String, mime: String, data: String, #[serde(default)] url: String },
     HandsStarted { account: String, hands: String },
     HandsEnded { account: String, hands: String, #[serde(default)] message: String },
-    /// An Audience entry (a page, a community, a list) was added, changed, suggested or had people added or removed (`contacts`, a list's).
-    AudienceSaved { entry: String, label: String, section: String, #[serde(default)] suggested: bool, #[serde(default)] contacts: Option<usize> },
-    AudienceDeleted { entry: String },
+    /// A channel (a profile, a page, a community, a list) was added, changed, suggested or had people added or removed (`contacts`, a list's).
+    ChannelSaved { channel: String, label: String, ownership: String, #[serde(default)] suggested: bool, #[serde(default)] contacts: Option<usize> },
+    ChannelDeleted { channel: String },
     /// A send to a list is under way: so many of the people done, so many failed.
     ListSending { list: String, subject: String, sent: usize, failed: usize, total: usize, #[serde(default)] done: bool },
     AccountDeleted { account: String, service: String },
     /// What the project picked for an ability (a property, a site) changed.
     AbilitySettingsSaved { ability: String, account: String },
-    /// An ability acted through an account (anything but reading), logged on it; `audience` when it was in an entry.
-    AccountActed { account: String, ability: String, role: String, #[serde(default)] target: String, #[serde(default)] audience: String, #[serde(default)] url: Option<String> },
+    /// An ability acted through an account (anything but reading), logged on it; `channel` when it was in one.
+    AccountActed { account: String, ability: String, role: String, #[serde(default)] target: String, #[serde(default)] channel: String, #[serde(default)] url: Option<String> },
     /// An action through an account was refused: `why` is `duplicate` (the
     /// same role on the same target was done already) or `cap` (the service's
     /// daily cap is reached).
     ActionRefused { account: String, ability: String, why: String, message: String },
-    /// An asset went out to an Audience entry (`audience`; empty for an email to one address) through an account.
-    AssetPublished { asset_type: String, id: String, #[serde(default)] audience: String, account: String, #[serde(default)] url: Option<String> },
-    /// The user approved an asset for an Audience entry (it is Ready), or set when the
+    /// An asset went out to a channel (empty for an email to one address) through its publisher.
+    AssetPublished { asset_type: String, id: String, #[serde(default)] channel: String, account: String, #[serde(default)] url: Option<String> },
+    /// The user approved an asset for a channel (it is Ready), or set when the
     /// daemon publishes it (`at` set: Scheduled).
     AssetApproved { asset_type: String, id: String, title: String, target: String, #[serde(default)] at: Option<chrono::DateTime<chrono::Utc>> },
     /// KIQR no longer counts an asset as published; the copy out there is not touched.
@@ -232,8 +232,8 @@ impl EventKind {
                 | EventKind::HandsFrame { .. }
                 | EventKind::HandsStarted { .. }
                 | EventKind::HandsEnded { .. }
-                | EventKind::AudienceSaved { .. }
-                | EventKind::AudienceDeleted { .. }
+                | EventKind::ChannelSaved { .. }
+                | EventKind::ChannelDeleted { .. }
                 | EventKind::ListSending { .. }
                 | EventKind::AccountActed { .. }
                 | EventKind::ActionRefused { .. }

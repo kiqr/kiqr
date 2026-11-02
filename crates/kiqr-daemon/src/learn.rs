@@ -1,9 +1,9 @@
-//! Learning from sources. An account whose ability declares `learn:` (a
-//! GitHub repository: its README, docs and releases) and has learning on is a
-//! source: its documents are read through the ability's own tools, each
-//! extracted into facts like a page of the site, and the profile is written
-//! again from everything. The facts cite the document's link, so the profile
-//! shows where each came from. An account can be a source and a channel.
+//! Learning from sources. An owned channel with learning on, published to by
+//! an account whose ability declares `learn:` (a GitHub repository: its
+//! README, docs and releases), is a source: its documents are read through
+//! the ability's own tools, each extracted into facts like a page of the
+//! site, and the profile is written again from everything. The facts cite the
+//! document's link, so the profile shows where each came from.
 //!
 //! A source is read when learning is switched on, with the crawl, on
 //! "Learn now", and again every week (`due`, from the scheduler).
@@ -12,6 +12,7 @@ use crate::api::ApiError;
 use crate::App;
 use axum::http::StatusCode;
 use kiqr_core::accounts::Account;
+use kiqr_core::channels::Channel;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{self, LearnDoc, Manifest};
 use kiqr_core::extract::Extractor;
@@ -31,7 +32,17 @@ static TRIED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 /// One account's ability, when it can teach the project.
 async fn learnable(app: &App, slug: &str, c: &Account) -> Option<Manifest> {
-    crate::accounts::manifest_for(app, slug, c).await.filter(|m| m.learn.is_some())
+    crate::accounts::manifests_of(app, slug, &c.service).await.into_iter().find(|m| m.learn.is_some())
+}
+
+/// Whether accounts of a service can teach the project.
+pub async fn learnable_service(app: &App, slug: &str, service: &str) -> bool {
+    !service.is_empty() && crate::accounts::manifests_of(app, slug, service).await.iter().any(|m| m.learn.is_some())
+}
+
+/// The channels learned from, with the account each is read through.
+fn sources(app: &App, slug: &str) -> Vec<(Channel, Account)> {
+    Channel::all(&app.store, slug).unwrap_or_default().into_iter().filter(|ch| ch.learn && ch.owned() && !ch.suggested).filter_map(|ch| Account::load(&app.store, slug, &ch.publisher).ok().map(|c| (ch, c))).collect()
 }
 
 /// A tool's answer as text: what it said, a text file, or the JSON itself.
@@ -71,7 +82,7 @@ async fn extract(ex: &Extractor, slug: &str, title: String, url: String, text: S
 
 /// Read one source's documents into facts. Returns how many documents gave
 /// facts; a document that is not there (no `docs/` folder) is skipped.
-pub async fn read_source(app: &App, slug: &str, c: &Account, ex: &Extractor) -> anyhow::Result<usize> {
+pub async fn read_source(app: &App, slug: &str, ch: &Channel, c: &Account, ex: &Extractor) -> anyhow::Result<usize> {
     let m = learnable(app, slug, c).await.ok_or_else(|| anyhow::anyhow!("{} has nothing to learn from", c.label))?;
     let st = crate::accounts::state(app, slug, c).await;
     if !st.ready() {
@@ -113,11 +124,11 @@ pub async fn read_source(app: &App, slug: &str, c: &Account, ex: &Extractor) -> 
             }
         }
     }
-    let mut c = Account::load(&app.store, slug, &c.id)?;
-    c.last_learned = Some(chrono::Utc::now());
-    c.learned = read as u32;
-    c.save(&app.store, slug)?;
-    app.store.commit(&format!("[auto] source({slug}): learned from {} ({read} documents)", c.label)).await?;
+    let mut ch = Channel::load(&app.store, slug, &ch.id)?;
+    ch.last_learned = Some(chrono::Utc::now());
+    ch.learned = read as u32;
+    ch.save(&app.store, slug)?;
+    app.store.commit(&format!("[auto] source({slug}): learned from {} ({read} documents)", ch.label)).await?;
     Ok(read)
 }
 
@@ -125,12 +136,12 @@ pub async fn read_source(app: &App, slug: &str, c: &Account, ex: &Extractor) -> 
 /// writes the profile itself afterwards. Says nothing; returns what was read.
 pub async fn read_all(app: &App, slug: &str, only: Option<&str>, ex: &Extractor) -> Vec<(String, anyhow::Result<usize>)> {
     let mut out = Vec::new();
-    for c in Account::list(&app.store, slug).unwrap_or_default().into_iter().filter(|c| c.learns() && only.is_none_or(|o| o == c.id)) {
+    for (ch, c) in sources(app, slug).into_iter().filter(|(ch, _)| only.is_none_or(|o| o == ch.id)) {
         if learnable(app, slug, &c).await.is_none() {
             continue;
         }
-        let r = read_source(app, slug, &c, ex).await;
-        out.push((c.label.clone(), r));
+        let r = read_source(app, slug, &ch, &c, ex).await;
+        out.push((ch.label.clone(), r));
     }
     out
 }
@@ -176,16 +187,16 @@ pub async fn start(app: &App, slug: &str, only: Option<String>) -> Result<(), Ap
 pub async fn due(app: &App, slug: &str) {
     let now = chrono::Utc::now();
     let mut any = false;
-    for c in Account::list(&app.store, slug).unwrap_or_default().into_iter().filter(Account::learns) {
+    for (ch, c) in sources(app, slug) {
         let Some(m) = learnable(app, slug, &c).await else { continue };
         if m.learn.is_none() || !crate::accounts::state(app, slug, &c).await.ready() {
             continue;
         }
-        let due = match c.last_learned {
+        let due = match ch.last_learned {
             Some(at) => now - at > EVERY,
             None => {
                 let mut t = TRIED.lock().unwrap();
-                t.get_or_insert_with(HashSet::new).insert(format!("{slug}/{}", c.id))
+                t.get_or_insert_with(HashSet::new).insert(format!("{slug}/{}", ch.id))
             }
         };
         any |= due;

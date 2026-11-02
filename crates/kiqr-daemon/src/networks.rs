@@ -27,19 +27,23 @@ pub fn routes() -> Router<App> {
 
 /// The kinds of the abilities this project has on.
 pub async fn installed(app: &App, slug: &str) -> Vec<Kind> {
-    crate::audience::kinds(app, slug).await.into_iter().map(|(_, k)| k).collect()
+    crate::channels::kinds(app, slug).await.into_iter().map(|(_, k)| k).collect()
 }
 
 /// The networks this project can write posts for: the kinds an ability on
-/// here publishes to that are networks (not an inbox or a blog) and that the
-/// Audience has an entry of, once each. With an empty Audience, every
-/// network an ability on here publishes to, so the first posts can be
-/// written before the first sign-in.
+/// here publishes to that are networks (not an inbox or a blog) and that a
+/// channel is, once each. With no channels, every network an ability on here
+/// publishes to, so the first posts can be written before anything is set up.
 pub async fn for_posts(app: &App, slug: &str) -> Vec<Kind> {
-    let entries: Vec<kiqr_core::audience::Entry> = kiqr_core::audience::Entry::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| !e.suggested && !e.is_list()).collect();
+    let mut kinds: Vec<String> = Vec::new();
+    for ch in kiqr_core::channels::Channel::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| !e.suggested && !e.is_list()) {
+        if let Some((_, k)) = crate::channels::kind_for(app, slug, &ch).await {
+            kinds.push(k.kind);
+        }
+    }
     let mut out: Vec<Kind> = Vec::new();
     for k in installed(app, slug).await.into_iter().filter(|k| k.is_network() && k.publishes()) {
-        if !out.iter().any(|o| o.kind == k.kind) && (entries.is_empty() || entries.iter().any(|e| e.kind == k.kind)) {
+        if !out.iter().any(|o| o.kind == k.kind) && (kinds.is_empty() || kinds.contains(&k.kind)) {
             out.push(k);
         }
     }
@@ -57,7 +61,7 @@ pub async fn profile_hosts(app: &App, slug: &str) -> Vec<(String, String)> {
         }
     };
     // A service's profile hosts belong to the kinds its abilities declare.
-    for (m, k) in crate::audience::kinds(app, slug).await {
+    for (m, k) in crate::channels::kinds(app, slug).await {
         for h in &m.service.profile_hosts {
             add(h, &k.kind);
         }
@@ -77,7 +81,7 @@ pub async fn profile_hosts(app: &App, slug: &str) -> Vec<(String, String)> {
 pub async fn view(app: &App, slug: &str) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    let on = crate::audience::kinds(app, slug).await;
+    let on = crate::channels::kinds(app, slug).await;
     for (_, k) in &on {
         if seen.contains(&k.kind) {
             continue;

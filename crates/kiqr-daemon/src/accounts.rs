@@ -1,7 +1,7 @@
 //! Accounts over HTTP: who Seemo signs in as, per project and service (two
 //! WordPress sites, two Reddit logins), each with its keys, where its
-//! secrets are kept and what Seemo may do through it. Where content goes is
-//! the Audience (`audience.rs`), never the account. Whether an account works
+//! secrets are kept. Where content goes and what Seemo may do there is the
+//! channel (`channels.rs`), never the account. Whether an account works
 //! is one rule (`state`), used by every route, the executor and the UI.
 
 use crate::api::{ApiError, ApiResult};
@@ -12,8 +12,8 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use kiqr_core::accounts::{self, Account, Allow, Facts, Secrets};
-use kiqr_core::audience::Entry;
+use kiqr_core::accounts::{self, Account, Facts, Secrets};
+use kiqr_core::channels::Channel;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{Manifest, Transport};
 use kiqr_core::project::Project;
@@ -29,8 +29,6 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/accounts/{id}/default", post(make_default))
         .route("/api/projects/{slug}/accounts/{id}/activity", get(activity))
         .route("/api/projects/{slug}/accounts/{id}/choices/{name}", get(choices))
-        .route("/api/projects/{slug}/accounts/{id}/learn", post(learn_now))
-        .route("/api/projects/{slug}/accounts/{id}/allow", put(put_allow))
         .route("/api/projects/{slug}/abilities/{ability}/settings", put(put_settings))
 }
 
@@ -148,14 +146,11 @@ pub async fn view(app: &App, slug: &str, c: &Account) -> Value {
         does.dedup();
         json!({ "id": o.id, "name": o.name, "does": does })
     }).collect::<Vec<_>>());
-    // Where it reaches: the Audience entries through it.
-    let entries: Vec<Value> = Entry::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| e.account == c.id && !e.suggested).map(|e| json!({ "id": e.id, "label": e.label, "section": e.section })).collect();
-    v["audience"] = json!(entries);
+    // The channels it publishes to.
+    let channels: Vec<Value> = Channel::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| e.publisher == c.id && !e.suggested).map(|e| json!({ "id": e.id, "label": e.label, "domain": e.domain, "ownership": e.ownership })).collect();
+    v["channels"] = json!(channels);
     v["can_publish"] = json!(ms.iter().any(|m| m.kinds.iter().any(|k| k.publishes())));
-    v["source"] = json!(c.learns());
     v["can_learn"] = json!(ms.iter().any(|m| m.learn.is_some()));
-    v["learn"] = ms.iter().find(|m| m.learn.is_some()).map(learn_view).unwrap_or(Value::Null);
-    v["allow"] = json!(permissions(app, slug, c).await.into_iter().map(|(role, a, acts)| json!({ "role": role, "allow": a, "acts": acts })).collect::<Vec<_>>());
     // Signing in on a hosted program: whether this account does, how it stands.
     if let Some(o) = crate::session::view(app, slug, c).await.as_object() {
         for (k, val) in o {
@@ -206,7 +201,7 @@ pub fn own_label(label: &str, service: &str) -> bool {
     label != service && !(label.starts_with(service) && label[service.len()..].trim().chars().all(|ch| ch.is_ascii_digit()))
 }
 
-/// The account's name where it is shown beside what it reaches (the Audience): the name the user gave it, else
+/// The account's name where it is shown beside the channels it publishes to: the name the user gave it, else
 /// who it is (a repository, a site, an address), else the user name it signs in with, else its label.
 pub async fn name_of(app: &App, slug: &str, c: &Account) -> String {
     let service = manifest_for(app, slug, c).await.map(|m| m.service_card().name).unwrap_or_else(|| c.service.clone());
@@ -230,48 +225,6 @@ pub fn identity(ms: &[Manifest], keys: &BTreeMap<String, String>) -> Option<Stri
     ms.iter().find_map(|m| m.auth.iter().filter(|a| !secret(&a.env)).find_map(|a| keys.get(&a.env).map(|v| v.trim()).filter(|v| !v.is_empty())).map(|v| url::Url::parse(v).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string())).unwrap_or_else(|| v.to_string())))
 }
 
-/// The roles an account can be allowed, with what it allows now: the roles
-/// the abilities of its service declare on tools, `publish` when one of them
-/// publishes, `learn` when one can teach the project, `measure` when one reads
-/// numbers. Reading is always there. Each with whether it acts (three
-/// choices) or not (on/off).
-pub async fn permissions(app: &App, slug: &str, c: &Account) -> Vec<(String, Allow, bool)> {
-    let mut roles: Vec<String> = vec!["read".into()];
-    let mut add = |r: &str| if !roles.iter().any(|x| x == r) { roles.push(r.to_string()) };
-    for m in manifests_of(app, slug, &c.service).await {
-        for t in &m.tools {
-            if !t.role.is_empty() {
-                add(&t.role);
-            }
-        }
-        if m.kinds.iter().any(|k| k.publishes()) {
-            add("publish");
-        }
-        if m.learn.is_some() {
-            add("learn");
-        }
-        if !m.sources.is_empty() {
-            add("measure");
-        }
-    }
-    let order = |r: &str| accounts::PERMISSIONS.iter().position(|p| *p == r).unwrap_or(99);
-    roles.sort_by_key(|r| order(r));
-    roles.into_iter().map(|r| { let a = c.allow(&r); let acts = Allow::acts(&r); (r, a, acts) }).collect()
-}
-
-/// What an account of this service starts with: the manifests' `allow`
-/// defaults, the first to name a role winning.
-pub async fn default_allow(app: &App, slug: &str, service: &str) -> BTreeMap<String, Allow> {
-    let reg = app.registry.read().await;
-    let mut out = BTreeMap::new();
-    for m in reg.of_service(slug, service) {
-        for (role, a) in &m.allow {
-            out.entry(role.clone()).or_insert(*a);
-        }
-    }
-    out
-}
-
 #[derive(Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct NewAccount {
@@ -283,8 +236,6 @@ pub struct NewAccount {
     pub secrets: BTreeMap<String, String>,
     /// Another account of the same service whose keys this one starts with (the same mail login).
     pub same_as: Option<String>,
-    /// Permissions chosen at setup, over the manifests' defaults: role → auto | ask | off.
-    pub allow: BTreeMap<String, String>,
     /// Where its secrets are kept, when not in KIQR.
     pub keep: Option<Secrets>,
 }
@@ -302,15 +253,11 @@ pub async fn service_of(app: &App, slug: &str, service: &str, ability: &str) -> 
 }
 
 /// Add an account: its record, then its keys. The first of a service is its
-/// default. Kinds whose account is the spot (an X profile) get their Audience
-/// entry at once.
+/// default. Kinds whose account is the spot (an X profile) get their channel
+/// (or become the publisher of the one waiting on that site) at once.
 pub async fn create(app: &App, slug: &str, b: NewAccount, by: &str) -> Result<Account, ApiError> {
     let _ = Project::load(&app.store, slug)?;
     let (service, m) = service_of(app, slug, &b.service, &b.ability).await?;
-    let mut allow = default_allow(app, slug, &service).await;
-    for (role, a) in &b.allow {
-        allow.insert(role.clone(), parse_allow(role, a)?);
-    }
     let same = match b.same_as.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => Some(Account::find(&app.store, slug, &service, s).ok_or_else(|| bad(format!("there is no account '{s}' of {} here to share", m.service_card().name)))?),
         None => None,
@@ -333,7 +280,7 @@ pub async fn create(app: &App, slug: &str, b: NewAccount, by: &str) -> Result<Ac
         label = format!("{base} {n}");
         n += 1;
     }
-    let c = Account { id: accounts::new_id(&app.store, slug, &label), label, service: service.clone(), default: siblings.is_empty(), created_by: by.to_string(), allow, secrets, ..Default::default() };
+    let c = Account { id: accounts::new_id(&app.store, slug, &label), label, service: service.clone(), default: siblings.is_empty(), created_by: by.to_string(), secrets, ..Default::default() };
     c.save(&app.store, slug)?;
     let home = app.store.home();
     if let Some(s) = &same {
@@ -349,11 +296,7 @@ pub async fn create(app: &App, slug: &str, b: NewAccount, by: &str) -> Result<Ac
     }
     app.store.commit(&format!("account({slug}): add {} ({})", c.label, m.service_card().name)).await?;
     app.bus.emit(Some(slug), EventKind::AccountSaved { account: c.id.clone(), label: c.label.clone(), service: c.service.clone() });
-    crate::audience::entries_for_account(app, slug, &c).await;
-    // Learn from it now when it is ready; otherwise the scheduler does once it is signed in.
-    if c.learns() && manifests_of(app, slug, &service).await.iter().any(|m| m.learn.is_some()) && state(app, slug, &c).await.ready() {
-        let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
-    }
+    crate::channels::channels_for_account(app, slug, &c).await;
     // Connecting is wanting it: the service's abilities switched off for this project come back on.
     let off = crate::ext::project_off(app, slug);
     let ids: Vec<String> = { let reg = app.registry.read().await; reg.of_service(slug, &service).into_iter().map(|o| o.id.clone()).collect() };
@@ -378,21 +321,8 @@ fn check_store(app: &App, slug: &str, k: &Secrets) -> Result<(), ApiError> {
 #[serde(default)]
 pub struct Patch {
     pub label: Option<String>,
-    /// Permissions to change: role → auto | ask | off (on/off for roles that never act).
-    pub allow: Option<BTreeMap<String, String>>,
     /// Where its secrets are kept: `{store: kiqr}`, or a password manager account with `item`.
     pub secrets: Option<Secrets>,
-}
-
-fn parse_allow(role: &str, a: &str) -> Result<Allow, ApiError> {
-    if !accounts::PERMISSIONS.contains(&role) {
-        return Err(bad(format!("'{role}' is not something an account allows ({})", accounts::PERMISSIONS.join(", "))));
-    }
-    let v = Allow::parse(a).ok_or_else(|| bad(format!("'{a}' is not auto, ask or off")))?;
-    if !Allow::acts(role) && v == Allow::Ask {
-        return Err(bad(format!("'{role}' never asks; it is on or off")));
-    }
-    Ok(v)
 }
 
 pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Account, ApiError> {
@@ -404,15 +334,6 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Account
         }
         c.label = l;
     }
-    let was_learning = c.learns();
-    let ms = manifests_of(app, slug, &c.service).await;
-    for (role, a) in p.allow.unwrap_or_default() {
-        let v = parse_allow(&role, &a)?;
-        if role == "learn" && v != Allow::Off && !ms.iter().any(|m| m.learn.is_some()) {
-            return Err(bad(format!("nothing to learn from in '{}'", c.label)));
-        }
-        c.allow.insert(role, v);
-    }
     if let Some(k) = p.secrets {
         if !k.in_kiqr() {
             if k.store == c.id {
@@ -422,33 +343,23 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Account
         }
         c.secrets = if k.in_kiqr() { Secrets::default() } else { k };
     }
-    let learn_now = c.learns() && !was_learning && ms.iter().any(|m| m.learn.is_some()) && state(app, slug, &c).await.ready();
     c.save(&app.store, slug)?;
-    // The pages that are the account itself (an X profile) carry its name.
+    // The channels that are the account itself (an X profile) carry its name.
     if c.label != old_label {
-        for mut e in Entry::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| e.account == c.id && !e.is_list() && e.fields.is_empty() && e.label == old_label) {
+        for mut e in Channel::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| e.publisher == c.id && !e.is_list() && e.fields.is_empty() && e.label == old_label) {
             e.label = c.label.clone();
             if e.save(&app.store, slug).is_ok() {
-                app.bus.emit(Some(slug), EventKind::AudienceSaved { entry: e.id.clone(), label: e.label.clone(), section: e.section.clone(), suggested: e.suggested, contacts: None });
+                crate::channels::emit(app, slug, &e, None);
             }
         }
     }
     app.store.commit(&format!("account({slug}): {}", c.label)).await?;
     app.bus.emit(Some(slug), EventKind::AccountSaved { account: c.id.clone(), label: c.label.clone(), service: c.service.clone() });
-    if learn_now {
-        let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
-    }
     Ok(c)
 }
 
-/// `PUT …/allow {role: auto|ask|off, …}`: what Seemo may do here.
-async fn put_allow(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(b): Json<BTreeMap<String, String>>) -> ApiResult<Value> {
-    let c = update(&app, &slug, &id, Patch { allow: Some(b), ..Default::default() }).await?;
-    Ok(Json(view(&app, &slug, &c).await))
-}
-
-/// Remove an account, its keys and its program. Audience entries through it
-/// stay (they are the business's people) and say they need an account.
+/// Remove an account, its keys and its program. Channels it published to
+/// stay (they are the business's people) and say they need a publisher.
 pub async fn delete(app: &App, slug: &str, id: &str) -> Result<(), ApiError> {
     let c = Account::delete(&app.store, slug, id).map_err(not_found)?;
     app.mcp.stop_account(slug, &c.id).await;
@@ -508,16 +419,6 @@ struct SecretBody {
 async fn put_secret(State(app): State<App>, Path((slug, id, name)): Path<(String, String, String)>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
     let set = crate::ext::set_account_secret(&app, &slug, &id, &name, &b.value).await?;
     Ok(Json(json!({ "name": name, "set": set, "account": id })))
-}
-
-/// "Learn now": read this source again and write the profile from it.
-async fn learn_now(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
-    let c = Account::load(&app.store, &slug, &id).map_err(not_found)?;
-    if !c.learns() {
-        return Err(bad(format!("'{}' is not a source; allow learning on it first", c.label)));
-    }
-    crate::learn::start(&app, &slug, Some(c.id.clone())).await?;
-    Ok(Json(json!({ "started": true })))
 }
 
 /// What a key or a setting can be set to, read through the account (`choices`).
