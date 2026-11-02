@@ -20,6 +20,7 @@ const SHELVES: { id: string; label: string }[] = [
   { id: "video", label: "Video" },
   { id: "music", label: "Music" },
   { id: "email", label: "Email" },
+  { id: "social", label: "Social media" },
   { id: "publishing", label: "Publishing" },
   { id: "browser", label: "Browser" },
   { id: "tools", label: "Tools" },
