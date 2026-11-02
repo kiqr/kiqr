@@ -14,6 +14,11 @@ export function useChat(slug: string | null, chatId: string | null) {
   const current = useRef<string | null>(null);
   current.current = chatId;
 
+  // The transcript from the API, laid under what events have shown meanwhile: a
+  // chat opened the moment it is made (a button that starts one and sends the
+  // first message) has its GET answered before the message lands, and the
+  // message's event can reach us before that answer does. What was seen live
+  // is never dropped for an older reading of the file.
   const reload = useCallback(() => {
     if (!slug || !chatId) {
       setChat(null);
@@ -27,14 +32,21 @@ export function useChat(slug: string | null, chatId: string | null) {
       .then((c) => {
         if (current.current !== chatId) return;
         setChat(c);
-        setMessages(c.messages);
-        setStreaming(c.streaming);
+        setMessages((seen) => mergeMessages(c.messages, seen));
+        setStreaming((live) => newerTurn(c.streaming, live));
         setError(null);
       })
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoading(false));
   }, [slug, chatId]);
-  useEffect(reload, [reload]);
+  // Another chat: start from nothing, so the one before never shows under the new one's name.
+  useEffect(() => {
+    setChat(null);
+    setMessages([]);
+    setStreaming(null);
+    setError(null);
+    reload();
+  }, [reload]);
 
   const onEvent = (e: KiqrEvent) => {
     if (!chatId || e.chat !== chatId) return;
@@ -94,6 +106,20 @@ export function useChat(slug: string | null, chatId: string | null) {
   const stop = useCallback(() => (slug && chatId ? api.stopChat(slug, chatId).catch(() => undefined) : Promise.resolve(undefined)), [slug, chatId]);
 
   return { chat, messages, streaming, busy: !!streaming, error, loading, send, stop, reload };
+}
+
+/** The loaded transcript plus the messages seen live that it does not have yet (they came after it was read). */
+function mergeMessages(loaded: Message[], seen: Message[]): Message[] {
+  const have = new Set(loaded.map((m) => m.id));
+  const extra = seen.filter((m) => !have.has(m.id));
+  return extra.length ? [...loaded, ...extra] : loaded;
+}
+
+/** The turn in progress: the API's snapshot, unless events have carried the same turn further (or the snapshot was taken before it began). */
+function newerTurn(loaded: Streaming | null, live: Streaming | null): Streaming | null {
+  if (!live) return loaded;
+  if (!loaded) return live;
+  return loaded.message === live.message ? live : loaded;
 }
 
 /** The chat the widget follows: the latest one, or the one just started. */

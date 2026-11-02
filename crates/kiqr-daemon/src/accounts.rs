@@ -607,6 +607,11 @@ async fn create_route(State(app): State<App>, Path(slug): Path<String>, Json(b):
         b.place = checked;
     }
     let c = create(&app, &slug, b, "user").await?;
+    // A first account on a network: Seemo writes the first posts for it, in the background.
+    if c.publishes() {
+        let (app2, slug2, kind) = (app.clone(), slug.clone(), c.kind.clone());
+        tokio::spawn(async move { crate::api::posts_for_new_account(&app2, &slug2, &kind).await });
+    }
     Ok((StatusCode::CREATED, Json(view(&app, &slug, &c).await)))
 }
 

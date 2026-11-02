@@ -73,10 +73,11 @@ export function SeemoWidget({ project }: { project: string | null }) {
     } catch {
       /* private window */
     }
+    // Unless a chat was opened while the list was on its way (`openSeemo` from a button, a chat just made): that one stays.
     api
       .chats(project)
-      .then((list) => setActive(remembered && list.some((c) => c.id === remembered) ? remembered : (list[0]?.id ?? null)))
-      .catch(() => setActive(null));
+      .then((list) => setActive((cur) => cur ?? (remembered && list.some((c) => c.id === remembered) ? remembered : (list[0]?.id ?? null))))
+      .catch(() => undefined);
   }, [project]);
 
   useEffect(() => {

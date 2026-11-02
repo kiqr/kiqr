@@ -715,6 +715,9 @@ struct Generate {
     kind: String,
     #[serde(default = "three")]
     count: usize,
+    /// Only for one network (its kind): the first posts for an account just connected.
+    #[serde(default)]
+    network: String,
 }
 fn three() -> usize {
     3
@@ -724,26 +727,54 @@ fn three() -> usize {
 /// new assets arrive as `asset_saved` events; `job_finished` (`posts`) ends it.
 /// Only posts for now.
 async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(g): Json<Generate>) -> ApiResult<serde_json::Value> {
-    let project = Project::load(&app.store, &slug)?;
     if g.kind != "post" {
         return Err(ApiError(StatusCode::BAD_REQUEST, format!("Seemo can't write {} assets yet; only posts", g.kind)));
     }
-    let (machine_on, project_on) = crate::market::on_for(&app, &slug, "social-posts").await;
+    draft_posts(&app, &slug, g.count, g.network.trim()).await
+}
+
+/// Posts for an account that was just connected: three for its network, once, when the
+/// business profile is there and none were written for it yet. Nothing on the first run
+/// before any account: posts are written for the places the business publishes, not for
+/// nowhere. Failures are logged, never shown here; the Library and Seemo's own line tell.
+pub(crate) async fn posts_for_new_account(app: &App, slug: &str, kind: &str) {
+    if kind.is_empty() || !crate::networks::for_posts(app, slug).await.iter().any(|k| k.kind == kind) {
+        return;
+    }
+    let had = assets::list(&app.store, slug).map(|all| all.iter().any(|a| a.kind == "post" && a.tags.iter().any(|t| t == kind))).unwrap_or(true);
+    if had {
+        return;
+    }
+    if let Err(e) = draft_posts(app, slug, 3, kind).await {
+        tracing::info!(slug, kind, "no first posts for the new account: {}", e.1);
+    }
+}
+
+/// Have Seemo write posts from the business profile, in the background, for every network the
+/// project has an account on, or for one (`network`). The new assets arrive as `asset_saved`
+/// events; `job_finished` (`posts`) ends it.
+async fn draft_posts(app: &App, slug: &str, count: usize, network: &str) -> ApiResult<serde_json::Value> {
+    let project = Project::load(&app.store, slug)?;
+    let network = network.to_string();
+    let (machine_on, project_on) = crate::market::on_for(app, slug, "social-posts").await;
     if !machine_on || !project_on {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("writing social media posts is switched off {} under Setup → Abilities", if machine_on { "for this project" } else { "on this machine" })));
     }
-    crate::build::require_ready(&app, &slug, "posts can be written").await?;
-    if Brief::load(&app.store, &slug)?.is_none() {
+    crate::build::require_ready(app, slug, "posts can be written").await?;
+    if Brief::load(&app.store, slug)?.is_none() {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, "there is no business profile yet; crawl the site first".into()));
     }
     let cfg = app.config.read().await.clone();
     if !provider::available(&cfg.models.chat).await {
         return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("model `{}` is not available", cfg.models.chat)));
     }
-    let count = g.count.clamp(1, 10);
+    let count = count.clamp(1, 10);
     let app2 = app.clone();
-    spawn_job(app, project, "posts", move |ex, project| async move {
-        let networks = crate::networks::for_posts(&app2, &project.slug).await;
+    spawn_job(app.clone(), project, "posts", move |ex, project| async move {
+        let mut networks = crate::networks::for_posts(&app2, &project.slug).await;
+        if !network.is_empty() {
+            networks.retain(|k| k.kind == network);
+        }
         let made = ex.social_posts(&project, count, networks).await?;
         crate::images::cards_for_posts(&app2, &project.slug, &made).await;
         Ok(())

@@ -1,15 +1,15 @@
 // The first win: Seemo drafts the marketing plan (approved in its card, in the
-// corner) and writes three posts in the business's own brand, right here.
+// corner). Posts come once an account is connected, written for that place:
+// the screen points at the connect grid.
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowRight, Check, Loader2, MessageSquare, Target } from "lucide-react";
-import { api, useEvents, type Asset, type Brand, type Plan } from "../api";
+import { motion, useReducedMotion } from "motion/react";
+import { ArrowRight, Cable, Check, Loader2, MessageSquare, Target } from "lucide-react";
+import { api, useEvents, type Brand, type Plan } from "../api";
+import { connectPath } from "../pages/Accounts";
 import { ASK_FOR_PLAN } from "../pages/Plan";
-import { PostCard } from "../pages/PostCard";
 import { openSeemo } from "../SeemoWidget";
 
-const POSTS = 3;
 const started = new Set<string>();
 
 export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }) {
@@ -18,12 +18,9 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
   const [chat, setChat] = useState<string | null>(null);
   const [planState, setPlanState] = useState<"asking" | "card" | "saved" | "failed">("asking");
   const [plan, setPlan] = useState<Plan | null>(null);
-  const [posts, setPosts] = useState<Asset[]>([]);
-  const [postError, setPostError] = useState<string | null>(null);
-  const [postsDone, setPostsDone] = useState(false);
   const [leaving, setLeaving] = useState(false);
 
-  // Both start once, even if this screen is shown again.
+  // Starts once, even if this screen is shown again.
   useEffect(() => {
     if (started.has(slug)) return;
     started.add(slug);
@@ -35,19 +32,13 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
         await api.sendMessage(slug, c.id, `${ASK_FOR_PLAN} This is our first plan together: keep it to what fits the time I have.`);
       })
       .catch(() => setPlanState("failed"));
-    api.generateAssets(slug, "post", POSTS).catch((e: Error) => setPostError(e.message));
   }, [slug]);
 
-  // The newest posts (a new project has no others), and the plan once it is approved.
-  const loadPosts = () =>
-    api.assets(slug, "post").then((all) => setPosts([...all].sort((a, b) => b.created.at.localeCompare(a.created.at)).slice(0, POSTS)), () => {});
+  // The plan once it is approved.
   useEffect(() => {
-    void loadPosts();
     api.plan(slug).then((v) => v.plan && (setPlan(v.plan), setPlanState("saved")), () => {});
   }, [slug]);
   useEvents(slug, (e) => {
-    if (e.type === "asset_saved" && e.asset_type === "post") void loadPosts();
-    if (e.type === "job_finished" && e.job === "posts") setPostsDone(true);
     if (e.type === "approval_requested" && e.kind === "plan") setPlanState((s) => (s === "saved" ? s : "card"));
     if (e.type === "plan_saved") api.plan(slug).then((v) => (setPlan(v.plan), setPlanState("saved")), () => {});
     if (e.type === "chat_turn_finished" && e.chat === chat && e.error) setPlanState((s) => (s === "saved" ? s : "failed"));
@@ -66,7 +57,7 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
         <h1 className="d1">
           Let's get <em>to work.</em>
         </h1>
-        <p className="lead">I'm drafting your plan and writing your first posts, in your brand. You approve what goes out.</p>
+        <p className="lead">I'm drafting your plan, in your brand. Connect where you publish and I write your first posts for each place. You approve what goes out.</p>
       </div>
 
       <section className="wl-plan pcard">
@@ -120,33 +111,19 @@ export function FirstWeek({ slug, brand }: { slug: string; brand: Brand | null }
         )}
       </section>
 
-      <section className="wl-posts">
+      <section className="wl-posts pcard">
         <header>
-          <h3>Your first posts</h3>
-          <span className="dim sm mono">
-            {posts.length}/{POSTS}
+          <span className="ic">
+            <Cable size={16} />
           </span>
+          <h3>Where you publish</h3>
         </header>
-        {postError ? (
-          <p className="muted">{postError}</p>
-        ) : (
-          <div className="wl-post-grid">
-            <AnimatePresence>
-              {posts.map((a) => (
-                <motion.div key={a.id} layout initial={reduced ? false : { opacity: 0, y: 16, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.35 }}>
-                  <PostCard slug={slug} a={a} brand={brand} accent={brand?.colors[0]} />
-                </motion.div>
-              ))}
-            </AnimatePresence>
-            {!postsDone &&
-              Array.from({ length: Math.max(0, POSTS - posts.length) }).map((_, i) => (
-                <div key={`ph${i}`} className="wl-post-ph shimmer">
-                  <Loader2 size={14} className="spin" /> Writing…
-                </div>
-              ))}
-          </div>
-        )}
-        {posts.length > 0 && <p className="dim sm">They wait as drafts in your Library until you approve them for where they go.</p>}
+        <p className="muted">Connect X, Reddit, your blog or your mail account, and I write the first posts for each of them, the way that place reads. Until then I write nothing for nowhere.</p>
+        <div className="row">
+          <button className="btn g sm" onClick={() => navigate(connectPath(slug, { group: "social" }))}>
+            <Cable size={13} /> Connect an account
+          </button>
+        </div>
       </section>
 
       <div className="wl-cta">
