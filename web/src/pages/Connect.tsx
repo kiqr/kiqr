@@ -239,12 +239,13 @@ type Stage = "again" | "signin" | "session" | "measures" | "allow" | "done";
  * another, sign in, the program's sign-in when it has one, what its
  * abilities read through it, what Seemo may do, and what joined the Audience.
  */
-function Flow({ slug, service, existing, withService, backLabel, onBack, onPrograms, onFinish }: { slug: string; service: Service; existing: Account[]; withService?: boolean; backLabel?: string; onBack: () => void; onPrograms?: () => void; onFinish: (id: string) => void }) {
+function Flow({ slug, service, existing, withService, backLabel, onBack, onPrograms, onFinish, onAccount }: { slug: string; service: Service; existing: Account[]; withService?: boolean; backLabel?: string; onBack: () => void; onPrograms?: () => void; onFinish: (id: string) => void; /** The account being set up, once it exists (a site behind a login has one before it signs in). */ onAccount?: (id: string | null) => void }) {
   const measured = measuring(service);
   const [stage, setStage] = useState<Stage>(existing.length ? "again" : "signin");
   const [again, setAgain] = useState<Account | null>(null);
   const [id, setId] = useState<string | null>(null);
   const [startUrl, setStartUrl] = useState<string | undefined>(undefined);
+  useEffect(() => onAccount?.(id), [id]);
   const names = [...(withService ? ["Service"] : []), "Sign in", ...(measured.length ? ["Measures"] : []), "What Seemo may do", "Done"];
   const cur = stage === "measures" ? "Measures" : stage === "allow" ? "What Seemo may do" : stage === "done" ? "Done" : "Sign in";
   const signedIn = (acc: string, url?: string) => (setId(acc), setStartUrl(url), setStage("session"));
@@ -537,7 +538,7 @@ function SignIn({ slug, service, again, backLabel = "Another service", onBack, o
  * the welcome flow opens before the app is): sign in, what it reads through
  * the account, what Seemo may do, Done. One not installed yet is installed first.
  */
-export function ConnectService({ slug, ability, onInstalled, onDone, onCancel }: { slug: string; ability: Ability; onInstalled: () => void; onDone: (id: string) => void; onCancel: () => void }) {
+export function ConnectService({ slug, ability, onInstalled, onDone, onCancel, onAccount }: { slug: string; ability: Ability; onInstalled: () => void; onDone: (id: string) => void; onCancel: () => void; onAccount?: (id: string | null) => void }) {
   const svc = serviceOf(ability);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -556,7 +557,7 @@ export function ConnectService({ slug, ability, onInstalled, onDone, onCancel }:
         </div>
       </div>
     );
-  return <Flow slug={slug} service={{ id: svc.id, name: svc.name, icon: svc.icon, group: svc.group, avatar: ability.avatar ?? null, installed: [ability], market: [] }} existing={[]} backLabel="Cancel" onBack={onCancel} onPrograms={onInstalled} onFinish={onDone} />;
+  return <Flow slug={slug} service={{ id: svc.id, name: svc.name, icon: svc.icon, group: svc.group, avatar: ability.avatar ?? null, installed: [ability], market: [] }} existing={[]} backLabel="Cancel" onBack={onCancel} onPrograms={onInstalled} onFinish={onDone} onAccount={onAccount} />;
 }
 
 /** One account, loaded and kept fresh while a step shows it. */

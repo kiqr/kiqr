@@ -1117,6 +1117,9 @@ export function AccountCard({ slug, a, several, highlight, onChange }: { slug: s
 export function ServiceAccounts({ slug, ability, onChange }: { slug: string; ability: Ability; onChange: () => void }) {
   const svc = serviceOf(ability);
   const [adding, setAdding] = useState(false);
+  // The account the wizard below is setting up: one card, not two, until it is done.
+  const [setting, setSetting] = useState<string | null>(null);
+  const [before, setBefore] = useState<string[]>([]);
   const [list, setList] = useState<Account[] | null>(null);
   const load = () =>
     api
@@ -1127,18 +1130,33 @@ export function ServiceAccounts({ slug, ability, onChange }: { slug: string; abi
     void load();
   }, [slug, svc.id]);
   useEvents(slug, (e) => ACCOUNT_EVENTS.includes(e.type) && void load(), { demo: false });
+  const shown = list?.filter((a) => !(adding && a.id === setting));
+  // Cancelled half way: an account this wizard made (a site behind a login has one before it signs in) goes again.
+  const cancel = () => {
+    const made = setting && !before.includes(setting) ? setting : null;
+    setAdding(false);
+    setSetting(null);
+    if (made) void api.deleteAccount(slug, made).then(load, load);
+  };
   return (
     <div className="ab-con">
       <p className="muted sm">
         {ability.name} works through your {svc.name} account. Every ability of {svc.name} shares it: sign in once, and choose there what Seemo may do.
       </p>
       {list === null && <Loader2 size={14} className="spin" />}
-      {list?.map((a) => <AccountCard key={a.id} slug={slug} a={a} several={list.length > 1} onChange={load} />)}
-      {list && list.length === 0 && !adding && <p className="muted sm">No {svc.name} account in this project yet.</p>}
+      {shown?.map((a) => <AccountCard key={a.id} slug={slug} a={a} several={shown.length > 1} onChange={load} />)}
+      {shown && shown.length === 0 && !adding && <p className="muted sm">No {svc.name} account in this project yet.</p>}
       {adding ? (
-        <ConnectService slug={slug} ability={ability} onInstalled={onChange} onCancel={() => setAdding(false)} onDone={() => (setAdding(false), void load(), onChange())} />
+        <ConnectService
+          slug={slug}
+          ability={ability}
+          onInstalled={onChange}
+          onAccount={setSetting}
+          onCancel={cancel}
+          onDone={() => (setAdding(false), setSetting(null), void load(), onChange())}
+        />
       ) : (
-        <button className={`btn ${list && list.length ? "g" : "p"} sm acc-add`} onClick={() => setAdding(true)}>
+        <button className={`btn ${list && list.length ? "g" : "p"} sm acc-add`} onClick={() => (setBefore((list ?? []).map((a) => a.id)), setAdding(true))}>
           <Plus size={13} /> Connect {list && list.length ? "another" : "your"} {svc.name} account
         </button>
       )}
