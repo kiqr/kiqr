@@ -679,12 +679,20 @@ function Permissions({ slug, id, onDone }: { slug: string; id: string; onDone: (
   );
 }
 
-/** Done: the account, how it stands, and what joined the Audience through it. */
+/**
+ * Done: the account, how it stands, and what joined the Audience through it.
+ * Only an account that reaches people (it publishes, or something joined)
+ * speaks of the Audience; one that measures (Google) does not. While the
+ * project's first build runs, the app is closed, so there is no link into it.
+ */
 function Done({ slug, id, onFinish }: { slug: string; id: string; onFinish: () => void }) {
   const [a] = useAccount(slug, id, AUDIENCE_EVENTS);
+  const build = useAsync(() => api.build(slug), [slug]);
   if (!a) return <Loader2 size={16} className="spin" />;
   const joined = a.audience ?? [];
   const name = accountIdentity(a);
+  const reaches = joined.length > 0 || !!a.can_publish;
+  const open = reaches && build.data?.stage === "ready";
   return (
     <motion.div className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       <div className="cw-head">
@@ -698,7 +706,7 @@ function Done({ slug, id, onFinish }: { slug: string; id: string; onFinish: () =
           </p>
         </div>
       </div>
-      {joined.length ? (
+      {joined.length > 0 && (
         <div className="cw-joined">
           <p className="sm">
             <Users size={13} /> Joined your Audience:
@@ -709,14 +717,15 @@ function Done({ slug, id, onFinish }: { slug: string; id: string; onFinish: () =
             ))}
           </ul>
         </div>
-      ) : (
-        <p className="muted sm">Nothing joined your Audience through it yet. Add the pages, communities and lists it reaches there, or Seemo suggests them as it finds them.</p>
       )}
+      {joined.length === 0 && reaches && <p className="muted sm">Nothing joined your Audience through it yet. Add the pages, communities and lists it reaches there, or Seemo suggests them as it finds them.</p>}
       <div className="acts">
-        <Link className="btn p" to={`/p/${slug}/audience`}>
-          <Users size={14} /> Open your Audience
-        </Link>
-        <button className="btn g" onClick={onFinish}>
+        {open && (
+          <Link className="btn g" to={`/p/${slug}/audience`}>
+            <Users size={14} /> Open your Audience
+          </Link>
+        )}
+        <button className="btn p" onClick={onFinish}>
           <Check size={14} /> Done
         </button>
       </div>
