@@ -154,7 +154,12 @@ pub async fn view(app: &App, slug: &str, e: &Entry) -> Value {
         Some(c) => {
             let st = crate::accounts::state(app, slug, c).await;
             let service = crate::accounts::manifest_for(app, slug, c).await.map(|m| m.service_card().name).unwrap_or_else(|| c.service.clone());
-            v["via"] = json!({ "account": c.id, "label": c.label, "service": c.service, "service_name": service, "state": st.word(), "ready": st.ready(), "allow": { "publish": c.allow("publish"), "reply": c.allow("reply") } });
+            let name = crate::accounts::name_of(app, slug, c).await;
+            // The account itself is the spot (an X profile, a repository) and the entry kept the name it was made with: who it is now.
+            if e.fields.is_empty() && e.label == c.label {
+                v["label"] = json!(name);
+            }
+            v["via"] = json!({ "account": c.id, "label": name, "service": c.service, "service_name": service, "state": st.word(), "ready": st.ready(), "allow": { "publish": c.allow("publish"), "reply": c.allow("reply") } });
         }
         None => {
             v["via"] = Value::Null;

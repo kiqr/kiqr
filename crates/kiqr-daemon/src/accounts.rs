@@ -172,7 +172,7 @@ pub async fn view(app: &App, slug: &str, c: &Account) -> Value {
             let card = m.service_card();
             // The label was the user's, not the one the daemon gave it after the service.
             let s = &card.name;
-            v["label_set"] = json!(c.label != *s && !(c.label.starts_with(s.as_str()) && c.label[s.len()..].trim().chars().all(|ch| ch.is_ascii_digit())));
+            v["label_set"] = json!(own_label(&c.label, s));
             v["service_card"] = json!(card);
             v["avatar"] = json!(app.registry.read().await.entry(Some(slug), &m.id).and_then(|e| crate::market::folder_avatar(e, &m.avatar)));
             // The keys of every ability of the service, once each: which are set, which a sign-in writes.
@@ -199,6 +199,24 @@ pub async fn view(app: &App, slug: &str, c: &Account) -> Value {
         }
     }
     v
+}
+
+/// Whether the label is one somebody gave the account, not the service's name the daemon fell back on ("X", "X 2").
+pub fn own_label(label: &str, service: &str) -> bool {
+    label != service && !(label.starts_with(service) && label[service.len()..].trim().chars().all(|ch| ch.is_ascii_digit()))
+}
+
+/// The account's name where it is shown beside what it reaches (the Audience): the name the user gave it, else
+/// who it is (a repository, a site, an address), else the user name it signs in with, else its label.
+pub async fn name_of(app: &App, slug: &str, c: &Account) -> String {
+    let service = manifest_for(app, slug, c).await.map(|m| m.service_card().name).unwrap_or_else(|| c.service.clone());
+    if own_label(&c.label, &service) {
+        return c.label.clone();
+    }
+    let keys = c.keys(app.store.home(), slug);
+    identity(&manifests_of(app, slug, &c.service).await, &keys)
+        .or_else(|| keys.get(Secrets::USERNAME).map(|u| u.trim().to_string()).filter(|u| !u.is_empty()))
+        .unwrap_or_else(|| c.label.clone())
 }
 
 /// Who an account is, for its name and card: the first key that is an

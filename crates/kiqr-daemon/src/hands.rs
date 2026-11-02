@@ -303,10 +303,10 @@ async fn end_route(State(app): State<App>, Path((slug, hands)): Path<(String, St
     drop(h);
     end(&app, &hands, if b.signed_in { "signed in by hand" } else { "done" }).await;
     if b.signed_in {
-        // The turn is free again: the runner checks and keeps the result.
+        // The turn is free again: the runner checks and keeps the result, and never signs in over the person's sign-in.
         let (app2, slug2, id2) = (app.clone(), slug.clone(), connection.clone());
         tokio::spawn(async move {
-            if let Err(e) = crate::session::signin(&app2, &slug2, &id2).await {
+            if let Err(e) = crate::session::signed_in_by_hand(&app2, &slug2, &id2).await {
                 tracing::warn!(account = %id2, "check after hands: {e:#}");
             }
         });

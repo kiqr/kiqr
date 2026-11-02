@@ -131,9 +131,42 @@ async fn set_state(app: &App, slug: &str, c: &Account, state: &str, message: imp
     st
 }
 
-/// Run the manifest's `check` steps: signed in when the last answer holds `signed_in_when`.
-/// With no marker the model reads the page, and its words come back as the third value.
-async fn run_check(app: &App, slug: &str, c: &Account, m: &Manifest) -> Result<(bool, String, Option<String>)> {
+/// What a check saw.
+struct Check {
+    signed_in: bool,
+    /// The page stayed empty (no title, no controls, no text) or the model could not tell, on every load: a
+    /// single-page app that had not drawn yet, or a tab the browser lost (X's home). Says nothing either way.
+    unread: bool,
+    text: String,
+    /// The model's words about the page, when it read it.
+    said: Option<String>,
+}
+
+/// Loads of the check page before it counts as unreadable, and the pause before each new load.
+const CHECK_LOADS: usize = 4;
+const CHECK_PAUSE: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Run the manifest's `check` steps: signed in when the last answer holds `signed_in_when`, signed out when it
+/// holds one of `signed_out_when`; with no marker the model reads the page. A page with nothing on it, or one
+/// the model cannot place, is loaded again a few seconds later (the steps start with a fresh load) rather than
+/// read as signed out: that would start a sign-in on an account that is signed in.
+async fn run_check(app: &App, slug: &str, c: &Account, m: &Manifest) -> Result<Check> {
+    let mut last_seen = None;
+    for load in 1..=CHECK_LOADS {
+        if load > 1 {
+            tokio::time::sleep(CHECK_PAUSE).await;
+        }
+        let seen = check_once(app, slug, c, m).await?;
+        if !seen.unread {
+            return Ok(seen);
+        }
+        tracing::info!(account = %c.id, load, said = ?seen.said, "the check page had nothing to read yet");
+        last_seen = Some(seen);
+    }
+    Ok(last_seen.expect("CHECK_LOADS > 0"))
+}
+
+async fn check_once(app: &App, slug: &str, c: &Account, m: &Manifest) -> Result<Check> {
     let sess = m.session.as_ref().ok_or_else(|| anyhow!("{} has no session", m.name))?;
     let program = crate::ext::program_of(app, Some(slug), m).await?;
     let env = kiqr_core::accounts::env_for(app.store.home(), slug, Some(c), m, Default::default());
@@ -146,21 +179,32 @@ async fn run_check(app: &App, slug: &str, c: &Account, m: &Manifest) -> Result<(
         _ => flat_text(&last),
     };
     tracing::debug!(account = %c.id, steps = sess.check.len(), text = %kiqr_core::profile::truncate_chars(&text, 400), "session check read");
+    if blank(&last, &text) {
+        return Ok(Check { signed_in: false, unread: true, text, said: None });
+    }
     let needle = sess.signed_in_when.trim();
     let lower = text.to_lowercase();
     let markers = sess.signed_out_when.iter().filter(|t| !t.trim().is_empty()).count();
-    let mut said = None;
-    let signed_in = if !needle.is_empty() {
-        text.contains(needle)
-    } else if markers > 0 {
-        !sess.signed_out_when.iter().any(|t| !t.trim().is_empty() && lower.contains(&t.trim().to_lowercase()))
-    } else {
-        // No marker to look for: the model reads the page.
-        let read = guided::read_page(app, &guided::page_of(&last, &text), &[]).await?;
-        said = Some(read.reason.trim().to_string()).filter(|r| !r.is_empty());
-        read.state == guided::State::SignedIn
-    };
-    Ok((signed_in, text, said))
+    if !needle.is_empty() {
+        return Ok(Check { signed_in: text.contains(needle), unread: false, text, said: None });
+    }
+    if markers > 0 {
+        let signed_in = !sess.signed_out_when.iter().any(|t| !t.trim().is_empty() && lower.contains(&t.trim().to_lowercase()));
+        return Ok(Check { signed_in, unread: false, text, said: None });
+    }
+    // No marker to look for: the model reads the page.
+    let read = guided::read_page(app, &guided::page_of(&last, &text), &[]).await?;
+    let said = Some(read.reason.trim().to_string()).filter(|r| !r.is_empty());
+    // A blocked page is read (a person is needed); "unknown" is a page the model could not place: load it again.
+    Ok(Check { signed_in: read.state == guided::State::SignedIn, unread: read.state == guided::State::Unknown && blocked(sess, &text).is_none(), text, said })
+}
+
+/// A page with nothing to read: a snapshot with no title and no controls, or no text at all.
+fn blank(last: &Value, text: &str) -> bool {
+    match guided::snapshot_of(last) {
+        Some(snap) => snap["title"].as_str().unwrap_or("").trim().is_empty() && snap["interactive_elements"].as_array().is_none_or(|a| a.is_empty()),
+        None => text.trim().is_empty(),
+    }
 }
 
 /// Every string in a JSON answer, joined; other values as JSON.
@@ -185,15 +229,21 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     let m = session_manifest(app, slug, &c).await.ok_or_else(|| anyhow!("{} has nothing that signs in", c.label))?;
     let sess = m.session.clone().expect("session_manifest");
     let _turn = crate::ext::account_turn(slug, &c.id).await;
+    let was = c.session(app.store.home(), slug).state;
     set_state(app, slug, &c, SessionStatus::CHECKING, "").await;
-    let (ok, text, _) = match run_check(app, slug, &c, &m).await {
+    let seen = match run_check(app, slug, &c, &m).await {
         Ok(x) => x,
         Err(e) => return Ok(set_state(app, slug, &c, SessionStatus::NEEDS_HAND, format!("could not check the sign-in: {e:#}")).await),
     };
-    if ok {
+    if seen.signed_in {
         return Ok(set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await);
     }
-    if let Some(b) = blocked(&sess, &text) {
+    if seen.unread {
+        // Signing in now could undo a sign-in that holds; an account that was signed in stays so until a check can read the page.
+        let state = if was == SessionStatus::SIGNED_IN { SessionStatus::SIGNED_IN } else { SessionStatus::NEEDS_HAND };
+        return Ok(set_state(app, slug, &c, state, unread_message(&seen)).await);
+    }
+    if let Some(b) = blocked(&sess, &seen.text) {
         return Ok(set_state(app, slug, &c, SessionStatus::NEEDS_HAND, format!("the site asks for a person: {b}")).await);
     }
     if !sess.signs_in() {
@@ -211,10 +261,11 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     drop(cred);
     let outcome = match result {
         Ok(Some(b)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &format!("the site asks for a person: {b}"))).await,
-        Ok(None) => match check_again_if_unread(app, slug, &c, &m, &sess, run_check(app, slug, &c, &m).await).await {
-            Ok((true, _, _)) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
+        Ok(None) => match run_check(app, slug, &c, &m).await {
+            Ok(Check { signed_in: true, .. }) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
+            Ok(seen) if seen.unread => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, unread_message(&seen)).await,
             // What the check saw, in the model's words when it read the page, so the message says why.
-            Ok((false, t, said)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &blocked(&sess, &t).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| match said {
+            Ok(Check { text: t, said, .. }) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &blocked(&sess, &t).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| match said {
                 Some(r) => format!("the sign-in seemed to go through, but the check afterwards found: {r} Finish it in the live view."),
                 None if sess.login_url.trim().is_empty() => "the sign-in did not go through; finish it in the live view".into(),
                 None => "the sign-in seemed to go through, but the check afterwards did not find you signed in; finish it in the live view".into(),
@@ -227,22 +278,29 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     Ok(outcome)
 }
 
-/// A check after signing in that found nothing to read (a page that is
-/// still loading, or one whose tab the browser lost: X's home has crashed the
-/// browser's page process right after a sign-in) is run once more, a few
-/// seconds later, on a fresh load of the same page. The login is kept by then.
-async fn check_again_if_unread(app: &App, slug: &str, c: &Account, m: &Manifest, sess: &kiqr_core::extensions::Session, first: Result<(bool, String, Option<String>)>) -> Result<(bool, String, Option<String>)> {
-    match first {
-        Ok((false, t, said)) if blocked(sess, &t).is_none() => {
-            tracing::info!(account = %c.id, said = ?said, "the check after signing in found nothing it could read; checking once more");
-            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-            match run_check(app, slug, c, m).await {
-                Ok(again) => Ok(again),
-                Err(_) => Ok((false, t, said)),
-            }
-        }
-        other => other,
-    }
+fn unread_message(seen: &Check) -> String {
+    let why = seen.said.as_deref().map(|r| format!(" ({})", r.trim_end_matches('.'))).unwrap_or_default();
+    format!("the check could not read the page after {CHECK_LOADS} loads{why}; look in the live view")
+}
+
+/// The person finished the sign-in in the live view and says so: check, and
+/// never type the login (it could undo what they just did). A page the check
+/// cannot read takes their word for it; one that shows signed out does not.
+pub async fn signed_in_by_hand(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
+    let c = Account::load(&app.store, slug, id)?;
+    let m = session_manifest(app, slug, &c).await.ok_or_else(|| anyhow!("{} has nothing that signs in", c.label))?;
+    let sess = m.session.clone().expect("session_manifest");
+    let _turn = crate::ext::account_turn(slug, &c.id).await;
+    set_state(app, slug, &c, SessionStatus::CHECKING, "checking the sign-in").await;
+    Ok(match run_check(app, slug, &c, &m).await {
+        Ok(Check { signed_in: true, .. }) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
+        Ok(Check { unread: true, .. }) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "signed in by hand; the check could not read the page to confirm it").await,
+        Ok(Check { text, said, .. }) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, blocked(&sess, &text).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| match said {
+            Some(r) => format!("the check after your sign-in found: {r} Finish it in the live view."),
+            None => "the check after your sign-in did not find you signed in; finish it in the live view".into(),
+        })).await,
+        Err(e) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, format!("signed in by hand; the check could not run: {e:#}")).await,
+    })
 }
 
 /// The `login` steps with the credentials in their context, one at a time so
@@ -666,4 +724,22 @@ async fn signin_route(State(app): State<App>, Path((slug, id)): Path<(String, St
 async fn signout_route(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
     let st = signout(&app, &slug, &id).await.map_err(|e| bad(e.to_string()))?;
     Ok(Json(json!({ "session": st })))
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_page_is_unread_not_signed_out() {
+        // X's home before it has drawn, or after the tab crashed: no title, no controls.
+        let empty = json!({ "result": "{\"title\": \"\", \"url\": \"https://x.com/home\", \"interactive_elements\": []}" });
+        assert!(blank(&empty, &flat_text(&empty)));
+        let drawn = json!({ "title": "Home / X", "url": "https://x.com/home", "interactive_elements": [{ "tag": "a", "selector": "a[href='/compose/post']" }] });
+        assert!(!blank(&drawn, &flat_text(&drawn)));
+        let sign_in = json!({ "title": "", "url": "https://x.com/i/flow/login", "interactive_elements": [{ "tag": "input", "selector": "input[name='text']" }] });
+        assert!(!blank(&sign_in, &flat_text(&sign_in)));
+        assert!(blank(&Value::Null, "  "));
+        assert!(!blank(&Value::Null, "Welcome back"));
+    }
 }
