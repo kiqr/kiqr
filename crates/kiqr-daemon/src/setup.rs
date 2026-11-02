@@ -41,6 +41,10 @@ fn site_html(app: &App, slug: &str) -> Vec<String> {
 /// the site has to run on (its CMS, say), so without it nothing else counts.
 pub fn reasons(fits: &kiqr_core::extensions::Fits, channels: &[(String, String)], intake: &Intake, html: &[String]) -> Vec<Value> {
     let mut out = vec![];
+    // Good for any website: said as that, never as something seen on this one.
+    if fits.every_site {
+        out.push(json!({ "kind": "every_site" }));
+    }
     let seen = fits.html.iter().map(|h| h.to_lowercase()).filter(|h| !h.is_empty()).any(|h| html.iter().any(|page| page.contains(&h)));
     if seen {
         out.push(json!({ "kind": "site" }));
@@ -111,7 +115,8 @@ pub async fn suggestions(app: &App, slug: &str) -> anyhow::Result<Value> {
     let rank = |v: &Value| match v["why"][0]["kind"].as_str() {
         Some("site") => 0,
         Some("network") => 1,
-        _ => 2,
+        Some("every_site") => 2,
+        _ => 3,
     };
     out.sort_by_key(rank);
 
@@ -128,7 +133,7 @@ mod tests {
 
     #[test]
     fn fits_from_answers_and_the_site() {
-        let fits = Fits { goals: vec!["customers".into()], html: vec!["Analytics.Example/JS".into()] };
+        let fits = Fits { goals: vec!["customers".into()], html: vec!["Analytics.Example/JS".into()], every_site: false };
         let intake = Intake { goal: "customers".into(), networks: vec!["Blog".into()], ..Default::default() };
         let channels = vec![("blog".to_string(), "Blog".to_string())];
         let html = vec!["<script src=\"https://analytics.example/js/x.js\">".to_string()];
@@ -138,9 +143,12 @@ mod tests {
 
         let other = Intake { goal: "repeat".into(), ..Default::default() };
         assert!(reasons(&fits, &[], &other, &[]).is_empty(), "nothing said, nothing seen");
+        let any = Fits { goals: vec!["customers".into()], every_site: true, ..Default::default() };
+        let kinds: Vec<String> = reasons(&any, &[], &intake, &[]).iter().filter_map(|w| w["kind"].as_str().map(str::to_string)).collect();
+        assert_eq!(kinds, ["every_site", "goal"], "for every website, never \"seen\"");
         assert!(reasons(&fits, &channels, &intake, &["<p>a plain site</p>".to_string()]).is_empty(), "named the goal and the network, but the site doesn't run on it");
 
-        let any_site = Fits { goals: vec!["customers".into()], html: vec![] };
+        let any_site = Fits { goals: vec!["customers".into()], html: vec![], every_site: false };
         assert_eq!(reasons(&any_site, &[], &intake, &[]).len(), 1, "no HTML to look for: the goal alone is enough");
     }
 }

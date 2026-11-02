@@ -38,7 +38,7 @@ export type Build = {
 };
 
 /** Why Seemo suggests an ability: it saw the service on the site, the owner named a network it publishes to, or it serves their goal. */
-export type SetupWhy = { kind: "site" } | { kind: "network"; name: string } | { kind: "goal"; goal: string };
+export type SetupWhy = { kind: "site" } | { kind: "every_site" } | { kind: "network"; name: string } | { kind: "goal"; goal: string };
 /** An ability worth setting up for this project, from the welcome answers and the crawl. */
 export type SetupSuggestion = { id: string; name: string; summary: string; icon: string; avatar: string | null; why: SetupWhy[]; installed: boolean; on: boolean; ready: boolean };
 /** The suggestions, and the networks the owner named that no ability publishes to yet. */
@@ -827,7 +827,7 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
     const s: Setup = {
       suggestions: [
         { id: "google-analytics", name: "Read Google Analytics", summary: "Sessions, users, page views and key events, once a day into Performance.", icon: "chart", avatar: avatar("google-analytics"), why: [{ kind: "site" }], installed: true, on: true, ready: true },
-        { id: "search-console", name: "Read Google Search Console", summary: "Clicks, impressions and the queries people find you with, once a day into Performance.", icon: "search", avatar: avatar("search-console"), why: [{ kind: "site" }, ...(demoIntake.goal === "customers" ? [{ kind: "goal" as const, goal: "customers" }] : [])], installed: false, on: false, ready: false },
+        { id: "search-console", name: "Read Google Search Console", summary: "Clicks, impressions and the queries people find you with, once a day into Performance.", icon: "search", avatar: avatar("search-console"), why: [{ kind: "every_site" }, ...(demoIntake.goal === "customers" ? [{ kind: "goal" as const, goal: "customers" }] : [])], installed: false, on: false, ready: false },
         ...(demoIntake.goal === "repeat" || demoIntake.goal === "launch" ? [{ id: "kiqr-smtp", name: "Send email from your mail account", summary: "Email over SMTP from your own address. Every send asks you first.", icon: "mail", avatar: avatar("email-smtp"), why: [{ kind: "goal" as const, goal: demoIntake.goal }], installed: false, on: false, ready: false }] : []),
       ],
       waiting: demoIntake.networks.filter((n) => !["linkedin", "x", "reddit"].includes(n)),

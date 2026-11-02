@@ -296,7 +296,9 @@ const GOAL_FOR: Record<string, string> = {
 };
 
 function why(w: SetupWhy, host: string) {
-  return w.kind === "site" ? `I saw it on ${host}` : w.kind === "network" ? `You're on ${w.name}` : (GOAL_FOR[w.goal] ?? "For your goal");
+  if (w.kind === "site") return `I saw it on ${host}`;
+  if (w.kind === "every_site") return "Suggested for all websites";
+  return w.kind === "network" ? `You're on ${w.name}` : (GOAL_FOR[w.goal] ?? "For your goal");
 }
 
 const listed = (xs: string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);

@@ -434,11 +434,14 @@ pub struct ImageSize {
 pub struct Fits {
     pub goals: Vec<String>,
     pub html: Vec<String>,
+    /// Worth having for any website (a search console): suggested to every project, saying so.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub every_site: bool,
 }
 
 impl Fits {
     pub fn is_empty(&self) -> bool {
-        self.goals.is_empty() && self.html.is_empty()
+        self.goals.is_empty() && self.html.is_empty() && !self.every_site
     }
 }
 
