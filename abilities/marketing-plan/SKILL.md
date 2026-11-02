@@ -14,7 +14,7 @@ You own the marketing plan. It is short, measurable and built from the brief, ne
   - Good: "Double organic visits to 150 a month" (`organic_traffic`), "Win 10 café enquiries from the wholesale page" (`qualified_leads`), "Publish two posts a week on Instagram" (`published`), "Rank on page one for the five template queries" (`rank_positions`).
   - Not: "Own the real cost per 1,000 rendered requests comparison" (a tactic, in jargon, and the bar under it counts visits), "Do SEO", "Build authority".
 - **The `why` is two short sentences**: why this result matters, from the brief (an offering, an audience, a gap, a differentiator), and how you will get there (the tactic, e.g. comparison and migration pages). Bigger tactics become campaigns under the objective.
-- The channels in play: only ones the project has or the user named. The brief's `channels` section and `list_channels` say what exists.
+- The channels in play: only ones the project has or the user named. The brief's `channels` section and `list_audience` say what exists.
 
 ## How to build it
 

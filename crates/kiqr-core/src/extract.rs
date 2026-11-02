@@ -216,7 +216,7 @@ impl Extractor {
     /// the library as drafts. Uses the chat model: this is Seemo writing.
     /// `networks` are the channel kinds the project can publish to that are
     /// networks; with none, the posts are written to work anywhere.
-    pub async fn social_posts(&self, project: &Project, count: usize, networks: Vec<crate::extensions::ChannelKind>) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
+    pub async fn social_posts(&self, project: &Project, count: usize, networks: Vec<crate::extensions::Kind>) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
         let slug = &project.slug;
         let result = self.social_posts_inner(project, count, &networks).await;
         match &result {
@@ -229,7 +229,7 @@ impl Extractor {
         result
     }
 
-    async fn social_posts_inner(&self, project: &Project, count: usize, kinds: &[crate::extensions::ChannelKind]) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
+    async fn social_posts_inner(&self, project: &Project, count: usize, kinds: &[crate::extensions::Kind]) -> Result<Vec<(crate::assets::Asset, Option<PostImage>)>> {
         let slug = &project.slug;
         let brief = Brief::load(&self.store, slug)?.ok_or_else(|| anyhow::anyhow!("there is no business profile yet; crawl the site first"))?;
         let profiles: Vec<String> = crate::brand::Brand::load(&self.store, slug)?.map(|b| b.social.into_iter().map(|s| s.network).collect()).unwrap_or_default();

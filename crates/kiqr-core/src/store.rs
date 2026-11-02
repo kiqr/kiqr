@@ -23,13 +23,13 @@ projects/*/cache/
 # Generated assets and project secrets stay on this machine.
 projects/*/assets/
 projects/*/.env
-projects/*/connections/*/.env
+projects/*/accounts/*/.env
 # An account's working folder (a browser profile) and its activity log stay here too.
-projects/*/connections/*/data/
-projects/*/connections/*/activity.jsonl
+projects/*/accounts/*/data/
+projects/*/accounts/*/activity.jsonl
 # The people on a list and what was sent to them: personal data stays on this machine.
-projects/*/lists/*/contacts.csv
-projects/*/lists/*/sends/
+projects/*/audience/*/contacts.csv
+projects/*/audience/*/sends/
 ";
 
 const ENV_TEMPLATE: &str = "\

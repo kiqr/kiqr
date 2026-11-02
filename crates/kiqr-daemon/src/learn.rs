@@ -11,7 +11,7 @@
 use crate::api::ApiError;
 use crate::App;
 use axum::http::StatusCode;
-use kiqr_core::connections::Connection;
+use kiqr_core::accounts::Account;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{self, LearnDoc, Manifest};
 use kiqr_core::extract::Extractor;
@@ -30,7 +30,7 @@ const EVERY: chrono::Duration = chrono::Duration::days(7);
 static TRIED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 /// One account's ability, when it can teach the project.
-async fn learnable(app: &App, slug: &str, c: &Connection) -> Option<Manifest> {
+async fn learnable(app: &App, slug: &str, c: &Account) -> Option<Manifest> {
     crate::accounts::manifest_for(app, slug, c).await.filter(|m| m.learn.is_some())
 }
 
@@ -48,7 +48,7 @@ fn doc_text(out: &crate::ext::ExecOut) -> String {
     serde_json::to_string_pretty(&out.json).unwrap_or_default()
 }
 
-async fn call(app: &App, slug: &str, m: &Manifest, c: &Connection, tool: &str, args: &Value) -> anyhow::Result<crate::ext::ExecOut> {
+async fn call(app: &App, slug: &str, m: &Manifest, c: &Account, tool: &str, args: &Value) -> anyhow::Result<crate::ext::ExecOut> {
     let t = m.tools.iter().find(|t| t.name == tool).ok_or_else(|| anyhow::anyhow!("{} has no tool '{tool}'", m.name))?;
     crate::ext::execute(app, slug, m, &t.provide, None, Some(tool), args, Some(&c.id)).await
 }
@@ -71,10 +71,11 @@ async fn extract(ex: &Extractor, slug: &str, title: String, url: String, text: S
 
 /// Read one source's documents into facts. Returns how many documents gave
 /// facts; a document that is not there (no `docs/` folder) is skipped.
-pub async fn read_source(app: &App, slug: &str, c: &Connection, ex: &Extractor) -> anyhow::Result<usize> {
+pub async fn read_source(app: &App, slug: &str, c: &Account, ex: &Extractor) -> anyhow::Result<usize> {
     let m = learnable(app, slug, c).await.ok_or_else(|| anyhow::anyhow!("{} has nothing to learn from", c.label))?;
-    if !crate::accounts::ready(app, slug, c, &m) {
-        anyhow::bail!("{} is not signed in yet", c.label);
+    let st = crate::accounts::state(app, slug, c).await;
+    if !st.ready() {
+        anyhow::bail!("{}", crate::accounts::state_view(c, &st)["says"].as_str().unwrap_or("not ready"));
     }
     let spec = m.learn.clone().unwrap_or_default();
     // Titles and links may name the account's keys (`${GITHUB_REPO}`), never a secret: they are kept in the facts.
@@ -112,7 +113,7 @@ pub async fn read_source(app: &App, slug: &str, c: &Connection, ex: &Extractor) 
             }
         }
     }
-    let mut c = Connection::load(&app.store, slug, &c.id)?;
+    let mut c = Account::load(&app.store, slug, &c.id)?;
     c.last_learned = Some(chrono::Utc::now());
     c.learned = read as u32;
     c.save(&app.store, slug)?;
@@ -124,7 +125,7 @@ pub async fn read_source(app: &App, slug: &str, c: &Connection, ex: &Extractor) 
 /// writes the profile itself afterwards. Says nothing; returns what was read.
 pub async fn read_all(app: &App, slug: &str, only: Option<&str>, ex: &Extractor) -> Vec<(String, anyhow::Result<usize>)> {
     let mut out = Vec::new();
-    for c in Connection::list(&app.store, slug).unwrap_or_default().into_iter().filter(|c| c.learns() && only.is_none_or(|o| o == c.id)) {
+    for c in Account::list(&app.store, slug).unwrap_or_default().into_iter().filter(|c| c.learns() && only.is_none_or(|o| o == c.id)) {
         if learnable(app, slug, &c).await.is_none() {
             continue;
         }
@@ -175,9 +176,9 @@ pub async fn start(app: &App, slug: &str, only: Option<String>) -> Result<(), Ap
 pub async fn due(app: &App, slug: &str) {
     let now = chrono::Utc::now();
     let mut any = false;
-    for c in Connection::list(&app.store, slug).unwrap_or_default().into_iter().filter(Connection::learns) {
+    for c in Account::list(&app.store, slug).unwrap_or_default().into_iter().filter(Account::learns) {
         let Some(m) = learnable(app, slug, &c).await else { continue };
-        if !crate::accounts::ready(app, slug, &c, &m) {
+        if m.learn.is_none() || !crate::accounts::state(app, slug, &c).await.ready() {
             continue;
         }
         let due = match c.last_learned {

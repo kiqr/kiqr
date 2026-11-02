@@ -2,9 +2,10 @@
 //! flow and take the service's callback, and the tokens a call needs at the
 //! moment it is made (an oauth2 token refreshed, a service account's minted).
 //! The flows are generic (`kiqr_core::connect`); what a service wants comes
-//! from its manifest. Values land in one connection's `.env` (one account of
-//! the ability in a project) through `ext::set_connection_secret`, like typed
-//! keys, so nothing else needs to know how they got there.
+//! from its manifest. Values land in one account's `.env` through
+//! `ext::set_account_secret`, like typed keys, so nothing else needs to know
+//! how they got there. A new account is a draft until the sign-in comes back
+//! with its values: a flow that fails or is abandoned leaves nothing behind.
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
@@ -17,7 +18,7 @@ use axum::{
     Json, Router,
 };
 use kiqr_core::connect::{self, Callback, Connect, Flow};
-use kiqr_core::connections::Connection;
+use kiqr_core::accounts::Account;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::Manifest;
 use serde::Deserialize;
@@ -29,8 +30,9 @@ use std::time::{Duration, Instant};
 /// A flow waiting for its callback.
 pub struct Pending {
     ability: String,
-    /// The connection the values go to.
-    connection: String,
+    /// The account signed in again; none: `draft` is made when the values come back.
+    account: Option<String>,
+    draft: Option<crate::accounts::NewAccount>,
     project: String,
     connect: Connect,
     callback: String,
@@ -57,16 +59,12 @@ fn bad(msg: impl Into<String>) -> ApiError {
 
 #[derive(Deserialize)]
 struct StartBody {
-    /// The connection to sign in again; none adds a new one first.
+    /// The account to sign in again; none makes a new one once the sign-in comes back.
     #[serde(default)]
-    connection: Option<String>,
-    /// For a new one: its name, and when it publishes its kind and a first place (older callers say `destination`).
+    account: Option<String>,
+    /// For a new one: its name.
     #[serde(default)]
     label: String,
-    #[serde(default)]
-    kind: String,
-    #[serde(default, alias = "place")]
-    destination: serde_json::Map<String, Value>,
     /// Permissions chosen at setup: role → auto | ask | off.
     #[serde(default)]
     allow: std::collections::BTreeMap<String, String>,
@@ -85,26 +83,23 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
     if !matches!(origin.scheme(), "http" | "https") {
         return Err(bad("origin must be http or https"));
     }
-    let conn = match b.connection.as_deref().filter(|c| !c.trim().is_empty()) {
+    let conn = match b.account.as_deref().filter(|c| !c.trim().is_empty()) {
         Some(id) => {
-            let c = Connection::load(&app.store, &slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-            if c.service() != m.service() {
-                return Err(bad(format!("'{id}' is not an account of {}", m.name)));
+            let c = Account::load(&app.store, &slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+            if c.service != m.service() {
+                return Err(bad(format!("'{}' is not a {} account", c.label, m.service_card().name)));
             }
-            c
+            for n in &c_needs(&m) {
+                if let Some(v) = b.values.get(n).filter(|v| !v.trim().is_empty()) {
+                    crate::ext::set_account_secret(&app, &slug, &c.id, n, v).await?;
+                }
+            }
+            Some(c)
         }
-        None if !b.kind.trim().is_empty() => {
-            let preview = crate::publish::channel_preview(&app, &slug, &crate::publish::NewChannel { label: b.label.clone(), kind: b.kind.clone(), connection: Some(m.id.clone()), place: b.destination.clone(), ..Default::default() }).await?;
-            let v = crate::publish::save_channel(&app, &slug, &preview, "user", BTreeMap::new()).await?;
-            Connection::load(&app.store, &slug, v["id"].as_str().unwrap_or(""))?
-        }
-        None => crate::accounts::create(&app, &slug, crate::accounts::NewConnection { ability: m.id.clone(), label: b.label.clone(), allow: b.allow.clone(), ..Default::default() }, "user").await?,
+        None => None,
     };
-    for n in &c.needs {
-        if let Some(v) = b.values.get(n).filter(|v| !v.trim().is_empty()) {
-            crate::ext::set_connection_secret(&app, &slug, &conn.id, n, v).await?;
-        }
-    }
+    // A new account: nothing is written until the sign-in comes back with its values.
+    let draft = conn.is_none().then(|| crate::accounts::NewAccount { service: m.service().to_string(), label: b.label.clone(), allow: b.allow.clone(), secrets: b.values.iter().filter(|(k, v)| c.needs.contains(k) && !v.trim().is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect(), ..Default::default() });
     let callback_url = format!("{}/api/connect/callback", origin.origin().ascii_serialization());
     // kiqr.cloud holds the provider's app: it builds the page, the provider comes back through its relay.
     if c.flow == Flow::Cloud {
@@ -117,8 +112,8 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
         };
         let mut p = app.connects.pending.lock().await;
         p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
-        p.insert(state.to_string(), Pending { ability: m.id.clone(), connection: conn.id.clone(), project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
-        return Ok(Json(json!({ "url": url, "callback": true, "relayed": true, "connection": conn.id, "fields": [] })));
+        p.insert(state.to_string(), Pending { ability: m.id.clone(), account: conn.as_ref().map(|c| c.id.clone()), draft, project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
+        return Ok(Json(json!({ "url": url, "callback": true, "relayed": true, "account": conn.as_ref().map(|c| c.id.clone()), "fields": [] })));
     }
     // A service that only calls back over https, and KIQR on plain http: when
     // this KIQR is signed in to kiqr.cloud, the service calls back to a
@@ -141,7 +136,9 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
     };
     let state = connect::random_token();
     let verifier = connect::random_token();
-    let env = kiqr_core::connections::env_for(app.store.home(), &slug, Some(&conn), &m);
+    let stored = kiqr_core::accounts::env_for(app.store.home(), &slug, conn.as_ref(), &m, Default::default());
+    let typed = draft.as_ref().map(|d| d.secrets.clone()).unwrap_or_default();
+    let env = move |k: &str| typed.get(k).cloned().or_else(|| stored(k));
     let app_id = uuid::Uuid::new_v4().to_string();
     let url = connect::start_url(&c, &env, &app_id, &state, offered, &verifier).map_err(|e| bad(e.to_string()))?;
     let with_callback = offered.is_some();
@@ -149,10 +146,10 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
         let mut p = app.connects.pending.lock().await;
         p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
         if with_callback {
-            p.insert(state, Pending { ability: m.id.clone(), connection: conn.id.clone(), project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
+            p.insert(state, Pending { ability: m.id.clone(), account: conn.as_ref().map(|c| c.id.clone()), draft, project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
         }
     }
-    Ok(Json(json!({ "url": url, "callback": with_callback, "relayed": relayed.is_some(), "connection": conn.id, "fields": c.returns.keys().filter(|k| !c.needs.contains(k)).collect::<Vec<_>>() })))
+    Ok(Json(json!({ "url": url, "callback": with_callback, "relayed": relayed.is_some(), "account": conn.as_ref().map(|c| c.id.clone()), "fields": c.returns.keys().filter(|k| !c.needs.contains(k)).collect::<Vec<_>>() })))
 }
 
 async fn callback(State(app): State<App>, Query(q): Query<BTreeMap<String, String>>) -> (StatusCode, Html<String>) {
@@ -164,25 +161,29 @@ async fn callback(State(app): State<App>, Query(q): Query<BTreeMap<String, Strin
     };
     let name = manifest(&app, &f.project, &f.ability).await.map(|m| m.name).unwrap_or_else(|| f.ability.clone());
     match finish(&app, &f, &q).await {
-        Ok(()) => {
-            app.bus.emit(Some(&f.project), EventKind::ConnectFinished { ability: f.ability.clone(), ok: true, error: None, connection: Some(f.connection.clone()) });
+        Ok(id) => {
+            app.bus.emit(Some(&f.project), EventKind::ConnectFinished { ability: f.ability.clone(), ok: true, error: None, account: Some(id) });
             page(StatusCode::OK, &format!("{name} is connected. You can close this tab."))
         }
         Err(e) => {
-            app.bus.emit(Some(&f.project), EventKind::ConnectFinished { ability: f.ability.clone(), ok: false, error: Some(e.to_string()), connection: Some(f.connection.clone()) });
+            app.bus.emit(Some(&f.project), EventKind::ConnectFinished { ability: f.ability.clone(), ok: false, error: Some(e.to_string()), account: f.account.clone() });
             page(StatusCode::BAD_REQUEST, &format!("{name} is not connected: {e}"))
         }
     }
 }
 
-async fn finish(app: &App, f: &Pending, q: &BTreeMap<String, String>) -> Result<()> {
-    let conn = Connection::load(&app.store, &f.project, &f.connection)?;
+/// The values the sign-in came back with go into the account: the one signed
+/// in again, or the new one, made now. Returns the account's id.
+async fn finish(app: &App, f: &Pending, q: &BTreeMap<String, String>) -> Result<String> {
+    let conn = f.account.as_deref().map(|id| Account::load(&app.store, &f.project, id)).transpose()?;
     let m = manifest(app, &f.project, &f.ability).await.ok_or_else(|| anyhow!("{} is no longer installed", f.ability))?;
     let values = match f.connect.flow {
         Flow::Redirect => connect::read_redirect(&f.connect, q)?,
         Flow::Oauth2 => {
             let code = connect::read_code(&f.connect, q)?;
-            let env = kiqr_core::connections::env_for(app.store.home(), &f.project, Some(&conn), &m);
+            let stored = kiqr_core::accounts::env_for(app.store.home(), &f.project, conn.as_ref(), &m, Default::default());
+            let typed = f.draft.as_ref().map(|d| d.secrets.clone()).unwrap_or_default();
+            let env = move |k: &str| typed.get(k).cloned().or_else(|| stored(k));
             let form = connect::code_form(&f.connect, &env, &code, &f.callback, &f.verifier);
             token_request(&f.connect, &env, &form).await?
         }
@@ -193,10 +194,25 @@ async fn finish(app: &App, f: &Pending, q: &BTreeMap<String, String>) -> Result<
         }
         Flow::ServiceAccount => bail!("a service account has no callback"),
     };
-    for (n, v) in values {
-        crate::ext::set_connection_secret(app, &f.project, &conn.id, &n, &v).await.map_err(|e| anyhow!(e.1))?;
+    match conn {
+        Some(c) => {
+            for (n, v) in values {
+                crate::ext::set_account_secret(app, &f.project, &c.id, &n, &v).await.map_err(|e| anyhow!(e.1))?;
+            }
+            Ok(c.id)
+        }
+        None => {
+            let mut draft = f.draft.clone().unwrap_or_default();
+            draft.secrets.extend(values);
+            let c = crate::accounts::create(app, &f.project, draft, "user").await.map_err(|e| anyhow!(e.1))?;
+            Ok(c.id)
+        }
     }
-    Ok(())
+}
+
+/// The keys a sign-in asks for before it starts (a site's address), across its ways.
+fn c_needs(m: &Manifest) -> Vec<String> {
+    m.connect.iter().flat_map(|c| c.needs.clone()).collect()
 }
 
 /// POST a form to the manifest's token URL and read the token out of the answer.
@@ -236,10 +252,10 @@ fn page(status: StatusCode, msg: &str) -> (StatusCode, Html<String>) {
 /// to expire is refreshed into the connection first (through kiqr.cloud for
 /// `cloud`). Of several ways to sign in, the one set up on the account is
 /// used. Nothing for a manifest without `connect`, or a call through no connection.
-pub async fn call_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Connection>) -> Result<BTreeMap<String, String>> {
+pub async fn call_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Account>) -> Result<BTreeMap<String, String>> {
     let Some(conn) = conn else { return Ok(BTreeMap::new()) };
     let home = app.store.home();
-    let env = kiqr_core::connections::env_for(home, slug, Some(conn), m);
+    let env = kiqr_core::accounts::env_for(home, slug, Some(conn), m, Default::default());
     let Some(c) = connect::pick(&m.connect, &|k: &str| env(k).is_some()) else { return Ok(BTreeMap::new()) };
     let now = chrono::Utc::now().timestamp();
     match c.flow {
@@ -252,7 +268,7 @@ pub async fn call_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Connect
             let body = crate::signins::cloud_connect(app, &c.provider, "refresh", json!({ "refresh_token": refresh })).await.with_context(|| format!("{} needs connecting again", m.name))?;
             let values = connect::read_token(c, &body, now)?;
             for (n, v) in &values {
-                crate::ext::set_connection_secret(app, slug, &conn.id, n, v).await.map_err(|e| anyhow!(e.1))?;
+                crate::ext::set_account_secret(app, slug, &conn.id, n, v).await.map_err(|e| anyhow!(e.1))?;
             }
             Ok(values.into_iter().collect())
         }
@@ -266,7 +282,7 @@ pub async fn call_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Connect
             };
             let values = token_request(c, &env, &connect::refresh_form(c, &env, &refresh)).await.with_context(|| format!("{} needs connecting again", m.name))?;
             for (n, v) in &values {
-                crate::ext::set_connection_secret(app, slug, &conn.id, n, v).await.map_err(|e| anyhow!(e.1))?;
+                crate::ext::set_account_secret(app, slug, &conn.id, n, v).await.map_err(|e| anyhow!(e.1))?;
             }
             Ok(values.into_iter().collect())
         }

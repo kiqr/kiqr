@@ -1,10 +1,5 @@
-//! Channels: where a project's content goes out. A channel is a connection
-//! (`connections.rs`) whose ability publishes: it names a kind and a
-//! destination (an address, a subreddit, a blog) and carries its own account.
-//! Publishing always asks the user first; the channel only remembers where.
-//! Here: what publishing needs besides the channel itself.
-
-pub use crate::connections::{new_id, valid_id, Connection as Channel};
+//! What publishing needs besides the account and the Audience entry: HTML
+//! for email bodies and blog posts, and campaign tags on links to the site.
 
 /// Markdown to simple HTML for email bodies and blog posts.
 pub fn markdown_to_html(md: &str) -> String {
@@ -25,10 +20,6 @@ mod tests {
     fn markdown_renders_and_ids_are_safe() {
         let h = markdown_to_html("# Hi\n\nOne *two* [three](https://x.y).\n\n- a\n- b\n");
         assert!(h.contains("<h1>Hi</h1>") && h.contains("<em>two</em>") && h.contains("<li>a</li>"));
-        assert!(valid_id("email-to-jane") && !valid_id("Email") && !valid_id("-x"));
-        let mut c = Channel { kind: "page".into(), ..Default::default() };
-        c.put_place(crate::connections::Place { label: "r/rust".into(), kind: "page".into(), fields: [("subreddit".to_string(), serde_json::json!("rust"))].into_iter().collect(), ..Default::default() });
-        assert_eq!(c.destination_text(), "r/rust");
     }
 }
 

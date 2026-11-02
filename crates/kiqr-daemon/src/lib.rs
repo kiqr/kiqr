@@ -4,6 +4,7 @@
 
 mod accounts;
 mod agent;
+mod audience;
 mod api;
 mod build;
 mod builtin;
@@ -122,7 +123,6 @@ pub async fn run(home: Home) -> Result<()> {
         tracing::info!(folders = ?retired, "abilities that were never set up now wait in the marketplace");
         store.commit(&format!("abilities: {} wait in the marketplace until installed", retired.join(", "))).await?;
     }
-    migrate_to_connections(&store, &config).await?;
     seed_persona(&store).await?;
 
     // KIQR_HOST / KIQR_PORT override config.yaml, so Docker can bind 0.0.0.0 without editing files.
@@ -279,43 +279,6 @@ fn own_exe() -> std::path::PathBuf {
     let cleaned = raw.to_string_lossy().trim_end_matches(" (deleted)").to_string();
     let p = std::path::PathBuf::from(cleaned);
     p.canonicalize().unwrap_or(p)
-}
-
-/// Once per home: channels and the keys of installed abilities become each
-/// project's connections (`kiqr_core::connections::migrate`), and an ability
-/// switched off for the whole machine becomes switched off in every project,
-/// since the per-project switch is the only one an installed ability has now.
-async fn migrate_to_connections(store: &kiqr_core::Store, config: &Config) -> anyhow::Result<()> {
-    use kiqr_core::extensions::{Registry, Scope};
-    let reg = Registry::load(store.home(), &config.core_off);
-    let manifests: Vec<kiqr_core::extensions::Manifest> = reg.entries.iter().filter(|e| e.error.is_none()).filter_map(|e| e.manifest.clone()).collect();
-    // Abilities that changed shape since the accounts were made: their accounts move along.
-    let moved: Vec<String> = manifests.iter().flat_map(|m| kiqr_core::connections::move_old(store, m).unwrap_or_default()).collect();
-    if !moved.is_empty() {
-        tracing::info!(accounts = moved.len(), "accounts moved along with their abilities");
-        store.commit(&format!("[auto] accounts: {} moved along with their abilities", moved.join(", "))).await?;
-    }
-    let Some(done) = kiqr_core::connections::migrate(store, &manifests)? else { return Ok(()) };
-    let paused: Vec<&kiqr_core::extensions::Entry> = reg.entries.iter().filter(|e| e.paused && e.scope == Scope::Global && !e.is_core()).collect();
-    if !paused.is_empty() {
-        for mut p in kiqr_core::project::Project::list(store).unwrap_or_default() {
-            let before = p.abilities_off.len();
-            for e in &paused {
-                if !p.abilities_off.iter().any(|x| x == e.id()) {
-                    p.abilities_off.push(e.id().to_string());
-                }
-            }
-            if p.abilities_off.len() != before {
-                p.save(store)?;
-            }
-        }
-        for e in &paused {
-            let _ = std::fs::remove_file(e.dir.join(".off"));
-        }
-    }
-    tracing::info!(channels = done.channels, accounts = done.connections, keys = done.keys_moved, switched_off = paused.len(), "abilities now keep their keys on each project's accounts");
-    store.commit("[auto] connections: one account per channel and per project").await?;
-    Ok(())
 }
 
 /// Strike the values a sign-in is typing right now from a text (`[credential]`).

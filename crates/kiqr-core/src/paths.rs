@@ -82,17 +82,13 @@ impl Home {
         }
         Ok(moves.len())
     }
-    /// A project's connections: `connections/<id>/connection.yaml` (committed) and `.env` (not).
-    pub fn connections_dir(&self, slug: &str) -> PathBuf {
-        self.project_dir(slug).join("connections")
+    /// A project's accounts: `accounts/<id>/account.yaml` (committed), `.env`, `data/` and `activity.jsonl` (not).
+    pub fn accounts_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("accounts")
     }
-    /// A project's lists of people to email: `lists/<id>/list.yaml` (committed) and `contacts.csv` (not).
-    pub fn lists_dir(&self, slug: &str) -> PathBuf {
-        self.project_dir(slug).join("lists")
-    }
-    /// Where channels were kept before connections; read once, by the migration.
-    pub fn channels_dir(&self, slug: &str) -> PathBuf {
-        self.project_dir(slug).join("channels")
+    /// A project's Audience: `audience/<id>/entry.yaml` (committed); a list's `contacts.csv` and `sends/` (not).
+    pub fn audience_dir(&self, slug: &str) -> PathBuf {
+        self.project_dir(slug).join("audience")
     }
     /// Brand files fetched for rendering (logo, icon). Ignored by git, like the cache.
     pub fn brand_files_dir(&self, slug: &str) -> PathBuf {

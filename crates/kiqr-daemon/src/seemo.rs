@@ -478,7 +478,6 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
         "task" => task_preview(&cfg, &b.payload, &names)?,
         "config" => config_preview(&cfg, &b.payload)?,
         "ability" => ability_preview(&slug, &b.payload)?,
-        "channel" => crate::publish::channel_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         "publish" => crate::publish::publish_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         "email" => crate::publish::email_preview(&app, &slug, &serde_json::from_value(b.payload.clone()).map_err(|e| bad(e.to_string()))?).await?,
         "plan" => crate::marketing::plan_preview(&app, &slug, &b.payload)?,
@@ -489,7 +488,7 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
             if label.is_empty() {
                 return Err(bad("a list needs a name"));
             }
-            if kiqr_core::lists::List::find(&app.store, &slug, &label).is_some() {
+            if kiqr_core::lists::find(&app.store, &slug, &label).is_some() {
                 return Err(bad(format!("there is a list called '{label}' already")));
             }
             json!({ "label": label, "description": b.payload["description"].as_str().unwrap_or("").trim() })
@@ -639,10 +638,6 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },
-            "channel" => match crate::publish::save_channel(&app, &slug, &approval.payload, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into()), Default::default()).await {
-                Ok(v) => Decision { status: "approved".into(), result: v },
-                Err(e) => return Err(e),
-            },
             "publish" => match crate::publish::do_publish(&app, &slug, &approval.payload, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
@@ -651,8 +646,8 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                 Ok(v) => Decision { status: "approved".into(), result: v },
                 Err(e) => return Err(e),
             },
-            "list" => match crate::lists::create_list(&app, &slug, crate::lists::NewList { label: approval.payload["label"].as_str().unwrap_or("").to_string(), description: approval.payload["description"].as_str().unwrap_or("").to_string() }, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
-                Ok(l) => Decision { status: "approved".into(), result: json!({ "created": true, "list": l.id, "label": l.label, "note": "The list exists and is empty. The user adds people under Audience; you never handle addresses." }) },
+            "list" => match crate::lists::create_list(&app, &slug, crate::lists::NewList { label: approval.payload["label"].as_str().unwrap_or("").to_string(), description: approval.payload["description"].as_str().unwrap_or("").to_string(), account: approval.payload["account"].as_str().unwrap_or("").to_string() }, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
+                Ok(l) => Decision { status: "approved".into(), result: json!({ "created": true, "list": l.id, "label": l.label, "note": "The list is in the Audience and empty. The user adds people there; you never handle addresses." }) },
                 Err(e) => return Err(e),
             },
             "plan" => match crate::marketing::approve_plan(&app, &slug, &approval).await {
@@ -969,14 +964,15 @@ async fn calendar(State(app): State<App>, Path(slug): Path<String>, Query(r): Qu
             items.push(json!({ "kind": "task", "task": t.id, "title": t.title, "at": at, "schedule_text": t.schedule.describe(tz) }));
         }
     }
-    // Publishes the daemon will do: scheduled assets, with the account (and the place in it) they go to.
+    // Publishes the daemon will do: scheduled assets, with the Audience entry they go to and the account that reaches it.
     for a in assets::list(&app.store, &slug)?.into_iter().filter(|a| a.status == assets::Status::Scheduled) {
         let Some(at) = a.publish_at.filter(|t| *t >= from - chrono::Duration::seconds(1) && *t <= to) else { continue };
-        let account = a.channel.as_deref().and_then(|c| kiqr_core::channels::Channel::load(&app.store, &slug, c).ok());
-        let label = account.as_ref().map(|c| c.label.clone()).unwrap_or_else(|| a.channel.clone().unwrap_or_default());
-        let place_label = account.as_ref().and_then(|c| c.place(a.place.as_deref())).map(|p| p.label.clone());
-        let where_ = match &place_label { Some(p) => format!("to {label} ({p})"), None => format!("to {label}") };
-        items.push(json!({ "kind": "publish", "asset": { "type": a.kind, "id": a.id, "title": a.title }, "title": a.title, "at": at, "channel": a.channel, "channel_label": label, "place": a.place, "place_label": place_label, "schedule_text": where_ }));
+        let entry = a.target.as_deref().and_then(|t| kiqr_core::audience::Entry::load(&app.store, &slug, t).ok());
+        let label = entry.as_ref().map(|e| e.label.clone()).unwrap_or_else(|| a.target.clone().unwrap_or_default());
+        let via = entry.as_ref().and_then(|e| kiqr_core::accounts::Account::load(&app.store, &slug, &e.account).ok()).map(|c| c.label);
+        // The account is the spot (an X profile, a blog): its name once.
+        let where_ = match &via { Some(v) if *v != label => format!("to {label} via {v}"), _ => format!("to {label}") };
+        items.push(json!({ "kind": "publish", "asset": { "type": a.kind, "id": a.id, "title": a.title }, "title": a.title, "at": at, "target": a.target, "target_label": label, "via": via, "schedule_text": where_ }));
     }
     items.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
     Ok(Json(items))
@@ -1011,12 +1007,12 @@ async fn todo(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Val
     let attention: Vec<&assets::Asset> = all.iter().filter(|a| a.publish_error.is_some() && !a.archived && a.publications.is_empty()).collect();
     // Accounts whose sign-in needs a person: a captcha, a device check, or a first sign-in by hand.
     let home = app.store.home();
-    let needing_hand: Vec<Value> = kiqr_core::connections::Connection::list(&app.store, &slug)
+    let needing_hand: Vec<Value> = kiqr_core::accounts::Account::list(&app.store, &slug)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|c| {
             let st = c.session(home, &slug);
-            st.needs_hand().then(|| json!({ "connection": c.id, "label": c.label, "service": c.service(), "message": st.message, "since": st.checked_at }))
+            st.needs_hand().then(|| json!({ "account": c.id, "label": c.label, "service": c.service, "message": st.message, "since": st.checked_at }))
         })
         .collect();
     let count = approvals.len() + drafts.len() + attention.len() + needing_hand.len();

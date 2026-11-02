@@ -1,4 +1,4 @@
-//! Networks are channel kinds. Everything KIQR knows about one comes from
+//! Networks are kinds (`extensions::Kind`). Everything KIQR knows about one comes from
 //! the ability that declares it: the installed abilities a project has on,
 //! and, for recognising the business's profiles and suggesting what to
 //! install, the abilities listed in the marketplace. Nothing here names a
@@ -14,7 +14,7 @@ use axum::{
 };
 use kiqr_core::brand::Brand;
 use kiqr_core::events::EventKind;
-use kiqr_core::extensions::ChannelKind;
+use kiqr_core::extensions::Kind;
 use kiqr_core::project::Project;
 use serde_json::{json, Value};
 
@@ -25,21 +25,21 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/suggestions/{kind}/dismiss", post(dismiss))
 }
 
-/// The channel kinds of the abilities this project has on.
-pub async fn installed(app: &App, slug: &str) -> Vec<ChannelKind> {
-    crate::publish::kinds(app, slug).await.into_iter().map(|(_, k)| k).collect()
+/// The kinds of the abilities this project has on.
+pub async fn installed(app: &App, slug: &str) -> Vec<Kind> {
+    crate::audience::kinds(app, slug).await.into_iter().map(|(_, k)| k).collect()
 }
 
 /// The networks this project can write posts for: the kinds an ability on
 /// here publishes to that are networks (not an inbox or a blog) and that the
-/// project has an account on which may publish, once each. With no account
-/// anywhere yet, every network an ability on here publishes to, so the
-/// first posts can be written before the first sign-in.
-pub async fn for_posts(app: &App, slug: &str) -> Vec<ChannelKind> {
-    let accounts = kiqr_core::connections::Connection::channels(&app.store, slug).unwrap_or_default();
-    let mut out: Vec<ChannelKind> = Vec::new();
+/// Audience has an entry of, once each. With an empty Audience, every
+/// network an ability on here publishes to, so the first posts can be
+/// written before the first sign-in.
+pub async fn for_posts(app: &App, slug: &str) -> Vec<Kind> {
+    let entries: Vec<kiqr_core::audience::Entry> = kiqr_core::audience::Entry::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| !e.suggested && !e.is_list()).collect();
+    let mut out: Vec<Kind> = Vec::new();
     for k in installed(app, slug).await.into_iter().filter(|k| k.is_network() && k.publishes()) {
-        if !out.iter().any(|o| o.kind == k.kind) && (accounts.is_empty() || accounts.iter().any(|c| c.kind == k.kind)) {
+        if !out.iter().any(|o| o.kind == k.kind) && (entries.is_empty() || entries.iter().any(|e| e.kind == k.kind)) {
             out.push(k);
         }
     }
@@ -56,13 +56,14 @@ pub async fn profile_hosts(app: &App, slug: &str) -> Vec<(String, String)> {
             out.push((h, k.to_string()));
         }
     };
-    for k in installed(app, slug).await {
-        for h in &k.profile_hosts {
+    // A service's profile hosts belong to the kinds its abilities declare.
+    for (m, k) in crate::audience::kinds(app, slug).await {
+        for h in &m.service.profile_hosts {
             add(h, &k.kind);
         }
     }
     for item in crate::market::catalogue(app).await {
-        for c in &item.channels {
+        for c in &item.kinds {
             for h in &c.profile_hosts {
                 add(h, &c.kind);
             }
@@ -76,20 +77,17 @@ pub async fn profile_hosts(app: &App, slug: &str) -> Vec<(String, String)> {
 pub async fn view(app: &App, slug: &str) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    let on = crate::publish::kinds(app, slug).await;
+    let on = crate::audience::kinds(app, slug).await;
     for (_, k) in &on {
         if seen.contains(&k.kind) {
             continue;
         }
         seen.push(k.kind.clone());
-        let same: Vec<&(kiqr_core::extensions::Manifest, ChannelKind)> = on.iter().filter(|(_, o)| o.kind == k.kind).collect();
-        let mut does: Vec<&str> = same.iter().flat_map(|(_, o)| o.roles()).collect();
-        does.sort_unstable();
-        does.dedup();
-        out.push(json!({ "kind": k.kind, "name": k.display_name(), "icon": k.icon, "network": k.is_network(), "text_limit": k.text_limit, "image": k.image, "preview": k.preview, "installed": true, "does": does, "abilities": same.iter().map(|(m, o)| json!({ "id": m.id, "name": m.name, "service": m.service(), "does": o.roles() })).collect::<Vec<_>>() }));
+        let same: Vec<&(kiqr_core::extensions::Manifest, Kind)> = on.iter().filter(|(_, o)| o.kind == k.kind).collect();
+        out.push(json!({ "kind": k.kind, "name": k.display_name(), "label": k.label, "icon": k.icon, "section": k.section(), "network": k.is_network(), "text_limit": k.text_limit, "image": k.image, "preview": k.preview, "installed": true, "publishes": same.iter().any(|(_, o)| o.publishes()), "abilities": same.iter().map(|(m, o)| json!({ "id": m.id, "name": m.name, "service": m.service(), "publishes": o.publishes() })).collect::<Vec<_>>() }));
     }
     for item in crate::market::catalogue(app).await {
-        for c in &item.channels {
+        for c in &item.kinds {
             if seen.contains(&c.kind) {
                 continue;
             }
@@ -114,7 +112,7 @@ pub async fn suggestions(app: &App, slug: &str) -> Vec<Value> {
         if have.iter().any(|k| k.kind == kind) || dismissed.iter().any(|d| d == kind) || out.iter().any(|o: &Value| o["kind"] == kind) {
             continue;
         }
-        let Some((item, c)) = catalogue.iter().filter(|i| reg.installed(&i.id).is_empty()).find_map(|i| i.channels.iter().find(|c| c.kind == kind).map(|c| (i, c))) else { continue };
+        let Some((item, c)) = catalogue.iter().filter(|i| reg.installed(&i.id).is_empty()).find_map(|i| i.kinds.iter().find(|c| c.kind == kind).map(|c| (i, c))) else { continue };
         out.push(json!({ "kind": kind, "name": c.display_name(), "profile_url": s.url, "ability": item.id, "ability_name": item.name }));
     }
     out

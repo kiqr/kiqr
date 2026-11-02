@@ -67,7 +67,7 @@ pub async fn send(s: &Settings, to: &str, subject: &str, text_md: &str, files: V
         let mb: Mailbox = addr.parse().with_context(|| format!("'{addr}' is not an email address"))?;
         builder = builder.to(mb);
     }
-    let html = format!("<div style=\"font-family:Inter,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#111\">{}</div>", kiqr_core::channels::markdown_to_html(text_md));
+    let html = format!("<div style=\"font-family:Inter,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#111\">{}</div>", kiqr_core::publishing::markdown_to_html(text_md));
     let alternative = MultiPart::alternative_plain_html(text_md.to_string(), html);
     let msg = if files.is_empty() {
         builder.multipart(alternative)?

@@ -32,7 +32,7 @@ pub enum Group {
     Tasks,
     /// Change `config.yaml` and project settings.
     Config,
-    /// Send and publish: email, channels. Always behind an approval.
+    /// Send and publish: email, the Audience. Always behind an approval.
     Publish,
     /// Propose and change the marketing plan and campaigns (behind cards).
     Marketing,
@@ -454,7 +454,7 @@ pub fn catalogue() -> Vec<Tool> {
             name: "create_asset",
             group: WriteAssets,
             label: "Adding to the library",
-            description: "Save a new asset in the library as a draft: a post, an article, a reply, an email… `text` becomes its body file (Markdown). Use `summary` for a one-line description (for a post: the network, e.g. 'For <network name>') and `tags` with the network's channel kind first (one from list_channels kinds), then topics. Everything gets a featured image: follow up with `create_image` on the new asset right away (the Create images instructions say how). The asset shows in the chat as it will look; the user approves it there or in the library, so never ask for approval in text.",
+            description: "Save a new asset in the library as a draft: a post, an article, a reply, an email… `text` becomes its body file (Markdown). Use `summary` for a one-line description (for a post: the network, e.g. 'For <network name>') and `tags` with the network's kind first (one from list_audience → kinds), then topics. Everything gets a featured image: follow up with `create_image` on the new asset right away (the Create images instructions say how). The asset shows in the chat as it will look; the user approves it there or in the library, so never ask for approval in text.",
             call: Call::Http { method: "POST", path: "/api/projects/{slug}/assets", body: Body::Args },
             schema: || obj(
                 json!({
@@ -616,26 +616,52 @@ pub fn catalogue() -> Vec<Tool> {
         },
         // --------------------------------------------------------- publish
         Tool {
-            name: "list_channels",
+            name: "list_audience",
             group: Publish,
-            label: "Checking where this project can publish",
-            description: "The accounts this project can publish through (the `channels` list: a mail account, a blog, a social account; `id` is what publish_asset takes as `channel`), each with `ready` (false: the user has not connected it yet), `allow` (what you may do there: `publish` auto means it goes out without a card), and its `places` (a subreddit, a branch, a list of people on a mail account; name one as `place` when there are several, or when the account sends to lists). Plus `kinds`: what a new account could publish as.",
-            call: Call::Http { method: "GET", path: "/api/projects/{slug}/channels", body: Body::None },
+            label: "Checking where the people are",
+            description: "The Audience: everywhere the business's people are, in three sections: pages (its own: an X profile, a company page, a blog), communities (where it takes part: a subreddit) and lists (people it emails, counts only). Each entry has an `id` (what publish_asset takes as `target`), its kind, its fields (`subreddit: selfhosted`) and `via`: the account that reaches it, whether that works (`ready`) and what it allows (`publish` auto: it goes out without a card). Suggestions (`suggested: true`) wait for the user. Plus `kinds`: what could be added, with each kind's target fields and the accounts that reach it. You act on your own only in entries; anywhere else the user is asked first, and a yes adds the spot.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/audience", body: Body::None },
             schema: no_args,
         },
         Tool {
-            name: "channel_activity",
+            name: "list_accounts",
+            group: Publish,
+            label: "Checking the accounts",
+            description: "The accounts this project signs in as (one per service and login), each with its `state` (ready, signed out, needs a hand, missing keys), what it allows you (`allow`: per role, auto, ask or off), what uses it and where it reaches in the Audience. Accounts never say where to post: that is the Audience, or the spot a call names.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/accounts", body: Body::None },
+            schema: no_args,
+        },
+        Tool {
+            name: "suggest_audience",
+            group: Publish,
+            label: "Suggesting a place for the Audience",
+            description: "Put a spot you found (a subreddit where the business's customers ask questions, a group) into the Audience as a suggestion, with one line on why. Nothing goes there on its own: the user reviews it on the Audience page. Use it for places worth coming back to, not every thread you read.",
+            call: Call::Http { method: "POST", path: "/api/projects/{slug}/audience/suggest", body: Body::Args },
+            schema: || obj(
+                json!({
+                    "kind": { "type": "string", "description": "A kind from list_audience → kinds" },
+                    "fields": { "type": "object", "description": "The kind's target fields, e.g. {subreddit: 'selfhosted'}", "additionalProperties": true },
+                    "account": { "type": "string", "description": "The account that would reach it; the service's default when left out" },
+                    "label": { "type": "string", "description": "How it reads, when not from the fields" },
+                    "url": { "type": "string" },
+                    "reason": { "type": "string", "description": "One line: why the business's people are there" },
+                }),
+                &["kind", "reason"],
+            ),
+        },
+        Tool {
+            name: "account_activity",
             group: Publish,
             label: "Checking what was done on an account",
-            description: "What every ability did through an account (they share it when they work on the same service): replies, publishes, profile changes, newest first, with what each acted on, today's count and the daily cap. Check it before replying or posting so you do not repeat what another ability already did; a repeat on the same target is refused anyway.",
-            call: Call::Http { method: "GET", path: "/api/projects/{slug}/connections/{channel}/activity", body: Body::None },
-            schema: || obj(json!({ "channel": { "type": "string", "description": "An account id from list_channels" } }), &["channel"]),
+            description: "What every ability did through an account (they share it when they work on the same service): replies, publishes, profile changes, newest first, with what each acted on and in which Audience entry, today's count and the daily cap. Check it before replying or posting so you do not repeat what another ability already did; a repeat on the same target is refused anyway.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/accounts/{account}/activity", body: Body::None },
+            schema: || obj(json!({ "account": { "type": "string", "description": "An account id from list_accounts" } }), &["account"]),
         },
         Tool {
             name: "list_lists",
             group: Publish,
             label: "Checking the lists of people",
-            description: "The project's lists of people to email (Audience): id, name, how many people, how many left. You see counts, never addresses. A mail account sends to a list through a place (create_channel with `list`), or send_email takes `list` straight.",
+            description: "The project's lists of people to email (in the Audience): id, name, the account it is sent from, how many people, how many left. You see counts, never addresses. send_email or publish_asset takes a list as its target.",
             call: Call::Http { method: "GET", path: "/api/projects/{slug}/lists", body: Body::None },
             schema: no_args,
         },
@@ -643,44 +669,26 @@ pub fn catalogue() -> Vec<Tool> {
             name: "create_list",
             group: Publish,
             label: "Proposing a list of people",
-            description: "Propose a new, empty list of people to email (a newsletter, customers). The user sees it and confirms, then adds people under Audience (you never handle addresses); this call waits for that answer.",
+            description: "Propose a new, empty list of people to email (a newsletter, customers), in the Audience. The user sees it and confirms, then adds people there (you never handle addresses); this call waits for that answer.",
             call: Call::Approval("list"),
-            schema: || obj(json!({ "label": { "type": "string", "description": "What to call it, e.g. 'Newsletter'" }, "description": { "type": "string", "description": "Who is on it and why they hear from the business" } }), &["label"]),
-        },
-        Tool {
-            name: "create_channel",
-            group: Publish,
-            label: "Proposing a place to publish",
-            description: "Add a place to publish to. Usually on an account the project has (`account` from list_channels): a new place in it (`place` with the kind's fields, e.g. {subreddit: 'rust'}), or a `list` of people on a mail account (lists are under Audience; propose one with create_list). Without `account`, a new account of the `kind` is proposed, with this as its first place; the user signs in to it afterwards, since you never handle keys. The user sees it and confirms; this call waits for that answer.",
-            call: Call::Approval("channel"),
-            schema: || obj(
-                json!({
-                    "account": { "type": "string", "description": "An account id or name from list_channels; leave out to propose a new account" },
-                    "label": { "type": "string", "description": "What to call the place, e.g. 'r/rust' or 'Newsletter'" },
-                    "kind": { "type": "string", "description": "A kind from list_channels; not needed with `account`" },
-                    "connection": { "type": "string", "description": "Ability id, when several offer the kind" },
-                    "place": { "type": "object", "description": "The kind's place fields (list_channels → kinds → place), e.g. {subreddit: 'rust'}", "additionalProperties": true },
-                    "list": { "type": "string", "description": "A list id or name, for a place on a mail account" },
-                }),
-                &[],
-            ),
+            schema: || obj(json!({ "label": { "type": "string", "description": "What to call it, e.g. 'Newsletter'" }, "description": { "type": "string", "description": "Who is on it and why they hear from the business" }, "account": { "type": "string", "description": "The mail account it is sent from; the first one when left out" } }), &["label"]),
         },
         Tool {
             name: "publish_asset",
             group: Publish,
             label: "Proposing to publish",
-            description: "Send an asset out through an account (`channel`: an id from list_channels), to a `place` in it when it has several or sends to lists, now or at a time (`at`). The user sees what goes where and confirms; this call waits for that answer. On an account where the user let you publish on your own (`allow.publish: auto` in list_channels) it goes out at once and the card records it. Now: the asset becomes `published` with a record of where it went. With `at`: the asset is approved for the account and `scheduled`; the daemon publishes it at that time. To a list of people it is one message each, sent in the background.",
+            description: "Send an asset to an Audience entry (`target`: an id from list_audience), or to a spot not in the Audience yet (`spot`: a kind, its fields, and the account), now or at a time (`at`). The user sees what goes where and through which account, and confirms; this call waits for that answer. It goes out at once, with the card as the record, only to an entry through an account where the user let you publish on your own; a new spot always asks, and the yes adds it to the Audience. Now: the asset becomes `published` with a record of where it went. With `at`: it is approved for the entry and `scheduled`; the daemon publishes it then. To a list it is one message per person, in the background.",
             call: Call::Approval("publish"),
             schema: || obj(
                 json!({
                     "asset": { "type": "object", "properties": { "type": { "type": "string" }, "id": { "type": "string" } }, "required": ["type", "id"] },
-                    "channel": { "type": "string", "description": "Account id" },
-                    "place": { "type": "string", "description": "A place id or name on the account (list_channels → channels → places); the default when left out" },
+                    "target": { "type": "string", "description": "An Audience entry id or name" },
+                    "spot": { "type": "object", "description": "Instead of `target`: somewhere new, {kind, fields, account}", "properties": { "kind": { "type": "string" }, "fields": { "type": "object", "additionalProperties": true }, "account": { "type": "string" } }, "required": ["kind"] },
                     "at": { "type": "string", "description": "RFC 3339 time to publish at; omit to publish now" },
-                    "options": { "type": "object", "description": "Choices the channel's kind offers for each publish (list_channels → kinds → options), e.g. {status: 'publish'} for a blog. Leave out what the user did not ask for: a blog post then goes out as a draft.", "additionalProperties": true },
+                    "options": { "type": "object", "description": "Choices the entry's kind offers for each publish (list_audience → entries → options), e.g. {status: 'publish'} for a blog. Leave out what the user did not ask for: a blog post then goes out as a draft.", "additionalProperties": true },
                     "note": { "type": "string", "description": "A line for the user about why now" },
                 }),
-                &["asset", "channel"],
+                &["asset"],
             ),
         },
         // ---------------------------------------------------------- config
@@ -827,7 +835,7 @@ pub fn label_for(specs: &[ToolSpec], name: &str, args: &Value) -> String {
     let name = name.strip_prefix("mcp__kiqr__").unwrap_or(name);
     let found = specs.iter().find(|t| t.name == name).map(|t| t.label.clone()).or_else(|| find(name).map(|t| t.label.to_string()));
     let Some(label) = found else { return format!("Using {name}") };
-    let target = ["section", "ability", "name", "title", "task", "type", "url", "channel"].iter().find_map(|k| args.get(*k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()));
+    let target = ["section", "ability", "name", "title", "task", "type", "url", "target"].iter().find_map(|k| args.get(*k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()));
     match target {
         Some(x) if name != "create_task" && name != "create_asset" && name != "create_image" => format!("{label}: {x}"),
         _ => label,

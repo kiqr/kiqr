@@ -90,8 +90,8 @@ impl AssetType {
 }
 
 /// Where an asset stands. Nobody sets it: it follows from the facts on the
-/// asset (`channel`, `publish_at`, `publications`, `archived`), see
-/// [`Asset::derived_status`]. Draft until the user approves it for a channel
+/// asset (`target`, `publish_at`, `publications`, `archived`), see
+/// [`Asset::derived_status`]. Draft until the user approves it for an Audience entry
 /// (Ready); Scheduled once a publish time is set; Published when it went
 /// out; Archived when put away.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,16 +126,13 @@ pub struct Asset {
     /// What it was made from: a content gap, a topic cluster, a brief version… Free-form.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub source: serde_json::Map<String, serde_json::Value>,
-    /// The account the user approved it for. Set, the asset is Ready.
+    /// The Audience entry the user approved it for (`audience::Entry` id). Set, the asset is Ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    /// The place inside that account, when it has places (a subreddit, a list).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub place: Option<String>,
-    /// When the daemon publishes it to that channel. Set, the asset is Scheduled.
+    pub target: Option<String>,
+    /// When the daemon publishes it there. Set, the asset is Scheduled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_at: Option<DateTime<Utc>>,
-    /// Choices for this publish the channel's publish tool takes (WordPress's
+    /// Choices for this publish the kind's publish tool takes (WordPress's
     /// `status`: draft or publish), kept for a scheduled publish.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub publish_options: serde_json::Map<String, serde_json::Value>,
@@ -156,9 +153,9 @@ impl Asset {
             Status::Archived
         } else if !self.publications.is_empty() {
             Status::Published
-        } else if self.channel.is_some() && self.publish_at.is_some() {
+        } else if self.target.is_some() && self.publish_at.is_some() {
             Status::Scheduled
-        } else if self.channel.is_some() {
+        } else if self.target.is_some() {
             Status::Ready
         } else {
             Status::Draft
@@ -195,13 +192,19 @@ pub struct AssetFile {
 /// Where an asset went out.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Publication {
-    /// The account it went through (older records call it the connector).
-    pub connector: String,
-    /// The place inside the account, when it has places (a subreddit, a list).
+    /// The Audience entry it went to; empty for an email to one address.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub audience: String,
+    /// The account it went through.
+    pub account: String,
+    /// The ability that published it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ability: String,
+    /// An email's sender address and, sent to one person, where it went.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub place: Option<String>,
+    pub from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account: Option<String>,
+    pub to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     pub at: DateTime<Utc>,
@@ -387,8 +390,7 @@ pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
         updated_at: now,
         files: Vec::new(),
         source,
-        channel: None,
-        place: None,
+        target: None,
         publish_at: None,
         publish_options: Default::default(),
         publish_error: None,
@@ -587,13 +589,13 @@ mod tests {
         // Status follows the facts; nobody sets it.
         let mut a = load(&store, "acme", "article", "whitening-at-home").unwrap();
         assert_eq!(a.status, Status::Draft);
-        a.channel = Some("blog".into());
+        a.target = Some("blog".into());
         let a = save(&store, "acme", &a).unwrap();
         assert_eq!(a.status, Status::Ready);
         let mut a = a;
         a.publish_at = Some(Utc::now() + chrono::Duration::hours(1));
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Scheduled);
-        a.publications.push(Publication { connector: "blog".into(), place: None, account: None, url: None, at: Utc::now(), run: None });
+        a.publications.push(Publication { audience: "blog".into(), account: "blog".into(), ability: String::new(), from: None, to: None, url: None, at: Utc::now(), run: None });
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Published);
         a.archived = true;
         assert_eq!(save(&store, "acme", &a).unwrap().status, Status::Archived);

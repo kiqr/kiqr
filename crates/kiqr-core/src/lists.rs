@@ -1,32 +1,16 @@
-//! Lists: the people a project emails. A list is a project's own
-//! (`projects/<slug>/lists/<id>/`): `list.yaml` (its name, committed) and
-//! `contacts.csv` (the people, never committed: personal data stays on this
-//! machine and out of history). A mail account sends to a list through a
-//! place of kind `list`; the daemon sends one message per contact.
+//! Lists: the people a project emails. A list is an Audience entry of kind
+//! `list` (`crate::audience`), sent from the mail account it names; its
+//! people sit beside it in `contacts.csv` and what was sent in `sends/`, never
+//! committed: personal data stays on this machine and out of history. The
+//! daemon sends one message per contact.
 
+use crate::audience::{Entry, LIST};
 use crate::paths::Home;
 use crate::Store;
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct List {
-    pub id: String,
-    pub label: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub description: String,
-    pub created_by: String,
-    pub created_at: DateTime<Utc>,
-}
-
-impl Default for List {
-    fn default() -> Self {
-        Self { id: String::new(), label: String::new(), description: String::new(), created_by: "user".into(), created_at: Utc::now() }
-    }
-}
 
 /// One person on a list. `consent` says how they agreed, in the user's words
 /// ("signed up on the site", "customer since 2024"); `unsubscribed` set means
@@ -50,86 +34,51 @@ impl Contact {
     }
 }
 
-/// What the UI and Seemo see of a list: the record plus the counts, never the addresses.
+/// What the UI and Seemo see of a list: the entry plus the counts, never the addresses.
 #[derive(Clone, Debug, Serialize)]
 pub struct ListView {
     #[serde(flatten)]
-    pub list: List,
+    pub list: Entry,
     pub contacts: usize,
     pub unsubscribed: usize,
 }
 
 pub fn dir(home: &Home, slug: &str, id: &str) -> PathBuf {
-    home.lists_dir(slug).join(id)
+    home.audience_dir(slug).join(id)
 }
 
 fn contacts_file(home: &Home, slug: &str, id: &str) -> PathBuf {
     dir(home, slug, id).join("contacts.csv")
 }
 
-impl List {
-    pub fn all(store: &Store, slug: &str) -> Result<Vec<List>> {
-        let mut out = Vec::new();
-        if let Ok(rd) = std::fs::read_dir(store.home().lists_dir(slug)) {
-            for e in rd.flatten() {
-                if let Ok(Some(l)) = store.read_yaml_opt::<List>(&e.path().join("list.yaml")) {
-                    out.push(l);
-                }
-            }
-        }
-        out.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
-        Ok(out)
-    }
+/// The project's lists.
+pub fn all(store: &Store, slug: &str) -> Result<Vec<Entry>> {
+    Ok(Entry::all(store, slug)?.into_iter().filter(Entry::is_list).collect())
+}
 
-    pub fn load(store: &Store, slug: &str, id: &str) -> Result<List> {
-        if !crate::connections::valid_id(id) {
-            bail!("no list '{id}'");
-        }
-        match store.read_yaml_opt::<List>(&dir(store.home(), slug, id).join("list.yaml"))? {
-            Some(l) => Ok(l),
-            None => bail!("no list '{id}'"),
-        }
+pub fn load(store: &Store, slug: &str, id: &str) -> Result<Entry> {
+    let e = Entry::load(store, slug, id).map_err(|_| anyhow::anyhow!("no list '{id}'"))?;
+    if !e.is_list() {
+        bail!("'{}' is not a list", e.label);
     }
+    Ok(e)
+}
 
-    /// By id or name, any case.
-    pub fn find(store: &Store, slug: &str, name: &str) -> Option<List> {
-        let n = name.trim();
-        Self::all(store, slug).unwrap_or_default().into_iter().find(|l| l.id == n || l.label.eq_ignore_ascii_case(n))
-    }
+/// A list by id or name, any case.
+pub fn find(store: &Store, slug: &str, name: &str) -> Option<Entry> {
+    let n = name.trim();
+    all(store, slug).unwrap_or_default().into_iter().find(|l| l.id == n || l.label.eq_ignore_ascii_case(n))
+}
 
-    pub fn save(&self, store: &Store, slug: &str) -> Result<()> {
-        if !crate::connections::valid_id(&self.id) {
-            bail!("a list id is letters, digits and dashes");
-        }
-        store.write_yaml(&dir(store.home(), slug, &self.id).join("list.yaml"), self)
-    }
+/// A new list, sent from `account` (a mail account; empty until one is picked).
+pub fn new_list(store: &Store, slug: &str, label: &str, description: &str, account: &str, by: &str) -> Entry {
+    Entry { id: Entry::new_id(store, slug, label), label: label.trim().to_string(), section: "list".into(), kind: LIST.into(), account: account.to_string(), description: description.trim().to_string(), added_by: by.to_string(), ..Default::default() }
+}
 
-    /// Remove the list and everyone on it.
-    pub fn delete(store: &Store, slug: &str, id: &str) -> Result<List> {
-        let l = Self::load(store, slug, id)?;
-        std::fs::remove_dir_all(dir(store.home(), slug, id))?;
-        Ok(l)
-    }
-
-    /// A unique id from a label: `newsletter`, `newsletter-2`.
-    pub fn new_id(store: &Store, slug: &str, label: &str) -> String {
-        let base = crate::assets::slugify(label);
-        let base = if base.is_empty() { "list".to_string() } else { base };
-        let root = store.home().lists_dir(slug);
-        let mut id = base.clone();
-        let mut n = 2;
-        while root.join(&id).exists() {
-            id = format!("{base}-{n}");
-            n += 1;
-        }
-        id
-    }
-
-    pub fn view(&self, home: &Home, slug: &str) -> ListView {
-        let all = contacts(home, slug, &self.id);
-        let unsubscribed = all.iter().filter(|c| !c.active()).count();
-        ListView { list: self.clone(), contacts: all.len() - unsubscribed, unsubscribed }
-    }
+pub fn view(e: &Entry, home: &Home, slug: &str) -> ListView {
+    let all = contacts(home, slug, &e.id);
+    let unsubscribed = all.iter().filter(|c| !c.active()).count();
+    ListView { list: e.clone(), contacts: all.len() - unsubscribed, unsubscribed }
 }
 
 /// Everyone on the list, in the order they were added.
@@ -317,7 +266,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let store = Store::open(Home::at(&dir)).unwrap();
         let home = store.home().clone();
-        let l = List { id: List::new_id(&store, "acme", "Newsletter"), label: "Newsletter".into(), ..Default::default() };
+        let l = new_list(&store, "acme", "Newsletter", "", "", "user");
         assert_eq!(l.id, "newsletter");
         l.save(&store, "acme").unwrap();
         let people = from_csv("Email,Full name\njane@example.com,Jane Doe\n\"bob@example.com\",\"Bob, Jr.\"\nnot-an-address,X\n", "signed up on the site");
@@ -327,13 +276,13 @@ mod tests {
         assert_eq!(contacts(&home, "acme", "newsletter")[1].name, "Bob, Jr.");
         assert!(unsubscribe(&home, "acme", "newsletter", "JANE@example.com").unwrap());
         assert_eq!(recipients(&home, "acme", "newsletter").len(), 1);
-        let v = l.view(&home, "acme");
+        let v = view(&l, &home, "acme");
         assert_eq!((v.contacts, v.unsubscribed), (1, 1));
         assert_eq!(from_csv("a@b.co\nc@d.org\n", "").len(), 2, "no header: addresses alone");
-        assert!(List::find(&store, "acme", "NEWSLETTER").is_some());
+        assert!(find(&store, "acme", "NEWSLETTER").is_some());
         assert!(remove(&home, "acme", "newsletter", "bob@example.com").unwrap());
-        List::delete(&store, "acme", "newsletter").unwrap();
-        assert!(List::all(&store, "acme").unwrap().is_empty());
+        Entry::delete(&store, "acme", "newsletter").unwrap();
+        assert!(all(&store, "acme").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

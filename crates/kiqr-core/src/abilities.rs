@@ -185,7 +185,7 @@ pub fn size_preset(name: &str) -> Option<(u32, u32)> {
 }
 
 /// A size by name: a channel kind's own image size first, then a preset or `WxH`.
-pub fn size_for(name: &str, kinds: &[crate::extensions::ChannelKind]) -> Option<(u32, u32)> {
+pub fn size_for(name: &str, kinds: &[crate::extensions::Kind]) -> Option<(u32, u32)> {
     let n = name.trim().to_ascii_lowercase();
     kinds.iter().find(|k| k.kind == n).and_then(|k| k.image).map(|i| (i.width, i.height)).or_else(|| size_preset(name))
 }
@@ -202,7 +202,7 @@ mod tests {
             assert!(s.description.contains("Built-in renderer"));
         }
         assert_eq!(size_preset("square"), Some((1080, 1080)));
-        let network = crate::extensions::ChannelKind { kind: "somenet".into(), image: Some(crate::extensions::ImageSize { width: 1200, height: 627 }), ..Default::default() };
+        let network = crate::extensions::Kind { kind: "somenet".into(), image: Some(crate::extensions::ImageSize { width: 1200, height: 627 }), ..Default::default() };
         assert_eq!(size_for("somenet", &[network.clone()]), Some((1200, 627)));
         assert_eq!(size_for("og", &[network]), Some((1200, 630)));
         assert_eq!(size_preset("somenet"), None);

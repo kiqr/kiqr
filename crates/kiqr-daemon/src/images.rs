@@ -352,7 +352,7 @@ fn esc(s: &str) -> String {
 }
 
 /// The card size for a post: its network's (the channel kind in its first tag), else landscape.
-fn card_size(tags: &[String], kinds: &[kiqr_core::extensions::ChannelKind]) -> (u32, u32) {
+fn card_size(tags: &[String], kinds: &[kiqr_core::extensions::Kind]) -> (u32, u32) {
     tags.first().and_then(|t| kinds.iter().find(|k| &k.kind == t)).and_then(|k| k.image).map(|i| (i.width, i.height)).or_else(|| abilities::size_preset("landscape")).unwrap_or((1600, 900))
 }
 

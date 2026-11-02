@@ -53,6 +53,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::connect::routes())
         .merge(crate::signins::routes())
         .merge(crate::accounts::routes())
+        .merge(crate::audience::routes())
         .merge(crate::networks::routes())
         .merge(crate::market::routes())
         .merge(crate::images::routes())
@@ -733,10 +734,11 @@ async fn generate_assets(State(app): State<App>, Path(slug): Path<String>, Json(
     draft_posts(&app, &slug, g.count, g.network.trim()).await
 }
 
-/// Posts for an account that was just connected: three for its network, once, when the
+/// Posts for a network that just joined the Audience: three for it, once, when the
 /// business profile is there and none were written for it yet. Nothing on the first run
-/// before any account: posts are written for the places the business publishes, not for
-/// nowhere. Failures are logged, never shown here; the Library and Seemo's own line tell.
+/// before anything is in the Audience: posts are written for the places the business
+/// publishes, not for nowhere. Failures are logged, never shown here; the Library and
+/// Seemo's own line tell.
 pub(crate) async fn posts_for_new_account(app: &App, slug: &str, kind: &str) {
     if kind.is_empty() || !crate::networks::for_posts(app, slug).await.iter().any(|k| k.kind == kind) {
         return;
@@ -794,7 +796,7 @@ async fn put_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String,
         return Err(ApiError(StatusCode::BAD_REQUEST, "an asset needs a title".into()));
     }
     // Status, publications and the publish schedule are facts the dedicated routes change, not this one.
-    let next = Asset { id: current.id, kind: current.kind, created: current.created, files: current.files, title: body.title.trim().to_string(), publications: current.publications, channel: current.channel, publish_at: current.publish_at, publish_error: current.publish_error, ..body };
+    let next = Asset { id: current.id, kind: current.kind, created: current.created, files: current.files, title: body.title.trim().to_string(), publications: current.publications, target: current.target, publish_at: current.publish_at, publish_error: current.publish_error, ..body };
     let saved = assets::save(&app.store, &slug, &next)?;
     emit_saved(&app, &slug, &saved, false);
     Ok(Json(saved))

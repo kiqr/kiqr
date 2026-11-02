@@ -87,7 +87,7 @@ pub async fn suggestions(app: &App, slug: &str) -> anyhow::Result<Value> {
 
     let mut out = vec![];
     for item in items.iter().filter(|i| !intake.dismissed.contains(&i.id)) {
-        let channels: Vec<(String, String)> = item.channels.iter().map(|c| (c.kind.clone(), c.display_name().to_string())).collect();
+        let channels: Vec<(String, String)> = item.kinds.iter().map(|c| (c.kind.clone(), c.display_name().to_string())).collect();
         let why = reasons(&item.fits, &channels, &intake, &html);
         if why.is_empty() {
             continue;
@@ -116,7 +116,7 @@ pub async fn suggestions(app: &App, slug: &str) -> anyhow::Result<Value> {
     out.sort_by_key(rank);
 
     // Networks the owner named that no ability publishes to yet.
-    let known: Vec<(String, String)> = items.iter().flat_map(|i| i.channels.iter().map(|c| (c.kind.clone(), c.display_name().to_string()))).collect();
+    let known: Vec<(String, String)> = items.iter().flat_map(|i| i.kinds.iter().map(|c| (c.kind.clone(), c.display_name().to_string()))).collect();
     let waiting: Vec<&String> = intake.networks.iter().filter(|n| !known.iter().any(|(k, name)| k.eq_ignore_ascii_case(n) || name.eq_ignore_ascii_case(n))).collect();
     Ok(json!({ "suggestions": out, "waiting": waiting }))
 }

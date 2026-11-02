@@ -114,43 +114,45 @@ pub enum EventKind {
     SuggestionsChanged {},
     /// One of KIQR's own sign-ins (kiqr.cloud, UnblockingAPI) changed: signed in, out, or it failed.
     SignInChanged { id: String, signed_in: bool, #[serde(default)] error: Option<String> },
-    ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] connection: Option<String> },
+    ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] account: Option<String> },
 
-    // Abilities and channels.
+    // Abilities, accounts and the Audience.
     /// An ability made a file into an asset: `ability` is image, video or music.
     MediaCreated { ability: String, asset_type: String, id: String, file: String, provider: String },
-    /// An account (a connection of a service in a project) was added or changed; `kind` is set when its service publishes.
-    ConnectionSaved { connection: String, label: String, ability: String, #[serde(default)] kind: String },
+    /// An account (who Seemo signs in as, on a service) was added or changed.
+    AccountSaved { account: String, label: String, service: String },
     /// A program an ability needs is being installed into `~/.kiqr/bin`, is there, or could not be.
     ProgramInstalling { program: String, version: String, #[serde(default)] note: String },
     ProgramInstalled { program: String, version: String },
     ProgramFailed { program: String, version: String, message: String },
     /// One line of an install's output (what the installer did, what the program it runs printed), for the install log.
     ProgramLog { program: String, version: String, line: String },
-    /// An account's sign-in on a hosted program changed state: `signed_in`, `signed_out`, `needs_hand`, `checking`.
-    SessionChanged { connection: String, state: String, #[serde(default)] message: String },
+    /// Whether an account works changed (`accounts::State`: `ready`, `signed_out`, `needs_hand`, `checking`, …).
+    AccountStateChanged { account: String, state: String, #[serde(default)] message: String },
     /// A live view of an account's program: one frame (a JPEG or PNG, base64) for whoever watches, never kept.
-    HandsFrame { connection: String, hands: String, mime: String, data: String, #[serde(default)] url: String },
-    HandsStarted { connection: String, hands: String },
-    HandsEnded { connection: String, hands: String, #[serde(default)] message: String },
-    /// A list of people to email was added, changed or had people added or removed.
-    ListChanged { list: String, label: String, contacts: usize },
-    ListDeleted { list: String },
+    HandsFrame { account: String, hands: String, mime: String, data: String, #[serde(default)] url: String },
+    HandsStarted { account: String, hands: String },
+    HandsEnded { account: String, hands: String, #[serde(default)] message: String },
+    /// An Audience entry (a page, a community, a list) was added, changed, suggested or had people added or removed (`contacts`, a list's).
+    AudienceSaved { entry: String, label: String, section: String, #[serde(default)] suggested: bool, #[serde(default)] contacts: Option<usize> },
+    AudienceDeleted { entry: String },
     /// A send to a list is under way: so many of the people done, so many failed.
     ListSending { list: String, subject: String, sent: usize, failed: usize, total: usize, #[serde(default)] done: bool },
-    ConnectionDeleted { connection: String, ability: String },
-    /// An ability acted through an account (anything but reading), logged on it.
-    AccountActed { connection: String, ability: String, role: String, #[serde(default)] target: String, #[serde(default)] url: Option<String> },
+    AccountDeleted { account: String, service: String },
+    /// What the project picked for an ability (a property, a site) changed.
+    AbilitySettingsSaved { ability: String, account: String },
+    /// An ability acted through an account (anything but reading), logged on it; `audience` when it was in an entry.
+    AccountActed { account: String, ability: String, role: String, #[serde(default)] target: String, #[serde(default)] audience: String, #[serde(default)] url: Option<String> },
     /// An action through an account was refused: `why` is `duplicate` (the
     /// same role on the same target was done already) or `cap` (the service's
     /// daily cap is reached).
-    ActionRefused { connection: String, ability: String, why: String, message: String },
-    /// An asset went out through an account, to a place in it when it has places.
-    AssetPublished { asset_type: String, id: String, channel: String, #[serde(default)] place: Option<String>, #[serde(default)] url: Option<String> },
-    /// The user approved an asset for a channel (it is Ready), or set when the
+    ActionRefused { account: String, ability: String, why: String, message: String },
+    /// An asset went out to an Audience entry (`audience`; empty for an email to one address) through an account.
+    AssetPublished { asset_type: String, id: String, #[serde(default)] audience: String, account: String, #[serde(default)] url: Option<String> },
+    /// The user approved an asset for an Audience entry (it is Ready), or set when the
     /// daemon publishes it (`at` set: Scheduled).
-    AssetApproved { asset_type: String, id: String, title: String, channel: String, #[serde(default)] at: Option<chrono::DateTime<chrono::Utc>> },
-    /// KIQR no longer counts an asset as published; the copy on the channel is not touched.
+    AssetApproved { asset_type: String, id: String, title: String, target: String, #[serde(default)] at: Option<chrono::DateTime<chrono::Utc>> },
+    /// KIQR no longer counts an asset as published; the copy out there is not touched.
     AssetUnpublished { asset_type: String, id: String, title: String },
 
     // The marketing plan and its campaigns.
@@ -210,18 +212,19 @@ impl EventKind {
                 | EventKind::SignInChanged { .. }
                 | EventKind::SuggestionsChanged { .. }
                 | EventKind::MediaCreated { .. }
-                | EventKind::ConnectionSaved { .. }
-                | EventKind::ConnectionDeleted { .. }
+                | EventKind::AccountSaved { .. }
+                | EventKind::AccountDeleted { .. }
+                | EventKind::AbilitySettingsSaved { .. }
                 | EventKind::ProgramInstalling { .. }
                 | EventKind::ProgramInstalled { .. }
                 | EventKind::ProgramFailed { .. }
                 | EventKind::ProgramLog { .. }
-                | EventKind::SessionChanged { .. }
+                | EventKind::AccountStateChanged { .. }
                 | EventKind::HandsFrame { .. }
                 | EventKind::HandsStarted { .. }
                 | EventKind::HandsEnded { .. }
-                | EventKind::ListChanged { .. }
-                | EventKind::ListDeleted { .. }
+                | EventKind::AudienceSaved { .. }
+                | EventKind::AudienceDeleted { .. }
                 | EventKind::ListSending { .. }
                 | EventKind::AccountActed { .. }
                 | EventKind::ActionRefused { .. }

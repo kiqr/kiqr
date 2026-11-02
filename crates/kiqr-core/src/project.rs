@@ -4,6 +4,7 @@ use crate::{Store, events::{EventBus, EventKind}};
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use url::Url;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -19,9 +20,23 @@ pub struct Project {
     /// Abilities switched off for this project only (ids; core ones included).
     #[serde(default)]
     pub abilities_off: Vec<String>,
-    /// Channel kinds whose suggested ability the user waved away ("not now"), never offered again.
+    /// Kinds whose suggested ability the user waved away ("not now"), never offered again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggestions_dismissed: Vec<String>,
+    /// What the project picked once for an ability (its manifest's `settings`:
+    /// a GA4 property, a Search Console site), and through which account.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ability_settings: BTreeMap<String, AbilitySetting>,
+}
+
+/// One ability's settings in a project: the account its choices were read
+/// through and the values (`property: "123"`), which fill its calls.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AbilitySetting {
+    pub account: String,
+    #[serde(flatten)]
+    pub values: BTreeMap<String, serde_json::Value>,
 }
 
 impl Project {
@@ -73,6 +88,7 @@ impl Project {
         let project = Project {
             abilities_off: vec![],
             suggestions_dismissed: vec![],
+            ability_settings: BTreeMap::new(),
             name: url.host_str().unwrap_or(&slug).trim_start_matches("www.").to_string(),
             slug: slug.clone(),
             url: url.to_string(),

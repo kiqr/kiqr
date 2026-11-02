@@ -256,34 +256,40 @@ pub struct ExtraTool {
     pub provide: Provide,
 }
 
-/// A place content goes out: an email address, a blog, a social network.
-/// A network is a channel kind; everything KIQR knows about one (its name,
-/// where profiles live, the text limit, the image size, how a post looks
-/// there) comes from the ability that declares it, never from KIQR's code.
+/// Somewhere content goes out on a service: a social network, a blog, an
+/// inbox. Everything KIQR knows about one (its name, the text limit, the image
+/// size, how a post looks there, what names a spot on it) comes from the
+/// ability that declares it, never from KIQR's code. Where exactly a post goes
+/// is an Audience entry of the kind (`crate::audience`), never the account.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ChannelKind {
+pub struct Kind {
     pub kind: String,
+    /// What one spot of the kind is called ("Subreddit", "Page", "Blog").
     pub label: String,
-    /// The fields a place inside an account has (a subreddit, a branch):
-    /// name → {type, label, help, optional, enum}. Empty: the account is the
-    /// one place. A kind with a required field needs a place before anything
-    /// goes out. Older manifests call it `destination`.
-    #[serde(alias = "destination")]
-    pub place: BTreeMap<String, Value>,
-    /// What this ability does on channels of the kind: `publish`, `read`,
-    /// `reply`, `manage` (`ROLES`). Empty: `publish`. Several abilities of a
-    /// service may act on one channel; exactly one publishes to it.
-    pub does: Vec<String>,
-    /// The extra tool, or the ability, that performs a publish. Needed when it publishes.
+    /// Where an Audience entry of the kind is listed: `page` (the business's
+    /// own: a profile, a page, a blog), `community` (somewhere it takes part:
+    /// a subreddit, a group) or `list` (people it emails). Default `page`.
+    pub section: String,
+    /// The fields that name a spot (a subreddit): name → {label, help,
+    /// placeholder, optional, enum, pattern}. A publish there carries them as
+    /// arguments; an Audience entry holds them. Empty: the account is the spot.
+    pub target: BTreeMap<String, Value>,
+    /// How a URL argument of a call names the spot: arg → a pattern with the
+    /// target's fields in braces (`post_url: "reddit.com/r/{subreddit}/"`), so a
+    /// reply to a post is known to be in r/selfhosted.
+    pub target_from: BTreeMap<String, String>,
+    /// The account itself is the one spot (an X profile): connecting it makes
+    /// its Audience entry.
+    pub account_is_target: bool,
+    /// A link to a spot, a template over the target's fields.
+    pub url: String,
+    /// The tool, or the ability, that performs a publish. Empty: nothing publishes as this kind.
     pub publish: String,
     /// The network's name as people write it ("LinkedIn"); the label when empty.
     pub name: String,
-    /// A lucide icon name for the channel.
+    /// A lucide icon name.
     pub icon: String,
-    /// Hosts the business's own profile lives on (`linkedin.com`): the brand
-    /// crawl recognises a profile there as this kind.
-    pub profile_hosts: Vec<String>,
     /// Characters a post may have there.
     pub text_limit: Option<u32>,
     /// The image size a post there gets.
@@ -296,8 +302,10 @@ pub struct ChannelKind {
     pub writing: String,
 }
 
-/// What an ability may do on a channel.
+/// What a tool may do on an account.
 pub const ROLES: &[&str] = &["publish", "read", "reply", "manage"];
+/// Where an Audience entry is listed.
+pub const SECTIONS: &[&str] = &["page", "community", "list"];
 
 impl ExtraTool {
     /// Does more than read: Seemo's call asks the user first.
@@ -306,14 +314,14 @@ impl ExtraTool {
     }
 }
 
-impl ChannelKind {
-    /// `does`, else `publish`.
-    pub fn roles(&self) -> Vec<&str> {
-        if self.does.is_empty() { vec!["publish"] } else { self.does.iter().map(String::as_str).collect() }
+impl Kind {
+    pub fn publishes(&self) -> bool {
+        !self.publish.is_empty()
     }
 
-    pub fn publishes(&self) -> bool {
-        self.roles().contains(&"publish")
+    /// `section`, else `page`.
+    pub fn section(&self) -> &str {
+        if self.section.is_empty() { "page" } else { &self.section }
     }
 
     pub fn display_name(&self) -> &str {
@@ -327,7 +335,85 @@ impl ChannelKind {
     }
     /// A social network (as opposed to an inbox or a blog): somewhere posts go.
     pub fn is_network(&self) -> bool {
-        !self.profile_hosts.is_empty() || self.text_limit.is_some() || self.preview == "feed"
+        self.text_limit.is_some() || self.preview == "feed"
+    }
+
+    /// The target fields a spot must have.
+    pub fn required(&self) -> Vec<&str> {
+        self.target.iter().filter(|(_, s)| !s["optional"].as_bool().unwrap_or(false)).map(|(n, _)| n.as_str()).collect()
+    }
+
+    /// The target fields a URL names, through `target_from` (`{field}` in the pattern matches up to the next `/`, `?` or `#`).
+    pub fn target_of_url(&self, arg: &str, url: &str) -> Option<BTreeMap<String, Value>> {
+        let pat = self.target_from.get(arg)?;
+        let mut out = BTreeMap::new();
+        // The pattern's literal start is found anywhere in the URL (scheme and www. vary).
+        let first = pat.find('{').unwrap_or(pat.len());
+        let at = url.to_ascii_lowercase().find(&pat[..first].to_ascii_lowercase())?;
+        let mut rest = &url[at + first..];
+        let mut p = &pat[first..];
+        while let Some(open) = p.find('{') {
+            let lit = &p[..open];
+            if !rest.to_ascii_lowercase().starts_with(&lit.to_ascii_lowercase()) {
+                return None;
+            }
+            rest = &rest[lit.len()..];
+            let close = p[open..].find('}')? + open;
+            let name = &p[open + 1..close];
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            if end == 0 {
+                return None;
+            }
+            out.insert(name.to_string(), Value::String(rest[..end].to_string()));
+            rest = &rest[end..];
+            p = &p[close + 1..];
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Check a spot's fields against `target`: required ones there, `enum` and
+    /// `pattern` honoured, nothing it does not declare. The values land in URLs.
+    pub fn check_target(&self, fields: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>> {
+        let mut out = BTreeMap::new();
+        for (name, v) in fields {
+            let Some(spec) = self.target.get(name) else { bail!("{} has no field '{name}'", self.display_name()) };
+            let text = match v {
+                Value::String(s) => s.trim().to_string(),
+                Value::Null => continue,
+                other => other.to_string(),
+            };
+            if text.is_empty() {
+                continue;
+            }
+            if let Some(opts) = spec["enum"].as_array() {
+                if !opts.iter().any(|o| o.as_str() == Some(text.as_str())) {
+                    bail!("'{text}' is not one of the {} for {name}", opts.iter().filter_map(|o| o.as_str()).collect::<Vec<_>>().join(", "));
+                }
+            }
+            if let Some(p) = spec["pattern"].as_str() {
+                let re = regex::Regex::new(p).map_err(|e| anyhow::anyhow!("{}: the pattern of {name} does not compile: {e}", self.kind))?;
+                if !re.is_match(&text) {
+                    bail!("'{text}' is not a valid {}", spec["label"].as_str().unwrap_or(name).to_lowercase());
+                }
+            } else if text.contains(['/', '?', '#', '\\']) || text.chars().any(char::is_control) {
+                bail!("'{text}' is not a valid {}", spec["label"].as_str().unwrap_or(name).to_lowercase());
+            }
+            out.insert(name.clone(), Value::String(text));
+        }
+        let missing: Vec<&str> = self.required().into_iter().filter(|n| !out.contains_key(*n)).collect();
+        if !missing.is_empty() {
+            bail!("{} needs {}", self.display_name(), missing.join(", "));
+        }
+        Ok(out)
+    }
+
+    /// A spot's link: `url` filled with its fields.
+    pub fn url_of(&self, fields: &BTreeMap<String, Value>) -> String {
+        let mut u = self.url.clone();
+        for (k, v) in fields {
+            u = u.replace(&format!("{{{{{k}}}}}"), v.as_str().unwrap_or(""));
+        }
+        if u.contains("{{") { String::new() } else { u }
     }
 }
 
@@ -419,22 +505,18 @@ pub struct Manifest {
     /// shows in the grid of things to connect (`Service`).
     pub service: Service,
     /// What an account of this ability allows Seemo when it is made, by role
-    /// (`connections::PERMISSIONS`); the user changes it on the account. A role
+    /// (`accounts::PERMISSIONS`); the user changes it on the account. A role
     /// not named has its default: acting asks, the rest is on.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub allow: BTreeMap<String, crate::connections::Allow>,
-    /// The fields of a place this ability works on inside an account of its
-    /// service (an analytics property, a Search Console site): name → {label,
-    /// help, placeholder, optional, enum, choices}. Such a place has the
-    /// ability's id as its kind; its fields fill the ability's calls
-    /// (`{{property}}`). A field with `choices` is picked from a list read
-    /// through the account. Empty: the account itself is the place.
+    pub allow: BTreeMap<String, crate::accounts::Allow>,
+    /// What the project picks once for this ability, through one of its
+    /// accounts (an analytics property, a Search Console site): name → {label,
+    /// help, placeholder, optional, enum, choices}. Kept in the project
+    /// (`project.yaml`, `ability_settings`), never on the account; the values
+    /// fill the ability's calls (`{{property}}`) unless a call names its own. A
+    /// field with `choices` is picked from a list read through the account.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub places: BTreeMap<String, Value>,
-    /// What older accounts of this ability called things, so they move along
-    /// when the ability changes shape (`connections::move_old`).
-    #[serde(skip_serializing_if = "Moved::is_empty")]
-    pub moved: Moved,
+    pub settings: BTreeMap<String, Value>,
     /// One call at a time per account, across every ability of the service
     /// that says so: a browser session that two callers must not drive at once.
     pub exclusive: bool,
@@ -452,7 +534,8 @@ pub struct Manifest {
     /// ability id → how this connection provides it.
     pub provides: BTreeMap<String, Provide>,
     pub tools: Vec<ExtraTool>,
-    pub channels: Vec<ChannelKind>,
+    /// Where content goes out through this ability (`Kind`).
+    pub kinds: Vec<Kind>,
     /// Metrics sources this connection reads (`traffic`, `search`, `conversions`, `ranks`, `mentions`),
     /// each with the requests and the mapping that read it (`crate::sources`).
     #[serde(deserialize_with = "crate::sources::deserialize")]
@@ -625,29 +708,13 @@ pub struct LiveView {
     pub navigate: Step,
 }
 
-/// What older accounts of an ability called things: keys renamed
-/// (`GA4_TOKEN` → `GOOGLE_TOKEN`), and keys whose value is now a place field
-/// (`GA4_PROPERTY_ID` → the `property` of a place of this ability's kind).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Moved {
-    pub keys: BTreeMap<String, String>,
-    pub places: BTreeMap<String, String>,
-}
-
-impl Moved {
-    pub fn is_empty(&self) -> bool {
-        self.keys.is_empty() && self.places.is_empty()
-    }
-}
-
 /// The list a field is picked from, when it has one: an `auth` key's
-/// `choices`, or a place field's (the ability's own `places`, or a kind's `place`).
+/// `choices`, or a setting's.
 pub fn choices_of(m: &Manifest, name: &str) -> Option<Choices> {
     if let Some(c) = m.auth.iter().find(|a| a.env == name).and_then(|a| a.choices.clone()) {
         return Some(c);
     }
-    let spec = m.places.get(name).or_else(|| m.channels.iter().find_map(|k| k.place.get(name)))?;
+    let spec = m.settings.get(name)?;
     serde_json::from_value(spec.get("choices")?.clone()).ok()
 }
 
@@ -707,8 +774,7 @@ impl Default for Manifest {
             transport: Transport::Http,
             service: Service::default(),
             allow: BTreeMap::new(),
-            places: BTreeMap::new(),
-            moved: Moved::default(),
+            settings: BTreeMap::new(),
             exclusive: false,
             daily_cap: None,
             auth: vec![],
@@ -717,7 +783,7 @@ impl Default for Manifest {
             smtp: None,
             provides: Default::default(),
             tools: vec![],
-            channels: vec![],
+            kinds: vec![],
             sources: BTreeMap::new(),
             learn: None,
             fits: Fits::default(),
@@ -758,7 +824,9 @@ pub struct Instructions {
     pub author: String,
     /// Ability contracts it needs (`image`, `publish`), shown as "needs a connection" when none is ready.
     pub abilities: Vec<String>,
-    pub channels: Vec<String>,
+    /// The kinds it is about (`reddit`): informational, shown with it.
+    #[serde(alias = "channels")]
+    pub kinds: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1060,32 +1128,22 @@ pub fn validate(m: &Manifest) -> Result<()> {
             bail!("service: profile_hosts holds '{h}', which is not a host name");
         }
     }
-    for (name, spec) in &m.places {
+    for (name, spec) in &m.settings {
         if !valid_env_name(&name.to_ascii_uppercase()) || name.contains(char::is_uppercase) {
-            bail!("places: '{name}' is not a field name (lowercase letters, digits, _)");
+            bail!("settings: '{name}' is not a field name (lowercase letters, digits, _)");
         }
         if let Some(ch) = spec.get("choices") {
-            let ch: Choices = serde_json::from_value(ch.clone()).map_err(|e| anyhow::anyhow!("places: the choices of {name} do not parse: {e}"))?;
+            let ch: Choices = serde_json::from_value(ch.clone()).map_err(|e| anyhow::anyhow!("settings: the choices of {name} do not parse: {e}"))?;
             if ch.request.url.trim().is_empty() || ch.list.trim().is_empty() || ch.value.trim().is_empty() {
-                bail!("places: the choices of {name} need a request, a list and a value");
+                bail!("settings: the choices of {name} need a request, a list and a value");
             }
         }
     }
-    for (old, new) in m.moved.keys.iter() {
-        if !valid_env_name(old) || !valid_env_name(new) {
-            bail!("moved.keys: '{old}' → '{new}' are not variable names");
-        }
-    }
-    for (old, field) in m.moved.places.iter() {
-        if !valid_env_name(old) || !m.places.contains_key(field) {
-            bail!("moved.places: '{old}' → '{field}', which is not one of this ability's place fields");
-        }
-    }
     for (role, a) in &m.allow {
-        if !crate::connections::PERMISSIONS.contains(&role.as_str()) {
-            bail!("allow names '{role}', which is not one of {}", crate::connections::PERMISSIONS.join(", "));
+        if !crate::accounts::PERMISSIONS.contains(&role.as_str()) {
+            bail!("allow names '{role}', which is not one of {}", crate::accounts::PERMISSIONS.join(", "));
         }
-        if !crate::connections::Allow::acts(role) && *a == crate::connections::Allow::Ask {
+        if !crate::accounts::Allow::acts(role) && *a == crate::accounts::Allow::Ask {
             bail!("allow: '{role}' never asks; it is on or off");
         }
     }
@@ -1238,25 +1296,34 @@ pub fn validate(m: &Manifest) -> Result<()> {
             }
         }
     }
-    for c in &m.channels {
+    for c in &m.kinds {
         if c.kind.trim().is_empty() {
-            bail!("a channel needs a kind");
+            bail!("a kind needs a name (`kind`)");
         }
-        if let Some(r) = c.does.iter().find(|r| !ROLES.contains(&r.as_str())) {
-            bail!("channel '{}' does '{r}', which is not one of {}", c.kind, ROLES.join(", "));
+        if !crate::tools::valid_ext_id(&c.kind) || c.kind == "list" {
+            bail!("kind '{}' must be lowercase letters, digits and dashes (and not `list`)", c.kind);
         }
-        if c.publishes() && c.publish.trim().is_empty() {
-            bail!("channel '{}' publishes, so it needs a publish tool", c.kind);
+        if !c.section.is_empty() && !SECTIONS.contains(&c.section.as_str()) {
+            bail!("kind '{}': section '{}' is not one of {}", c.kind, c.section, SECTIONS.join(", "));
         }
         if !c.publish.trim().is_empty() && !m.tools.iter().any(|t| t.name == c.publish) && !m.provides.contains_key(&c.publish) {
-            bail!("channel '{}' publishes with '{}', which this connection does not define", c.kind, c.publish);
+            bail!("kind '{}' publishes with '{}', which this ability does not define", c.kind, c.publish);
         }
-        if !crate::tools::valid_ext_id(&c.kind) {
-            bail!("channel kind '{}' must be lowercase letters, digits and dashes", c.kind);
+        if c.account_is_target && !c.target.is_empty() {
+            bail!("kind '{}': the account is the spot, so it has no target fields", c.kind);
         }
-        for h in &c.profile_hosts {
-            if h.trim().is_empty() || h.contains('/') || h.contains(':') {
-                bail!("channel '{}': profile_hosts holds '{h}', which is not a host name", c.kind);
+        for (name, spec) in &c.target {
+            if !valid_env_name(&name.to_ascii_uppercase()) || name.contains(char::is_uppercase) {
+                bail!("kind '{}': '{name}' is not a field name (lowercase letters, digits, _)", c.kind);
+            }
+            if let Some(p) = spec["pattern"].as_str() {
+                regex::Regex::new(p).map_err(|e| anyhow::anyhow!("kind '{}': the pattern of {name} does not compile: {e}", c.kind))?;
+            }
+        }
+        for (arg, pat) in &c.target_from {
+            let named: Vec<&str> = pat.split('{').skip(1).filter_map(|x| x.split('}').next()).collect();
+            if named.is_empty() || named.iter().any(|n| !c.target.contains_key(*n)) {
+                bail!("kind '{}': target_from.{arg} must name the target's fields in braces", c.kind);
             }
         }
         if let Some(i) = c.image {
@@ -1828,13 +1895,13 @@ tools:
       headers: { Authorization: "Basic ${WP_BASIC}" }
       json: { title: "{{title}}", content: "{{html}}", status: "{{status|draft}}" }
     result: { text: /link }
-channels:
-  - { kind: wordpress, label: WordPress blog, publish: publish_article, destination: { site: { type: string, label: Site } } }
+kinds:
+  - { kind: wordpress, label: Blog, publish: publish_article, account_is_target: true }
 "#;
 
     #[test]
     fn learn_reads_with_its_own_reading_tools() {
-        let read = WP.replace("channels:", "  - { name: get_page, label: Reading a page, description: A page., request: { method: GET, url: \"https://myblog.com/{{path}}\" } }\nchannels:");
+        let read = WP.replace("kinds:", "  - { name: get_page, label: Reading a page, description: A page., request: { method: GET, url: \"https://myblog.com/{{path}}\" } }\nkinds:");
         let ok = format!("{read}learn:\n  label: Learn from the blog\n  documents:\n    - {{ tool: get_page, args: {{ path: about }}, title: About, url: \"https://myblog.com/about\" }}\n    - {{ tool: get_page, title: \"{{{{value}}}}\", url: \"https://myblog.com/{{{{value}}}}\", each: {{ list: /pages, value: /slug, only: [.md], tool: get_page, arg: path }} }}\n");
         let m = parse_manifest(&ok).unwrap_or_else(|e| panic!("{e:#}"));
         let l = m.learn.as_ref().unwrap();
@@ -1849,29 +1916,32 @@ channels:
     }
 
     #[test]
-    fn service_blocks_allow_and_places_parse() {
+    fn service_blocks_allow_and_kinds_parse() {
         // A service as a string, or as a block with how the connect grid shows it.
         let m = parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: { id: blogs, name: Blogs, icon: newspaper, group: website, profile_hosts: [blog.example] }\nallow: { publish: auto, learn: off }")).unwrap();
         assert_eq!((m.service(), m.service.name.as_str(), m.service.group.as_str()), ("blogs", "Blogs", "website"));
         assert_eq!(m.service_card().profile_hosts, vec!["blog.example".to_string()]);
-        assert_eq!((m.allow["publish"], m.allow["learn"]), (crate::connections::Allow::Auto, crate::connections::Allow::Off));
+        assert_eq!((m.allow["publish"], m.allow["learn"]), (crate::accounts::Allow::Auto, crate::accounts::Allow::Off));
         let plain = parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: blogs")).unwrap();
         assert_eq!((plain.service(), plain.service_card().name.as_str()), ("blogs", plain.name.as_str()), "no block: the ability's own name");
         assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nservice: { id: blogs, group: nowhere }")).unwrap_err().to_string().contains("group"));
         assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nallow: { shout: auto }")).unwrap_err().to_string().contains("allow"));
         assert!(parse_manifest(&WP.replace("id: wordpress", "id: wordpress\nallow: { learn: ask }")).unwrap_err().to_string().contains("never asks"));
-        // A kind's place fields, by either name.
-        let with_place = parse_manifest(&WP.replace("destination: { site: { type: string, label: Site } }", "place: { branch: { label: Branch, optional: true } }")).unwrap();
-        assert!(with_place.channels[0].place.contains_key("branch") && !with_place.channels[0].place.contains_key("site"));
-        let old_name = parse_manifest(WP).unwrap();
-        assert!(old_name.channels[0].place.contains_key("site"), "older manifests say destination");
+        // A kind's target fields; the account being the spot has none, and a section is one of three.
+        let sub = WP.replace("account_is_target: true", "section: community, target: { sub: { label: Sub, pattern: \"^[a-z]+$\" } }, target_from: { post_url: \"myblog.com/{sub}/\" }");
+        let k = &parse_manifest(&sub).unwrap().kinds[0];
+        assert_eq!((k.section(), k.required()), ("community", vec!["sub"]));
+        assert!(parse_manifest(&sub.replace("{sub}/", "{nope}/")).unwrap_err().to_string().contains("target_from"));
+        assert!(parse_manifest(&sub.replace("section: community", "section: forum")).unwrap_err().to_string().contains("section"));
+        assert!(parse_manifest(&sub.replace("section: community", "account_is_target: true")).unwrap_err().to_string().contains("no target fields"));
+        assert!(parse_manifest(&WP.replace("kind: wordpress", "kind: list")).is_err(), "list is the Audience's own kind");
     }
 
     #[test]
     fn manifests_parse_and_validate() {
         let m = parse_manifest(WP).unwrap();
         assert_eq!(m.tools.len(), 1);
-        assert_eq!(m.channels[0].publish, "publish_article");
+        assert_eq!(m.kinds[0].publish, "publish_article");
         assert_eq!(missing_keys(&m, |k| k == "WP_USER"), vec!["WP_APP_PASSWORD".to_string()]);
         let bad = WP.replace("hosts: [myblog.com]", "hosts: [other.com]");
         assert!(parse_manifest(&bad).unwrap_err().to_string().contains("not in hosts"));

@@ -57,27 +57,22 @@ pub async fn pull(app: &App, slug: &str, source: &str) -> Result<Snapshot> {
 /// executor as any other call: hosts, keys and sign-in tokens included.
 async fn read_source(app: &App, slug: &str, m: &Manifest, source: &str, from: NaiveDate, to: NaiveDate) -> Result<Vec<Row>> {
     let spec = m.sources.get(source).filter(|s| !s.requests.is_empty()).ok_or_else(|| anyhow!("{} does not say how to read {source}; update it under Setup → Abilities", m.name))?;
-    let mut args = kiqr_core::sources::args(from, to);
+    let args = kiqr_core::sources::args(from, to);
     let mut answers = Vec::with_capacity(spec.requests.len());
-    // Through the first account of the service that may measure (the default first); none means the default.
-    let account = kiqr_core::connections::Connection::of(&app.store, slug, m.service()).into_iter().find(|c| c.allow("measure") != kiqr_core::connections::Allow::Off).map(|c| c.id);
-    if account.is_none() && !kiqr_core::connections::Connection::of(&app.store, slug, m.service()).is_empty() {
+    // Through the account the project's settings for it name (the property was picked through it),
+    // else the first account of the service that may measure (the default first). The settings
+    // fill the calls (`ext::execute`).
+    let picked = kiqr_core::project::Project::load(&app.store, slug).ok().and_then(|p| p.ability_settings.get(&m.id).map(|s| s.account.clone())).filter(|a| !a.is_empty());
+    let all = kiqr_core::accounts::Account::of(&app.store, slug, m.service());
+    let account = picked.and_then(|id| all.iter().find(|c| c.id == id).cloned()).or_else(|| all.iter().find(|c| c.allow("measure") != kiqr_core::accounts::Allow::Off).cloned());
+    if let Some(c) = &account {
+        if c.allow("measure") == kiqr_core::accounts::Allow::Off {
+            anyhow::bail!("{} may not measure here; the user can allow it on the account", c.label);
+        }
+    } else if !all.is_empty() {
         anyhow::bail!("no account of {} may measure here; the user can allow it on the account", m.name);
     }
-    // The ability's place on the account (the property, the site) names what is read.
-    if !m.places.is_empty() {
-        let c = account.as_deref().and_then(|id| kiqr_core::connections::Connection::load(&app.store, slug, id).ok());
-        match c.as_ref().and_then(|c| c.place_of_kind(&m.id, None)) {
-            Some(p) => {
-                if let Some(o) = args.as_object_mut() {
-                    for (k, v) in &p.fields {
-                        o.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            None => anyhow::bail!("{} has nothing picked to read yet ({}); the user picks it on the account", m.name, m.places.values().filter_map(|s| s["label"].as_str()).collect::<Vec<_>>().join(", ")),
-        }
-    }
+    let account = account.map(|c| c.id);
     for r in &spec.requests {
         let provide = Provide { request: Some(r.request.clone()), ..Default::default() };
         let out = crate::ext::execute(app, slug, m, &provide, None, None, &args, account.as_deref()).await.with_context(|| format!("{} could not read {source}", m.name))?;
@@ -100,7 +95,7 @@ fn kiqr_rows(app: &App, slug: &str, from: NaiveDate, to: NaiveDate) -> Result<Sn
             let day = p.at.date_naive();
             if day >= from && day <= to {
                 *by_day.entry(day).or_default() += 1.0;
-                *by_channel.entry((day, p.connector.clone())).or_default() += 1.0;
+                *by_channel.entry((day, if p.audience.is_empty() { p.account.clone() } else { p.audience.clone() })).or_default() += 1.0;
             }
         }
     }

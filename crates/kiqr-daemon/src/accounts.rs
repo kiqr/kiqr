@@ -1,9 +1,8 @@
-//! Connections over HTTP: a project's accounts of its installed abilities
-//! (two WordPress sites, two analytics properties), each with its own keys,
-//! its permissions (what Seemo may do through it) and its places (where
-//! inside it content goes). The user sees "accounts"; "connection" stays in
-//! the code, and `publish.rs` keeps `/channels` as an alias over the same
-//! records for one release.
+//! Accounts over HTTP: who Seemo signs in as, per project and service (two
+//! WordPress sites, two Reddit logins), each with its keys, where its
+//! secrets are kept and what Seemo may do through it. Where content goes is
+//! the Audience (`audience.rs`), never the account. Whether an account works
+//! is one rule (`state`), used by every route, the executor and the UI.
 
 use crate::api::{ApiError, ApiResult};
 use crate::App;
@@ -13,7 +12,8 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use kiqr_core::connections::{self, Allow, Connection, Place};
+use kiqr_core::accounts::{self, Account, Allow, Facts, Secrets};
+use kiqr_core::audience::Entry;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{Manifest, Transport};
 use kiqr_core::project::Project;
@@ -23,20 +23,22 @@ use std::collections::BTreeMap;
 
 pub fn routes() -> Router<App> {
     Router::new()
-        .route("/api/projects/{slug}/connections", get(list).post(create_route))
-        .route("/api/projects/{slug}/connections/{id}", get(get_one).put(update_route).delete(delete_route))
-        .route("/api/projects/{slug}/connections/{id}/secrets/{name}", put(put_secret))
-        .route("/api/projects/{slug}/connections/{id}/default", post(make_default))
-        .route("/api/projects/{slug}/connections/{id}/activity", get(activity))
-        .route("/api/projects/{slug}/connections/{id}/choices/{name}", get(choices))
-        .route("/api/projects/{slug}/connections/{id}/learn", post(learn_now))
-        .route("/api/projects/{slug}/connections/{id}/allow", put(put_allow))
-        .route("/api/projects/{slug}/connections/{id}/places", post(add_place))
-        .route("/api/projects/{slug}/connections/{id}/places/{place}", put(update_place).delete(remove_place))
+        .route("/api/projects/{slug}/accounts", get(list).post(create_route))
+        .route("/api/projects/{slug}/accounts/{id}", get(get_one).put(update_route).delete(delete_route))
+        .route("/api/projects/{slug}/accounts/{id}/secrets/{name}", put(put_secret))
+        .route("/api/projects/{slug}/accounts/{id}/default", post(make_default))
+        .route("/api/projects/{slug}/accounts/{id}/activity", get(activity))
+        .route("/api/projects/{slug}/accounts/{id}/choices/{name}", get(choices))
+        .route("/api/projects/{slug}/accounts/{id}/learn", post(learn_now))
+        .route("/api/projects/{slug}/accounts/{id}/allow", put(put_allow))
+        .route("/api/projects/{slug}/abilities/{ability}/settings", put(put_settings))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
+}
+fn not_found(e: impl std::fmt::Display) -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, e.to_string())
 }
 
 /// The installed manifest of an ability, as this project sees it.
@@ -45,171 +47,186 @@ pub async fn manifest(app: &App, slug: &str, ability: &str) -> Option<Manifest> 
     reg.entry(Some(slug), ability).and_then(|e| e.manifest.clone()).filter(|_| reg.entry(Some(slug), ability).is_some_and(|e| e.error.is_none()))
 }
 
+/// The abilities that use a service's accounts here: those on in the project,
+/// else (all switched off) every installed one, so an account still reads right.
+pub async fn manifests_of(app: &App, slug: &str, service: &str) -> Vec<Manifest> {
+    let reg = app.registry.read().await;
+    let off = crate::ext::project_off(app, slug);
+    let all: Vec<Manifest> = reg.of_service(slug, service).into_iter().cloned().collect();
+    let on: Vec<Manifest> = all.iter().filter(|m| !off.contains(&m.id)).cloned().collect();
+    if on.is_empty() { all } else { on }
+}
+
+/// The manifest an account is shown with: the one of its service that signs
+/// in (a sign-in, a login, keys), else its first.
+pub async fn manifest_for(app: &App, slug: &str, c: &Account) -> Option<Manifest> {
+    let all = manifests_of(app, slug, &c.service).await;
+    all.iter().find(|m| !m.connect.is_empty() || m.session.is_some() || !m.auth.is_empty()).or(all.first()).cloned()
+}
+
 /// What the Source switch says, when an account of the ability can be a source.
 pub fn learn_view(m: &Manifest) -> Value {
     json!(m.learn.as_ref().map(|l| json!({ "label": if l.label.is_empty() { "Learn from it into the profile".to_string() } else { l.label.clone() } })))
 }
 
-/// Has every key it needs, and the program it runs is there.
-pub fn ready(app: &App, slug: &str, c: &Connection, m: &Manifest) -> bool {
-    c.missing(app.store.home(), slug, m).is_empty() && (m.transport != Transport::Mcp || crate::ext::program_found(app, Some(slug), m))
+/// Whether an account works right now: the one rule (`Facts::state`) over the
+/// keys every ability of its service needs, the programs they run on, and the
+/// sign-in when one of them signs in on a hosted program.
+pub async fn state(app: &App, slug: &str, c: &Account) -> accounts::State {
+    let ms = manifests_of(app, slug, &c.service).await;
+    state_with(app, slug, c, &ms)
 }
 
-/// The manifest an account is read with: the ability it was made with, else
-/// another installed ability of its service.
-pub async fn manifest_for(app: &App, slug: &str, c: &Connection) -> Option<Manifest> {
-    if let Some(m) = manifest(app, slug, &c.ability).await {
-        return Some(m);
-    }
-    app.registry.read().await.of_service(slug, c.service()).first().map(|m| (*m).clone())
-}
-
-/// One connection for the UI and for Seemo: never its values, only which are set.
-pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
-    let m = manifest_for(app, slug, c).await;
-    let keys = c.keys(app.store.home(), slug);
-    let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
-    v["channel"] = json!(c.is_channel());
-    v["publishes"] = json!(c.publishes());
-    v["default"] = json!(c.default);
-    v["destination_text"] = json!(c.destination_text());
-    // Every ability of its service that is on here uses it; on a channel, with what each does there.
-    let on = crate::publish::kinds(app, slug).await;
-    let mut used_by: Vec<Value> = Vec::new();
-    {
-        let reg = app.registry.read().await;
-        let off = crate::ext::project_off(app, slug);
-        for (_, o) in reg.connections(slug).into_iter().filter(|(_, o)| o.service() == c.service() && !off.contains(&o.id)) {
-            let does: Vec<&str> = o.channels.iter().filter(|k| c.is_channel() && k.kind == c.kind).flat_map(|k| k.roles()).collect();
-            if c.is_channel() && does.is_empty() {
-                continue;
+/// The same rule over manifests the caller already has (one that holds the registry).
+pub fn state_with(app: &App, slug: &str, c: &Account, ms: &[Manifest]) -> accounts::State {
+    let home = app.store.home();
+    let mut facts = Facts { session: c.session(home, slug), ..Default::default() };
+    for m in ms {
+        for k in c.missing(home, slug, m) {
+            if !facts.missing_keys.contains(&k) {
+                facts.missing_keys.push(k);
             }
-            used_by.push(json!({ "id": o.id, "name": o.name, "does": does }));
         }
+        if m.transport == Transport::Mcp && !crate::ext::program_found(app, Some(slug), m) {
+            let p = if m.program.is_empty() { m.command.clone() } else { m.program.clone() };
+            if !facts.missing_programs.contains(&p) {
+                facts.missing_programs.push(p);
+            }
+        }
+        facts.has_session |= m.session.is_some();
     }
-    v["service"] = json!(c.service());
-    v["used_by"] = json!(used_by);
-    // A source: what learning from it reads, when its ability can teach the project.
-    v["source"] = json!(c.learns());
-    v["can_learn"] = json!(m.as_ref().and_then(|m| m.learn.as_ref()).is_some());
-    v["learn"] = m.as_ref().map(learn_view).unwrap_or(Value::Null);
-    // The kinds it could publish as, for making it publishable.
-    v["can_publish"] = json!(m.as_ref().is_some_and(|m| !m.channels.is_empty()));
-    // What Seemo may do here: every role its service's abilities have, with the choice made or the default.
-    v["allow"] = json!(permissions(app, slug, c).await.into_iter().map(|(role, a, acts)| json!({ "role": role, "allow": a, "acts": acts })).collect::<Vec<_>>());
-    // Places, a list's with how many people are on it; and whether this account sends to lists at all.
-    v["places"] = json!(c.places.iter().map(|p| {
-        let mut pv = json!(p);
-        if let Some(l) = p.list_id() {
-            pv["contacts"] = json!(kiqr_core::lists::recipients(app.store.home(), slug, l).len());
-        }
-        pv
+    if ms.is_empty() {
+        facts.missing_programs.push(c.service.clone());
+    }
+    facts.state()
+}
+
+/// The account's state as the UI and Seemo read it: the word, the details, and a sentence.
+pub fn state_view(c: &Account, s: &accounts::State) -> Value {
+    let say = match s {
+        accounts::State::MissingKeys { keys } => format!("{} needs {}", c.label, keys.join(", ")),
+        accounts::State::NeedsProgram { programs } => format!("{} needs {} installed", c.label, programs.join(", ")),
+        accounts::State::SignedOut => format!("{} is signed out", c.label),
+        accounts::State::NeedsHand => format!("{} needs a hand to sign in", c.label),
+        accounts::State::Checking => format!("{} is signing in", c.label),
+        accounts::State::Ready => format!("{} is ready", c.label),
+    };
+    let mut v = serde_json::to_value(s).unwrap_or(Value::Null);
+    v["ready"] = json!(s.ready());
+    v["says"] = json!(say);
+    v
+}
+
+/// One account for the UI and for Seemo: never its values, only which are set.
+pub async fn view(app: &App, slug: &str, c: &Account) -> Value {
+    let home = app.store.home();
+    let ms = manifests_of(app, slug, &c.service).await;
+    let m = manifest_for(app, slug, c).await;
+    let keys = c.keys(home, slug);
+    let st = state(app, slug, c).await;
+    let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
+    v["default"] = json!(c.default);
+    v["state"] = state_view(c, &st);
+    v["ready"] = json!(st.ready());
+    // Every ability of its service that is on here uses it, with what each does through it.
+    let off = crate::ext::project_off(app, slug);
+    v["used_by"] = json!(ms.iter().filter(|o| !off.contains(&o.id)).map(|o| {
+        let mut does: Vec<&str> = o.tools.iter().map(|t| if t.role.is_empty() { "read" } else { t.role.as_str() }).collect();
+        if o.kinds.iter().any(|k| k.publishes()) { does.push("publish"); }
+        if !o.sources.is_empty() { does.push("measure"); }
+        does.sort();
+        does.dedup();
+        json!({ "id": o.id, "name": o.name, "does": does })
     }).collect::<Vec<_>>());
-    v["takes_lists"] = json!(c.is_channel() && crate::publish::takes_lists(app, slug, c).await);
-    // Signing in on a hosted program: whether this account does, how it stands, where its login lives.
+    // Where it reaches: the Audience entries through it.
+    let entries: Vec<Value> = Entry::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| e.account == c.id && !e.suggested).map(|e| json!({ "id": e.id, "label": e.label, "section": e.section })).collect();
+    v["audience"] = json!(entries);
+    v["can_publish"] = json!(ms.iter().any(|m| m.kinds.iter().any(|k| k.publishes())));
+    v["source"] = json!(c.learns());
+    v["can_learn"] = json!(ms.iter().any(|m| m.learn.is_some()));
+    v["learn"] = ms.iter().find(|m| m.learn.is_some()).map(learn_view).unwrap_or(Value::Null);
+    v["allow"] = json!(permissions(app, slug, c).await.into_iter().map(|(role, a, acts)| json!({ "role": role, "allow": a, "acts": acts })).collect::<Vec<_>>());
+    // Signing in on a hosted program: whether this account does, how it stands.
     if let Some(o) = crate::session::view(app, slug, c).await.as_object() {
         for (k, val) in o {
             v[k] = val.clone();
         }
     }
-    // A login saved in KIQR: which of its values are there, never the values.
-    v["login_set"] = json!(kiqr_core::connections::Login::KEYS.iter().filter(|k| keys.contains_key(**k)).collect::<Vec<_>>());
-    // Who the account is, for the card: the first key that is an identity, not a secret (an
-    // address, a site, a repository), a URL reduced to its host. Secrets never leave the daemon.
-    v["identity"] = json!(m.as_ref().and_then(|m| {
-        let secret = |n: &str| { let u = n.to_ascii_uppercase(); ["TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "FILE"].iter().any(|w| u.contains(w)) };
-        m.auth.iter().filter(|a| !secret(&a.env)).find_map(|a| keys.get(&a.env).map(|v| v.trim()).filter(|v| !v.is_empty())).map(|v| url::Url::parse(v).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_else(|| v.to_string()))
-    }));
-    // The label was the user's, not the one the daemon gave it after the service.
-    v["label_set"] = json!(m.as_ref().is_none_or(|m| { let s = m.service_card().name; c.label != s && !(c.label.starts_with(&s) && c.label[s.len()..].trim().chars().all(|ch| ch.is_ascii_digit())) }));
-    if c.is_channel() {
-        let p = connections::pick_publisher(c, &on);
-        v["publisher"] = json!(p.map(|(pm, _)| pm.id.clone()));
-        v["publisher_name"] = json!(p.map(|(pm, _)| pm.name.clone()));
-        v["publishers"] = json!(connections::publishers(c, &on).iter().map(|(pm, _)| json!({ "id": pm.id, "name": pm.name })).collect::<Vec<_>>());
-    }
+    // Where its secrets are kept, for the card: in KIQR, or a password manager's account by name.
+    let store_label = if c.secrets.in_kiqr() { "KIQR".to_string() } else { Account::load(&app.store, slug, &c.secrets.store).map(|s| s.label).unwrap_or_else(|_| c.secrets.store.clone()) };
+    v["secrets"] = json!({ "store": c.secrets.store, "item": c.secrets.item, "store_label": store_label, "in_kiqr": c.secrets.in_kiqr() });
+    v["login_set"] = json!(Secrets::LOGIN.iter().filter(|k| keys.contains_key(**k)).collect::<Vec<_>>());
+    v["identity"] = json!(identity(&ms, &keys));
     match &m {
         Some(m) => {
-            v["ability_name"] = json!(m.name);
-            // Older UI code calls it the connection.
-            v["connection"] = json!(m.id);
-            v["connection_name"] = json!(m.name);
-            v["ready"] = json!(ready(app, slug, c, m));
-            v["missing"] = json!(c.missing(app.store.home(), slug, m));
-            // `written`: a sign-in keeps it (a token), never typed; `choices`: a list read through the account.
-            let written: Vec<String> = kiqr_core::connect::written_tokens(&m.connect).into_iter().filter(|w| !m.auth.iter().any(|a| &a.env == w && a.typed)).collect();
-            // Signed in one way or another (a token kept, a key file set): what a key's `choices` are read with.
-            v["signed_in"] = json!(m.connect.iter().any(|w| w.satisfied(&|k: &str| keys.contains_key(k))));
-            v["auth"] = json!(m.auth.iter().map(|a| json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": keys.contains_key(&a.env), "written": written.contains(&a.env), "choices": a.choices.is_some() })).collect::<Vec<_>>());
-            v["connect"] = kiqr_core::connect::view(&m.connect);
-            if let Some(k) = m.channels.iter().find(|k| k.kind == c.kind) {
-                v["kind_label"] = json!(k.label);
-                v["kind_name"] = json!(k.display_name());
-                v["icon"] = json!(k.icon);
-                // The fields a place here has, and whether one is needed before anything goes out.
-                v["place_fields"] = json!(k.place);
-                v["needs_place"] = json!(crate::publish::needs_place(m, k));
-            }
-            v["service_card"] = json!(m.service_card());
-            // The service's mark for the card: its ability's avatar, when it ships one.
+            let card = m.service_card();
+            // The label was the user's, not the one the daemon gave it after the service.
+            let s = &card.name;
+            v["label_set"] = json!(c.label != *s && !(c.label.starts_with(s.as_str()) && c.label[s.len()..].trim().chars().all(|ch| ch.is_ascii_digit())));
+            v["service_card"] = json!(card);
             v["avatar"] = json!(app.registry.read().await.entry(Some(slug), &m.id).and_then(|e| crate::market::folder_avatar(e, &m.avatar)));
-            // Every kind of place this account can have: the publishing kind's, and one per ability of
-            // the service that works on a place of its own (a property, a site), with what it needs.
-            let mut kinds: Vec<Value> = Vec::new();
-            if let Some(k) = m.channels.iter().find(|k| k.kind == c.kind) {
-                kinds.push(json!({ "kind": k.kind, "label": k.label, "verb": "Publishes to", "fields": k.place, "needs": crate::publish::needs_place(m, k) && c.place_of_kind(&k.kind, None).is_none(), "lists": crate::publish::kind_takes_lists(k) }));
-            }
-            {
-                let reg = app.registry.read().await;
-                let off = crate::ext::project_off(app, slug);
-                for (_, o) in reg.connections(slug).into_iter().filter(|(_, o)| o.service() == c.service() && !off.contains(&o.id) && !o.places.is_empty()) {
-                    let required = o.places.values().any(|s| !s["optional"].as_bool().unwrap_or(false));
-                    kinds.push(json!({ "kind": o.id, "label": o.name, "verb": if o.sources.is_empty() { "Works on" } else { "Measures" }, "fields": o.places, "needs": required && c.place_of_kind(&o.id, None).is_none() }));
+            // The keys of every ability of the service, once each: which are set, which a sign-in writes.
+            let mut auth: Vec<Value> = Vec::new();
+            let mut seen: Vec<String> = Vec::new();
+            for o in &ms {
+                let written: Vec<String> = kiqr_core::connect::written_tokens(&o.connect).into_iter().filter(|w| !o.auth.iter().any(|a| &a.env == w && a.typed)).collect();
+                for a in &o.auth {
+                    if seen.contains(&a.env) {
+                        continue;
+                    }
+                    seen.push(a.env.clone());
+                    auth.push(json!({ "env": a.env, "label": a.label, "help": a.help, "optional": a.optional, "options": a.options, "placeholder": a.placeholder, "set": keys.contains_key(&a.env), "written": written.contains(&a.env), "choices": a.choices.is_some() }));
                 }
             }
-            v["place_kinds"] = json!(kinds);
+            v["auth"] = json!(auth);
+            v["signed_in"] = json!(m.connect.iter().any(|w| w.satisfied(&|k: &str| keys.contains_key(k))));
+            v["connect"] = kiqr_core::connect::view(&m.connect);
         }
         None => {
-            v["ability_name"] = json!(c.ability);
-            v["connection_name"] = json!(c.ability);
-            v["ready"] = json!(false);
-            v["missing"] = json!([]);
+            v["label_set"] = json!(true);
             v["auth"] = json!([]);
-            v["error"] = json!("the ability is not installed");
+            v["error"] = json!("nothing installed uses this account");
         }
     }
     v
 }
 
+/// Who an account is, for its name and card: the first key that is an
+/// identity, not a secret (an address, a site, a repository), a URL reduced
+/// to its host. Secrets never leave the daemon.
+pub fn identity(ms: &[Manifest], keys: &BTreeMap<String, String>) -> Option<String> {
+    let secret = |n: &str| {
+        let u = n.to_ascii_uppercase();
+        ["TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "FILE", "LOGIN_"].iter().any(|w| u.contains(w))
+    };
+    ms.iter().find_map(|m| m.auth.iter().filter(|a| !secret(&a.env)).find_map(|a| keys.get(&a.env).map(|v| v.trim()).filter(|v| !v.is_empty())).map(|v| url::Url::parse(v).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string())).unwrap_or_else(|| v.to_string())))
+}
+
 /// The roles an account can be allowed, with what it allows now: the roles
-/// the abilities of its service declare on tools and kinds, `learn` when one
-/// can teach the project, `measure` when one reads numbers. Reading is
-/// always there. Each with whether it acts (three choices) or not (on/off).
-pub async fn permissions(app: &App, slug: &str, c: &Connection) -> Vec<(String, Allow, bool)> {
-    let reg = app.registry.read().await;
-    let off = crate::ext::project_off(app, slug);
+/// the abilities of its service declare on tools, `publish` when one of them
+/// publishes, `learn` when one can teach the project, `measure` when one reads
+/// numbers. Reading is always there. Each with whether it acts (three
+/// choices) or not (on/off).
+pub async fn permissions(app: &App, slug: &str, c: &Account) -> Vec<(String, Allow, bool)> {
     let mut roles: Vec<String> = vec!["read".into()];
-    for (_, m) in reg.connections(slug).into_iter().filter(|(_, m)| m.service() == c.service() && !off.contains(&m.id)) {
+    let mut add = |r: &str| if !roles.iter().any(|x| x == r) { roles.push(r.to_string()) };
+    for m in manifests_of(app, slug, &c.service).await {
         for t in &m.tools {
-            if !t.role.is_empty() && !roles.contains(&t.role) {
-                roles.push(t.role.clone());
+            if !t.role.is_empty() {
+                add(&t.role);
             }
         }
-        for k in &m.channels {
-            for r in k.roles() {
-                if !roles.iter().any(|x| x == r) {
-                    roles.push(r.to_string());
-                }
-            }
+        if m.kinds.iter().any(|k| k.publishes()) {
+            add("publish");
         }
-        if m.learn.is_some() && !roles.iter().any(|r| r == "learn") {
-            roles.push("learn".into());
+        if m.learn.is_some() {
+            add("learn");
         }
-        if !m.sources.is_empty() && !roles.iter().any(|r| r == "measure") {
-            roles.push("measure".into());
+        if !m.sources.is_empty() {
+            add("measure");
         }
     }
-    let order = |r: &str| connections::PERMISSIONS.iter().position(|p| *p == r).unwrap_or(99);
+    let order = |r: &str| accounts::PERMISSIONS.iter().position(|p| *p == r).unwrap_or(99);
     roles.sort_by_key(|r| order(r));
     roles.into_iter().map(|r| { let a = c.allow(&r); let acts = Allow::acts(&r); (r, a, acts) }).collect()
 }
@@ -229,71 +246,66 @@ pub async fn default_allow(app: &App, slug: &str, service: &str) -> BTreeMap<Str
 
 #[derive(Deserialize, Default, Clone)]
 #[serde(default)]
-pub struct NewConnection {
+pub struct NewAccount {
+    /// The service; or an ability of it (`ability`), for callers that know only that.
+    pub service: String,
     pub ability: String,
     pub label: String,
-    /// One of the kinds the ability publishes; empty: the service's first kind that does, if any.
-    pub kind: String,
-    /// The first place's fields, already checked (`publish::place_check`). Older callers say `destination`.
-    #[serde(alias = "destination")]
-    pub place: BTreeMap<String, Value>,
-    /// What to call that first place; its first value when empty.
-    pub place_label: String,
     /// Keys to save right away, by name.
     pub secrets: BTreeMap<String, String>,
-    /// Another connection of the same ability whose keys this one starts with (the same mail account).
+    /// Another account of the same service whose keys this one starts with (the same mail login).
     pub same_as: Option<String>,
     /// Permissions chosen at setup, over the manifests' defaults: role → auto | ask | off.
     pub allow: BTreeMap<String, String>,
+    /// Where its secrets are kept, when not in KIQR.
+    pub keep: Option<Secrets>,
 }
 
-/// Add a connection: its record, then its keys. The first of an ability is its default.
-pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result<Connection, ApiError> {
-    let _ = Project::load(&app.store, slug)?;
-    let m = manifest(app, slug, &b.ability).await.ok_or_else(|| bad(format!("'{}' is not installed", b.ability)))?;
-    let kind = b.kind.trim().to_ascii_lowercase();
-    // An account of a service that publishes is publishable from the start (its kind), unless told otherwise.
-    // The ability may be switched off for the project right now: connecting an account is the wish to use it, and switches it back on below.
-    let all = crate::publish::all_kinds(app, slug).await;
-    let kind = if kind.is_empty() { all.iter().find(|(o, k)| o.service() == m.service() && k.publishes()).map(|(_, k)| k.kind.clone()).unwrap_or_default() } else { kind };
-    if !kind.is_empty() && !all.iter().any(|(o, k)| o.service() == m.service() && k.kind == kind) {
-        return Err(bad(format!("{} does not publish '{kind}'", m.name)));
+/// The service a request means: `service`, else the service of `ability`.
+pub async fn service_of(app: &App, slug: &str, service: &str, ability: &str) -> Result<(String, Manifest), ApiError> {
+    if !service.trim().is_empty() {
+        let s = service.trim().to_string();
+        let ms = manifests_of(app, slug, &s).await;
+        let m = ms.into_iter().next().ok_or_else(|| bad(format!("nothing installed signs in to '{s}'")))?;
+        return Ok((s, m));
     }
-    let mut allow = default_allow(app, slug, m.service()).await;
+    let m = manifest(app, slug, ability.trim()).await.ok_or_else(|| bad(format!("'{}' is not installed", ability.trim())))?;
+    Ok((m.service().to_string(), m))
+}
+
+/// Add an account: its record, then its keys. The first of a service is its
+/// default. Kinds whose account is the spot (an X profile) get their Audience
+/// entry at once.
+pub async fn create(app: &App, slug: &str, b: NewAccount, by: &str) -> Result<Account, ApiError> {
+    let _ = Project::load(&app.store, slug)?;
+    let (service, m) = service_of(app, slug, &b.service, &b.ability).await?;
+    let mut allow = default_allow(app, slug, &service).await;
     for (role, a) in &b.allow {
         allow.insert(role.clone(), parse_allow(role, a)?);
     }
     let same = match b.same_as.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(s) => Some(Connection::find(&app.store, slug, m.service(), s).ok_or_else(|| bad(format!("{} has no account '{s}' here to share", m.name)))?),
+        Some(s) => Some(Account::find(&app.store, slug, &service, s).ok_or_else(|| bad(format!("there is no account '{s}' of {} here to share", m.service_card().name)))?),
         None => None,
     };
-    let siblings = Connection::of(&app.store, slug, m.service());
+    let secrets = match b.keep {
+        Some(k) if !k.in_kiqr() => {
+            check_store(app, slug, &k)?;
+            k
+        }
+        _ => Secrets::default(),
+    };
+    let siblings = Account::of(&app.store, slug, &service);
     let base = b.label.trim().to_string();
-    // An account is named after its service ("Google", "Email"), never after one of its abilities.
-    let base = if base.is_empty() { m.service_card().name } else { base };
-    // Labels name accounts in Seemo's tools, so they stay unique per ability.
+    // Unnamed, an account is who it is (a site's host, an address), else its service ("Google", "Reddit").
+    let typed: BTreeMap<String, String> = b.secrets.iter().filter(|(_, v)| !v.trim().is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let base = if !base.is_empty() { base } else { identity(&manifests_of(app, slug, &service).await, &typed).unwrap_or_else(|| m.service_card().name) };
     let mut label = base.clone();
     let mut n = 2;
     while siblings.iter().any(|c| c.label.eq_ignore_ascii_case(&label)) {
         label = format!("{base} {n}");
         n += 1;
     }
-    let c = Connection {
-        id: connections::new_id(&app.store, slug, &label),
-        label,
-        ability: m.id.clone(),
-        service: m.service.id.clone(),
-        default: siblings.is_empty(),
-        created_by: by.to_string(),
-        kind,
-        allow,
-        ..Default::default()
-    };
-    let mut c = c;
-    if !b.place.is_empty() {
-        let label = if b.place_label.trim().is_empty() { b.place.values().find_map(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| c.label.clone()) } else { b.place_label.trim().to_string() };
-        c.put_place(Place { id: String::new(), kind: c.kind.clone(), label, fields: b.place, default: true });
-    }
+    let c = Account { id: accounts::new_id(&app.store, slug, &label), label, service: service.clone(), default: siblings.is_empty(), created_by: by.to_string(), allow, secrets, ..Default::default() };
     c.save(&app.store, slug)?;
     let home = app.store.home();
     if let Some(s) = &same {
@@ -302,20 +314,21 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
         }
     }
     for (name, value) in b.secrets.iter().filter(|(_, v)| !v.trim().is_empty()) {
-        if let Err(e) = crate::ext::set_connection_secret(app, slug, &c.id, name, value).await {
-            let _ = Connection::delete(&app.store, slug, &c.id);
+        if let Err(e) = crate::ext::set_account_secret(app, slug, &c.id, name, value).await {
+            let _ = Account::delete(&app.store, slug, &c.id);
             return Err(e);
         }
     }
-    app.store.commit(&format!("account({slug}): add {} ({})", c.label, m.name)).await?;
-    app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+    app.store.commit(&format!("account({slug}): add {} ({})", c.label, m.service_card().name)).await?;
+    app.bus.emit(Some(slug), EventKind::AccountSaved { account: c.id.clone(), label: c.label.clone(), service: c.service.clone() });
+    crate::audience::entries_for_account(app, slug, &c).await;
     // Learn from it now when it is ready; otherwise the scheduler does once it is signed in.
-    if c.learns() && m.learn.is_some() && ready(app, slug, &c, &m) {
+    if c.learns() && manifests_of(app, slug, &service).await.iter().any(|m| m.learn.is_some()) && state(app, slug, &c).await.ready() {
         let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
     }
     // Connecting is wanting it: the service's abilities switched off for this project come back on.
     let off = crate::ext::project_off(app, slug);
-    let ids: Vec<String> = { let reg = app.registry.read().await; reg.of_service(slug, m.service()).into_iter().map(|o| o.id.clone()).collect() };
+    let ids: Vec<String> = { let reg = app.registry.read().await; reg.of_service(slug, &service).into_iter().map(|o| o.id.clone()).collect() };
     for id in ids.into_iter().filter(|id| off.contains(id)) {
         if let Err(e) = crate::market::set_project_paused(app, slug, &id, false).await {
             tracing::warn!(slug, %id, "could not switch the ability back on: {}", e.1);
@@ -324,29 +337,28 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
     Ok(c)
 }
 
+/// A password manager to keep secrets in: an account of this project, and an item named.
+fn check_store(app: &App, slug: &str, k: &Secrets) -> Result<(), ApiError> {
+    let store = Account::load(&app.store, slug, &k.store).map_err(|_| bad(format!("no account '{}' to keep the secrets in", k.store)))?;
+    if k.item.trim().is_empty() {
+        return Err(bad(format!("which item in {}? name it", store.label)));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct Patch {
     pub label: Option<String>,
     /// Permissions to change: role → auto | ask | off (on/off for roles that never act).
     pub allow: Option<BTreeMap<String, String>>,
-    /// Older callers: false is `allow.publish = auto`, true is `ask`.
-    pub asks_first: Option<bool>,
-    /// Older callers: the Source switch, now `allow.learn`.
-    pub learns: Option<bool>,
-    /// The ability that publishes here, of those that can; empty goes back to the default.
-    pub publisher: Option<String>,
-    /// Make it publishable as a kind its service publishes (with the first `place` when the kind needs one), or empty to stop publishing.
-    pub kind: Option<String>,
-    #[serde(alias = "destination")]
-    pub place: Option<BTreeMap<String, Value>>,
-    /// Where the account's login lives (`{store: kiqr}` or a password manager account id with `ref`); `{}` forgets it.
-    pub login: Option<kiqr_core::connections::Login>,
+    /// Where its secrets are kept: `{store: kiqr}`, or a password manager account with `item`.
+    pub secrets: Option<Secrets>,
 }
 
 fn parse_allow(role: &str, a: &str) -> Result<Allow, ApiError> {
-    if !connections::PERMISSIONS.contains(&role) {
-        return Err(bad(format!("'{role}' is not something an account allows ({})", connections::PERMISSIONS.join(", "))));
+    if !accounts::PERMISSIONS.contains(&role) {
+        return Err(bad(format!("'{role}' is not something an account allows ({})", accounts::PERMISSIONS.join(", "))));
     }
     let v = Allow::parse(a).ok_or_else(|| bad(format!("'{a}' is not auto, ask or off")))?;
     if !Allow::acts(role) && v == Allow::Ask {
@@ -355,221 +367,40 @@ fn parse_allow(role: &str, a: &str) -> Result<Allow, ApiError> {
     Ok(v)
 }
 
-pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Connection, ApiError> {
-    let mut c = Connection::load(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Account, ApiError> {
+    let mut c = Account::load(&app.store, slug, id).map_err(not_found)?;
     if let Some(l) = p.label.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        if Connection::of(&app.store, slug, c.service()).iter().any(|o| o.id != c.id && o.label.eq_ignore_ascii_case(&l)) {
+        if Account::of(&app.store, slug, &c.service).iter().any(|o| o.id != c.id && o.label.eq_ignore_ascii_case(&l)) {
             return Err(bad(format!("another account is already called '{l}'")));
         }
         c.label = l;
     }
     let was_learning = c.learns();
-    let mut changes: BTreeMap<String, String> = p.allow.unwrap_or_default();
-    if let Some(a) = p.asks_first {
-        changes.insert("publish".into(), if a { "ask" } else { "auto" }.into());
-    }
-    if let Some(on) = p.learns {
-        changes.insert("learn".into(), if on { "on" } else { "off" }.into());
-    }
-    let m = manifest_for(app, slug, &c).await;
-    for (role, a) in &changes {
-        let v = parse_allow(role, a)?;
-        if role == "learn" && v != Allow::Off && m.as_ref().and_then(|m| m.learn.as_ref()).is_none() {
+    let ms = manifests_of(app, slug, &c.service).await;
+    for (role, a) in p.allow.unwrap_or_default() {
+        let v = parse_allow(&role, &a)?;
+        if role == "learn" && v != Allow::Off && !ms.iter().any(|m| m.learn.is_some()) {
             return Err(bad(format!("nothing to learn from in '{}'", c.label)));
         }
-        c.allow.insert(role.clone(), v);
+        c.allow.insert(role, v);
     }
-    let learn_now = c.learns() && !was_learning && m.as_ref().is_some_and(|m| m.learn.is_some() && ready(app, slug, &c, m));
-    let mut place = p.place;
-    if let Some(k) = p.kind.map(|k| k.trim().to_ascii_lowercase()) {
-        if k.is_empty() {
-            c.kind.clear();
-            c.places.clear();
-            c.publisher.clear();
-        } else if k != c.kind {
-            // Becoming publishable: the first place is checked against the kind, as for a new one.
-            let fields = place.take().unwrap_or_default();
-            let (_, kind, checked) = crate::publish::place_check(app, slug, &k, Some(&c.ability), &fields).await?;
-            c.kind = kind.kind.clone();
-            c.places.clear();
-            if !checked.is_empty() {
-                c.put_place(Place { id: String::new(), kind: c.kind.clone(), label: place_label(&checked, &c.label), fields: checked, default: true });
+    if let Some(k) = p.secrets {
+        if !k.in_kiqr() {
+            if k.store == c.id {
+                return Err(bad("an account cannot keep its own secrets"));
             }
+            check_store(app, slug, &k)?;
         }
+        c.secrets = if k.in_kiqr() { Secrets::default() } else { k };
     }
-    if let Some(fields) = place {
-        // The default place's fields, checked.
-        if !c.is_channel() {
-            return Err(bad("only an account that publishes has places"));
-        }
-        let (_, _, checked) = crate::publish::place_check(app, slug, &c.kind, Some(&c.ability), &fields).await?;
-        let (id, label) = c.place(None).map(|p| (p.id.clone(), p.label.clone())).unwrap_or_default();
-        c.put_place(Place { id, kind: c.kind.clone(), label: if label.is_empty() { place_label(&checked, &c.label) } else { label }, fields: checked, default: true });
-    }
-    if let Some(l) = p.login {
-        if l.store.is_empty() {
-            c.login = None;
-        } else {
-            if l.store != kiqr_core::connections::Login::KIQR {
-                let store = Connection::load(&app.store, slug, &l.store).map_err(|_| bad(format!("no account '{}' to keep the login in", l.store)))?;
-                if l.ref_.trim().is_empty() {
-                    return Err(bad(format!("which login in {}? name the item", store.label)));
-                }
-            }
-            c.login = Some(l);
-        }
-    }
-    if let Some(id) = p.publisher.map(|s| s.trim().to_string()) {
-        if !c.is_channel() {
-            return Err(bad("only a channel has a publisher"));
-        }
-        let on = crate::publish::kinds(app, slug).await;
-        let can = connections::publishers(&c, &on);
-        if !id.is_empty() && !can.iter().any(|(m, _)| m.id == id) {
-            let names: Vec<&str> = can.iter().map(|(m, _)| m.id.as_str()).collect();
-            return Err(bad(if names.is_empty() { format!("no ability publishes to '{}' here", c.label) } else { format!("'{id}' does not publish here; one of {}", names.join(", ")) }));
-        }
-        c.publisher = id;
-    }
+    let learn_now = c.learns() && !was_learning && ms.iter().any(|m| m.learn.is_some()) && state(app, slug, &c).await.ready();
     c.save(&app.store, slug)?;
     app.store.commit(&format!("account({slug}): {}", c.label)).await?;
-    app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+    app.bus.emit(Some(slug), EventKind::AccountSaved { account: c.id.clone(), label: c.label.clone(), service: c.service.clone() });
     if learn_now {
         let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
     }
     Ok(c)
-}
-
-/// What to call a place from its fields: the first text value, else the account's name.
-fn place_label(fields: &BTreeMap<String, Value>, fallback: &str) -> String {
-    fields.values().find_map(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| fallback.to_string())
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-pub struct PlaceBody {
-    pub label: String,
-    pub fields: BTreeMap<String, Value>,
-    pub default: bool,
-    /// A mailing list (by id or name) as the place, on a mail account.
-    pub list: String,
-    /// The kind of place: an ability of the service that works on places of its own (its id),
-    /// else the account's publishing kind.
-    pub kind: String,
-}
-
-/// Add a place to an account: the kind's fields checked, or a list of people
-/// to email. The first place is the default.
-pub async fn create_place(app: &App, slug: &str, id: &str, b: PlaceBody) -> Result<(Connection, Place), ApiError> {
-    let mut c = Connection::load(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    // A place of an ability's own kind (a property, a site): its fields checked against that ability's `places`.
-    let own = match b.kind.trim() {
-        "" => None,
-        k if c.is_channel() && k == c.kind => None,
-        k => {
-            let reg = app.registry.read().await;
-            let found = reg.connections(slug).into_iter().find(|(_, o)| o.id == k && o.service() == c.service() && !o.places.is_empty()).map(|(_, o)| o.clone());
-            Some(found.ok_or_else(|| bad(format!("'{k}' is not something that works on places of {}", c.label)))?)
-        }
-    };
-    if let Some(o) = own {
-        let mut fields = BTreeMap::new();
-        for (name, spec) in &o.places {
-            let required = !spec["optional"].as_bool().unwrap_or(false);
-            match b.fields.get(name).and_then(|v| if v.is_string() { v.as_str().map(|s| s.trim().to_string()) } else { Some(v.to_string()) }).filter(|s| !s.is_empty()) {
-                Some(v) => {
-                    fields.insert(name.clone(), Value::String(v));
-                }
-                None if required => return Err(bad(format!("a place for {} needs '{}'", o.name, spec["label"].as_str().unwrap_or(name)))),
-                None => {}
-            }
-        }
-        let place = Place { id: String::new(), kind: o.id.clone(), label: if b.label.trim().is_empty() { place_label(&fields, &o.name) } else { b.label.trim().to_string() }, fields, default: b.default };
-        if c.places.iter().any(|p| p.kind == place.kind && p.id != place.id && p.label.eq_ignore_ascii_case(&place.label)) {
-            return Err(bad(format!("'{}' already has {} for {}", c.label, place.label, o.name)));
-        }
-        c.put_place(place.clone());
-        let saved = c.places.iter().find(|p| p.kind == place.kind && p.label == place.label).cloned().unwrap_or(place);
-        c.save(&app.store, slug)?;
-        app.store.commit(&format!("account({slug}): {} reads {} for {}", c.label, saved.label, o.name)).await?;
-        app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
-        return Ok((c, saved));
-    }
-    if !c.is_channel() {
-        return Err(bad(format!("'{}' does not publish, so it has no places", c.label)));
-    }
-    let place = if !b.list.trim().is_empty() {
-        if !crate::publish::takes_lists(app, slug, &c).await {
-            return Err(bad(format!("'{}' does not send to lists of people; only a mail account does", c.label)));
-        }
-        let l = kiqr_core::lists::List::find(&app.store, slug, &b.list).ok_or_else(|| bad(format!("no list '{}'", b.list.trim())))?;
-        Place { id: format!("list-{}", l.id), kind: Place::LIST.into(), label: if b.label.trim().is_empty() { l.label.clone() } else { b.label.trim().to_string() }, fields: [("list".to_string(), json!(l.id))].into_iter().collect(), default: b.default }
-    } else {
-        let (_, _, checked) = crate::publish::place_check(app, slug, &c.kind, Some(&c.ability), &b.fields).await?;
-        if checked.is_empty() {
-            return Err(bad(format!("a place on '{}' needs its fields", c.label)));
-        }
-        Place { id: String::new(), kind: c.kind.clone(), label: if b.label.trim().is_empty() { place_label(&checked, &c.label) } else { b.label.trim().to_string() }, fields: checked, default: b.default }
-    };
-    if c.places.iter().any(|p| p.id != place.id && p.label.eq_ignore_ascii_case(&place.label)) {
-        return Err(bad(format!("'{}' already has a place called '{}'", c.label, place.label)));
-    }
-    c.put_place(place.clone());
-    let saved = c.places.iter().find(|p| p.label == place.label).cloned().unwrap_or(place);
-    c.save(&app.store, slug)?;
-    app.store.commit(&format!("account({slug}): {} publishes to {}", c.label, saved.label)).await?;
-    app.bus.emit(Some(slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
-    Ok((c, saved))
-}
-
-async fn add_place(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(b): Json<PlaceBody>) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let (c, p) = create_place(&app, &slug, &id, b).await?;
-    let mut v = view(&app, &slug, &c).await;
-    v["place"] = json!(p);
-    Ok((StatusCode::CREATED, Json(v)))
-}
-
-async fn update_place(State(app): State<App>, Path((slug, id, pid)): Path<(String, String, String)>, Json(b): Json<PlaceBody>) -> ApiResult<Value> {
-    let mut c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    let mut p = c.places.iter().find(|p| p.id == pid).cloned().ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no place '{pid}' on '{}'", c.label)))?;
-    if !b.label.trim().is_empty() {
-        p.label = b.label.trim().to_string();
-    }
-    if !b.fields.is_empty() && !p.is_list() {
-        if c.is_channel() && p.kind == c.kind {
-            let (_, _, checked) = crate::publish::place_check(&app, &slug, &c.kind, Some(&c.ability), &b.fields).await?;
-            p.fields = checked;
-        } else {
-            // A place of an ability's own kind: its fields against that ability's `places`.
-            let spec = { let reg = app.registry.read().await; reg.connections(&slug).into_iter().find(|(_, o)| o.id == p.kind).map(|(_, o)| o.places.clone()) }.ok_or_else(|| bad(format!("nothing on here works on places of kind '{}'", p.kind)))?;
-            let mut fields = BTreeMap::new();
-            for (name, fs) in &spec {
-                match b.fields.get(name).and_then(|v| if v.is_string() { v.as_str().map(|s| s.trim().to_string()) } else { Some(v.to_string()) }).filter(|s| !s.is_empty()) {
-                    Some(v) => { fields.insert(name.clone(), Value::String(v)); }
-                    None if !fs["optional"].as_bool().unwrap_or(false) => return Err(bad(format!("the place needs '{}'", fs["label"].as_str().unwrap_or(name)))),
-                    None => {}
-                }
-            }
-            p.fields = fields;
-        }
-    }
-    if b.default {
-        p.default = true;
-    }
-    c.put_place(p);
-    c.save(&app.store, &slug)?;
-    app.store.commit(&format!("account({slug}): {}'s places", c.label)).await?;
-    app.bus.emit(Some(&slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
-    Ok(Json(view(&app, &slug, &c).await))
-}
-
-async fn remove_place(State(app): State<App>, Path((slug, id, pid)): Path<(String, String, String)>) -> ApiResult<Value> {
-    let mut c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    let gone = c.remove_place(&pid).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no place '{pid}' on '{}'", c.label)))?;
-    c.save(&app.store, &slug)?;
-    app.store.commit(&format!("account({slug}): {} no longer publishes to {}", c.label, gone.label)).await?;
-    app.bus.emit(Some(&slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
-    Ok(Json(view(&app, &slug, &c).await))
 }
 
 /// `PUT …/allow {role: auto|ask|off, …}`: what Seemo may do here.
@@ -578,55 +409,45 @@ async fn put_allow(State(app): State<App>, Path((slug, id)): Path<(String, Strin
     Ok(Json(view(&app, &slug, &c).await))
 }
 
+/// Remove an account, its keys and its program. Audience entries through it
+/// stay (they are the business's people) and say they need an account.
 pub async fn delete(app: &App, slug: &str, id: &str) -> Result<(), ApiError> {
-    let c = Connection::delete(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    app.mcp.stop_connection(slug, &c.id).await;
+    let c = Account::delete(&app.store, slug, id).map_err(not_found)?;
+    app.mcp.stop_account(slug, &c.id).await;
     app.store.commit(&format!("account({slug}): remove {}", c.label)).await?;
-    app.bus.emit(Some(slug), EventKind::ConnectionDeleted { connection: c.id, ability: c.ability });
+    app.bus.emit(Some(slug), EventKind::AccountDeleted { account: c.id, service: c.service });
     Ok(())
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct ListQuery {
+    service: Option<String>,
     ability: Option<String>,
 }
 
 async fn list(State(app): State<App>, Path(slug): Path<String>, Query(q): Query<ListQuery>) -> ApiResult<Value> {
     let _ = Project::load(&app.store, &slug)?;
     // An ability's accounts are its service's, shared with the other abilities of it.
-    let service = match q.ability.as_deref() {
-        Some(a) => Some(manifest(&app, &slug, a).await.map(|m| m.service().to_string()).unwrap_or_else(|| a.to_string())),
-        None => None,
+    let service = match (q.service, q.ability.as_deref()) {
+        (Some(s), _) => Some(s),
+        (None, Some(a)) => Some(manifest(&app, &slug, a).await.map(|m| m.service().to_string()).unwrap_or_else(|| a.to_string())),
+        _ => None,
     };
     let mut out = Vec::new();
-    for c in Connection::list(&app.store, &slug)?.iter().filter(|c| service.as_deref().is_none_or(|s| c.service() == s)) {
+    for c in Account::list(&app.store, &slug)?.iter().filter(|c| service.as_deref().is_none_or(|s| c.service == s)) {
         out.push(view(&app, &slug, c).await);
     }
-    Ok(Json(json!({ "connections": out })))
+    Ok(Json(json!({ "accounts": out })))
 }
 
-async fn create_route(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewConnection>) -> Result<(StatusCode, Json<Value>), ApiError> {
-    // A first place comes checked against its kind.
-    let mut b = b;
-    if !b.place.is_empty() {
-        let m = manifest(&app, &slug, &b.ability).await.ok_or_else(|| bad(format!("'{}' is not installed", b.ability)))?;
-        let kind = if b.kind.trim().is_empty() { crate::publish::kinds(&app, &slug).await.into_iter().find(|(o, k)| o.service() == m.service() && k.publishes()).map(|(_, k)| k.kind).unwrap_or_default() } else { b.kind.trim().to_ascii_lowercase() };
-        let (_, k, checked) = crate::publish::place_check(&app, &slug, &kind, Some(&m.id), &b.place).await?;
-        b.kind = k.kind.clone();
-        b.place = checked;
-    }
+async fn create_route(State(app): State<App>, Path(slug): Path<String>, Json(b): Json<NewAccount>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let c = create(&app, &slug, b, "user").await?;
-    // A first account on a network: Seemo writes the first posts for it, in the background.
-    if c.publishes() {
-        let (app2, slug2, kind) = (app.clone(), slug.clone(), c.kind.clone());
-        tokio::spawn(async move { crate::api::posts_for_new_account(&app2, &slug2, &kind).await });
-    }
     Ok((StatusCode::CREATED, Json(view(&app, &slug, &c).await)))
 }
 
 async fn get_one(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
-    let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let c = Account::load(&app.store, &slug, &id).map_err(not_found)?;
     Ok(Json(view(&app, &slug, &c).await))
 }
 
@@ -647,13 +468,13 @@ struct SecretBody {
 }
 
 async fn put_secret(State(app): State<App>, Path((slug, id, name)): Path<(String, String, String)>, Json(b): Json<SecretBody>) -> ApiResult<Value> {
-    let set = crate::ext::set_connection_secret(&app, &slug, &id, &name, &b.value).await?;
-    Ok(Json(json!({ "name": name, "set": set, "connection": id })))
+    let set = crate::ext::set_account_secret(&app, &slug, &id, &name, &b.value).await?;
+    Ok(Json(json!({ "name": name, "set": set, "account": id })))
 }
 
 /// "Learn now": read this source again and write the profile from it.
 async fn learn_now(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
-    let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let c = Account::load(&app.store, &slug, &id).map_err(not_found)?;
     if !c.learns() {
         return Err(bad(format!("'{}' is not a source; allow learning on it first", c.label)));
     }
@@ -661,9 +482,9 @@ async fn learn_now(State(app): State<App>, Path((slug, id)): Path<(String, Strin
     Ok(Json(json!({ "started": true })))
 }
 
-/// What a key can be set to, read through the account (a key's `choices`).
+/// What a key or a setting can be set to, read through the account (`choices`).
 async fn choices(State(app): State<App>, Path((slug, id, name)): Path<(String, String, String)>) -> ApiResult<Value> {
-    let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let c = Account::load(&app.store, &slug, &id).map_err(not_found)?;
     let list = crate::ext::key_choices(&app, &slug, &c, &name).await.map_err(|e| bad(format!("{e:#}")))?;
     Ok(Json(json!({ "name": name, "choices": list })))
 }
@@ -676,19 +497,67 @@ struct ActivityQuery {
 
 /// What the abilities of its service did through an account, newest first, with today's count and the cap.
 async fn activity(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Query(q): Query<ActivityQuery>) -> ApiResult<Value> {
-    let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let c = Account::load(&app.store, &slug, &id).map_err(not_found)?;
     let home = app.store.home();
     let mut all = c.activity(home, &slug);
     all.reverse();
     all.truncate(q.limit.unwrap_or(50).clamp(1, 500));
-    let cap = app.registry.read().await.of_service(&slug, c.service()).iter().filter_map(|m| m.daily_cap).min();
-    Ok(Json(json!({ "connection": c.id, "service": c.service(), "today": c.actions_today(home, &slug), "daily_cap": cap, "activity": all })))
+    let cap = app.registry.read().await.of_service(&slug, &c.service).iter().filter_map(|m| m.daily_cap).min();
+    Ok(Json(json!({ "account": c.id, "service": c.service, "today": c.actions_today(home, &slug), "daily_cap": cap, "activity": all })))
 }
 
 async fn make_default(State(app): State<App>, Path((slug, id)): Path<(String, String)>) -> ApiResult<Value> {
-    Connection::make_default(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
-    let c = Connection::load(&app.store, &slug, &id)?;
-    app.store.commit(&format!("account({slug}): {} is the default for {}", c.label, c.ability)).await?;
-    app.bus.emit(Some(&slug), EventKind::ConnectionSaved { connection: c.id.clone(), label: c.label.clone(), ability: c.ability.clone(), kind: c.kind.clone() });
+    Account::make_default(&app.store, &slug, &id).map_err(not_found)?;
+    let c = Account::load(&app.store, &slug, &id)?;
+    app.store.commit(&format!("account({slug}): {} is the default for {}", c.label, c.service)).await?;
+    app.bus.emit(Some(&slug), EventKind::AccountSaved { account: c.id.clone(), label: c.label.clone(), service: c.service.clone() });
     Ok(Json(view(&app, &slug, &c).await))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SettingsBody {
+    /// The account the values were picked through; the service's default when empty.
+    account: String,
+    values: BTreeMap<String, Value>,
+}
+
+/// `PUT …/abilities/{ability}/settings {account, values}`: what the project
+/// picks once for an ability (a GA4 property, a Search Console site), through
+/// one of its service's accounts. Kept in `project.yaml`, never on the account.
+async fn put_settings(State(app): State<App>, Path((slug, ability)): Path<(String, String)>, Json(b): Json<SettingsBody>) -> ApiResult<Value> {
+    let mut p = Project::load(&app.store, &slug)?;
+    let m = manifest(&app, &slug, &ability).await.ok_or_else(|| bad(format!("'{ability}' is not installed")))?;
+    if m.settings.is_empty() {
+        return Err(bad(format!("{} has nothing to pick", m.name)));
+    }
+    let c = match b.account.trim() {
+        "" => Account::default_of(&app.store, &slug, m.service()).ok_or_else(|| bad(format!("connect a {} account first", m.service_card().name)))?,
+        a => Account::find(&app.store, &slug, m.service(), a).ok_or_else(|| bad(format!("no {} account '{a}' here", m.service_card().name)))?,
+    };
+    let mut values = BTreeMap::new();
+    for (name, spec) in &m.settings {
+        let label = spec["label"].as_str().unwrap_or(name);
+        match b.values.get(name).map(|v| v.as_str().map(|s| s.trim().to_string()).unwrap_or_else(|| v.to_string())).filter(|v| !v.is_empty()) {
+            Some(v) => {
+                if let Some(opts) = spec["enum"].as_array().filter(|o| !o.is_empty()) {
+                    if !opts.iter().any(|o| o.as_str() == Some(v.as_str())) {
+                        return Err(bad(format!("{label} is one of {}", opts.iter().filter_map(|o| o.as_str()).collect::<Vec<_>>().join(", "))));
+                    }
+                }
+                values.insert(name.clone(), Value::String(v));
+            }
+            None if !spec["optional"].as_bool().unwrap_or(false) => return Err(bad(format!("pick the {}", label.to_lowercase()))),
+            None => {}
+        }
+    }
+    if let Some(n) = b.values.keys().find(|k| !m.settings.contains_key(*k)) {
+        return Err(bad(format!("{} has no setting '{n}'", m.name)));
+    }
+    p.ability_settings.insert(m.id.clone(), kiqr_core::project::AbilitySetting { account: c.id.clone(), values });
+    p.save(&app.store)?;
+    let what: Vec<String> = p.ability_settings[&m.id].values.values().filter_map(|v| v.as_str().map(str::to_string)).collect();
+    app.store.commit(&format!("project({slug}): {} reads {} through {}", m.name, what.join(", "), c.label)).await?;
+    app.bus.emit(Some(&slug), EventKind::AbilitySettingsSaved { ability: m.id.clone(), account: c.id.clone() });
+    Ok(Json(json!({ "ability": m.id, "setting": p.ability_settings[&m.id] })))
 }

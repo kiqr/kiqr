@@ -19,7 +19,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use kiqr_core::connections::Connection;
+use kiqr_core::accounts::Account;
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{LiveView, Manifest, Step};
 use serde::Deserialize;
@@ -33,7 +33,7 @@ const FRAME_EVERY: Duration = Duration::from_millis(400);
 
 pub fn routes() -> Router<App> {
     Router::new()
-        .route("/api/projects/{slug}/connections/{id}/hands", post(start_route))
+        .route("/api/projects/{slug}/accounts/{id}/hands", post(start_route))
         .route("/api/projects/{slug}/hands/{hands}/input", post(input_route))
         .route("/api/projects/{slug}/hands/{hands}/end", post(end_route))
 }
@@ -132,7 +132,7 @@ async fn stream(app: App, id: String, h: Arc<Hands>, view: LiveView) {
             Ok(out) => {
                 if let Some((bytes, mime)) = out.file {
                     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    app.bus.emit(Some(&h.slug), EventKind::HandsFrame { connection: h.connection.clone(), hands: id.clone(), mime, data, url: String::new() });
+                    app.bus.emit(Some(&h.slug), EventKind::HandsFrame { account: h.connection.clone(), hands: id.clone(), mime, data, url: String::new() });
                 }
             }
             Err(e) => {
@@ -148,7 +148,7 @@ async fn end(app: &App, id: &str, why: &str) {
     let h = OPEN.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if let Some(h) = h {
         h.open.store(false, std::sync::atomic::Ordering::SeqCst);
-        app.bus.emit(Some(&h.slug), EventKind::HandsEnded { connection: h.connection.clone(), hands: id.to_string(), message: why.to_string() });
+        app.bus.emit(Some(&h.slug), EventKind::HandsEnded { account: h.connection.clone(), hands: id.to_string(), message: why.to_string() });
     }
 }
 
@@ -159,18 +159,18 @@ struct StartBody {
     url: String,
 }
 
-/// `POST …/connections/{id}/hands`: take the controls. Answers the session id and its token.
+/// `POST …/accounts/{id}/hands`: take the controls. Answers the session id and its token.
 async fn start_route(State(app): State<App>, Path((slug, id)): Path<(String, String)>, headers: HeaderMap, Json(b): Json<StartBody>) -> ApiResult<Value> {
     from_browser(&headers)?;
-    let c = Connection::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let c = Account::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
     let m = {
         let reg = app.registry.read().await;
         let off = crate::ext::project_off(&app, &slug);
-        reg.of_service(&slug, c.service()).into_iter().find(|m| m.live_view.is_some() && !off.contains(&m.id)).cloned()
+        reg.of_service(&slug, &c.service).into_iter().find(|m| m.live_view.is_some() && !off.contains(&m.id)).cloned()
     }
     .ok_or_else(|| bad(format!("{} has no live view", c.label)))?;
-    if !crate::accounts::ready(&app, &slug, &c, &m) {
-        return Err(bad(format!("{} is not ready: its program is not installed yet", c.label)));
+    if let st @ (kiqr_core::accounts::State::MissingKeys { .. } | kiqr_core::accounts::State::NeedsProgram { .. }) = crate::accounts::state(&app, &slug, &c).await {
+        return Err(bad(crate::accounts::state_view(&c, &st)["says"].as_str().unwrap_or("not ready").to_string()));
     }
     // One session per account.
     let already: Option<String> = OPEN.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(_, h)| h.slug == slug && h.connection == c.id).map(|(k, _)| k.clone());
@@ -179,9 +179,9 @@ async fn start_route(State(app): State<App>, Path((slug, id)): Path<(String, Str
     }
     let view = m.live_view.clone().expect("live_view");
     let program = crate::ext::program_of(&app, Some(&slug), &m).await.map_err(|e| bad(e.to_string()))?;
-    let env_fn = kiqr_core::connections::env_for(app.store.home(), &slug, Some(&c), &m);
+    let env_fn = kiqr_core::accounts::env_for(app.store.home(), &slug, Some(&c), &m, Default::default());
     let launch = crate::ext::mcp_env(&app, &slug, &m, Some(&c), &env_fn);
-    let env: HashMap<String, String> = kiqr_core::connections::key_names(&m).into_iter().filter_map(|k| env_fn(&k).map(|v| (k, v))).collect();
+    let env: HashMap<String, String> = kiqr_core::accounts::key_names(&m).into_iter().filter_map(|k| env_fn(&k).map(|v| (k, v))).collect();
     let turn = crate::ext::account_turn(&slug, &c.id).await;
     let hands_id = token();
     let h = Arc::new(Hands { slug: slug.clone(), connection: c.id.clone(), token: token(), manifest: m.clone(), program, launch, env, last_input: Mutex::new(Instant::now()), _turn: turn, open: std::sync::atomic::AtomicBool::new(true) });
@@ -193,7 +193,7 @@ async fn start_route(State(app): State<App>, Path((slug, id)): Path<(String, Str
             tracing::warn!(account = %c.id, "live view: could not open the first page: {e:#}");
         }
     }
-    app.bus.emit(Some(&slug), EventKind::HandsStarted { connection: c.id.clone(), hands: hands_id.clone() });
+    app.bus.emit(Some(&slug), EventKind::HandsStarted { account: c.id.clone(), hands: hands_id.clone() });
     tokio::spawn(stream(app.clone(), hands_id.clone(), h.clone(), view.clone()));
     Ok(Json(json!({ "hands": hands_id, "token": h.token, "can": { "click": !view.click.call.is_empty(), "key": !view.key.call.is_empty(), "type": !view.type_.call.is_empty(), "navigate": !view.navigate.call.is_empty() } })))
 }

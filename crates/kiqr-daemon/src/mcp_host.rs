@@ -132,7 +132,7 @@ impl McpHost {
 
     /// Stop every program's server for one account of a project: an account is
     /// shared by the abilities of its service, and its keys just changed or it is gone.
-    pub async fn stop_connection(&self, slug: &str, connection: &str) {
+    pub async fn stop_account(&self, slug: &str, connection: &str) {
         let prefix = format!("{slug}/{connection}@");
         for s in self.take(|k| !k.starts_with(&prefix)).await {
             s.kill().await;

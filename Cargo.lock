@@ -1355,6 +1355,7 @@ dependencies = [
  "iana-time-zone",
  "libc",
  "pulldown-cmark",
+ "regex",
  "reqwest",
  "resvg",
  "rrule",
