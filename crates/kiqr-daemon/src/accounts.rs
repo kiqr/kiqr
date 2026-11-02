@@ -369,6 +369,7 @@ fn parse_allow(role: &str, a: &str) -> Result<Allow, ApiError> {
 
 pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Account, ApiError> {
     let mut c = Account::load(&app.store, slug, id).map_err(not_found)?;
+    let old_label = c.label.clone();
     if let Some(l) = p.label.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
         if Account::of(&app.store, slug, &c.service).iter().any(|o| o.id != c.id && o.label.eq_ignore_ascii_case(&l)) {
             return Err(bad(format!("another account is already called '{l}'")));
@@ -395,6 +396,15 @@ pub async fn update(app: &App, slug: &str, id: &str, p: Patch) -> Result<Account
     }
     let learn_now = c.learns() && !was_learning && ms.iter().any(|m| m.learn.is_some()) && state(app, slug, &c).await.ready();
     c.save(&app.store, slug)?;
+    // The pages that are the account itself (an X profile) carry its name.
+    if c.label != old_label {
+        for mut e in Entry::all(&app.store, slug).unwrap_or_default().into_iter().filter(|e| e.account == c.id && !e.is_list() && e.fields.is_empty() && e.label == old_label) {
+            e.label = c.label.clone();
+            if e.save(&app.store, slug).is_ok() {
+                app.bus.emit(Some(slug), EventKind::AudienceSaved { entry: e.id.clone(), label: e.label.clone(), section: e.section.clone(), suggested: e.suggested, contacts: None });
+            }
+        }
+    }
     app.store.commit(&format!("account({slug}): {}", c.label)).await?;
     app.bus.emit(Some(slug), EventKind::AccountSaved { account: c.id.clone(), label: c.label.clone(), service: c.service.clone() });
     if learn_now {
