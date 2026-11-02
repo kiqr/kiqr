@@ -107,7 +107,8 @@ async fn set_state(app: &App, slug: &str, c: &Connection, state: &str, message: 
 }
 
 /// Run the manifest's `check` steps: signed in when the last answer holds `signed_in_when`.
-async fn run_check(app: &App, slug: &str, c: &Connection, m: &Manifest) -> Result<(bool, String)> {
+/// With no marker the model reads the page, and its words come back as the third value.
+async fn run_check(app: &App, slug: &str, c: &Connection, m: &Manifest) -> Result<(bool, String, Option<String>)> {
     let sess = m.session.as_ref().ok_or_else(|| anyhow!("{} has no session", m.name))?;
     let program = crate::ext::program_of(app, Some(slug), m).await?;
     let env = kiqr_core::connections::env_for(app.store.home(), slug, Some(c), m);
@@ -123,15 +124,18 @@ async fn run_check(app: &App, slug: &str, c: &Connection, m: &Manifest) -> Resul
     let needle = sess.signed_in_when.trim();
     let lower = text.to_lowercase();
     let markers = sess.signed_out_when.iter().filter(|t| !t.trim().is_empty()).count();
+    let mut said = None;
     let signed_in = if !needle.is_empty() {
         text.contains(needle)
     } else if markers > 0 {
         !sess.signed_out_when.iter().any(|t| !t.trim().is_empty() && lower.contains(&t.trim().to_lowercase()))
     } else {
         // No marker to look for: the model reads the page.
-        guided::read_page(app, &guided::page_of(&last, &text), &[]).await?.state == guided::State::SignedIn
+        let read = guided::read_page(app, &guided::page_of(&last, &text), &[]).await?;
+        said = Some(read.reason.trim().to_string()).filter(|r| !r.is_empty());
+        read.state == guided::State::SignedIn
     };
-    Ok((signed_in, text))
+    Ok((signed_in, text, said))
 }
 
 /// Every string in a JSON answer, joined; other values as JSON.
@@ -157,7 +161,7 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     let sess = m.session.clone().expect("session_manifest");
     let _turn = crate::ext::account_turn(slug, &c.id).await;
     set_state(app, slug, &c, SessionStatus::CHECKING, "").await;
-    let (ok, text) = match run_check(app, slug, &c, &m).await {
+    let (ok, text, _) = match run_check(app, slug, &c, &m).await {
         Ok(x) => x,
         Err(e) => return Ok(set_state(app, slug, &c, SessionStatus::NEEDS_HAND, format!("could not check the sign-in: {e:#}")).await),
     };
@@ -183,8 +187,13 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     let outcome = match result {
         Ok(Some(b)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &format!("the site asks for a person: {b}"))).await,
         Ok(None) => match run_check(app, slug, &c, &m).await {
-            Ok((true, _)) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
-            Ok((false, t)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, blocked(&sess, &t).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| if sess.login_url.trim().is_empty() { "the sign-in did not go through; finish it in the live view".into() } else { "the sign-in seemed to go through, but the check afterwards did not find you signed in; finish it in the live view, or look at the check in the ability's manifest".into() })).await,
+            Ok((true, _, _)) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
+            // What the check saw, in the model's words when it read the page, so the message says why.
+            Ok((false, t, said)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &blocked(&sess, &t).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| match said {
+                Some(r) => format!("the sign-in seemed to go through, but the check afterwards found: {r} Finish it in the live view."),
+                None if sess.login_url.trim().is_empty() => "the sign-in did not go through; finish it in the live view".into(),
+                None => "the sign-in seemed to go through, but the check afterwards did not find you signed in; finish it in the live view".into(),
+            }))).await,
             Err(e) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, format!("could not check the sign-in: {e:#}")).await,
         },
         Err(e) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &format!("the sign-in failed: {e:#}"))).await,
@@ -322,7 +331,7 @@ pub mod guided {
             e
         })?;
         let r: Read = serde_json::from_value(v).map_err(|e| anyhow!("the model's answer about the page made no sense: {e}"))?;
-        tracing::debug!(state = ?r.state, user = r.username.is_some(), pass = r.password.is_some(), code = r.code.is_some(), reason = %r.reason, "sign-in page read");
+        tracing::info!(state = ?r.state, url = %page["url"].as_str().unwrap_or(""), user = r.username.is_some(), pass = r.password.is_some(), code = r.code.is_some(), reason = %r.reason, "sign-in page read");
         Ok(r)
     }
 
