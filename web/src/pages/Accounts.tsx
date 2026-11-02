@@ -461,16 +461,25 @@ export function settingValues(a: Ability, changes: Record<string, string> = {}):
   return out;
 }
 
-/** Changing one setting: its input, Use it, Cancel. */
+/**
+ * Changing one setting: which account it is read through (only when the
+ * service has more than one: two Google logins), its input, Use it, Cancel.
+ * Another account starts the value over: what one login sees, another may not.
+ */
 function SettingPick({ slug, a, account, name, f, cur, onCancel, onSaved }: { slug: string; a: Ability; account: { id: string; label: string }; name: string; f: SpecField; cur: string; onCancel?: () => void; onSaved: () => void }) {
+  const all = a.accounts ?? [];
+  const [through, setThrough] = useState(account.id);
+  const via = all.find((x) => x.id === through) ?? account;
   const [value, setValue] = useState(cur);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const moved = through !== account.id;
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
-      await api.setAbilitySettings(slug, a.id, account.id, settingValues(a, { [name]: value }));
+      // Through another account, the other settings are picked again there too.
+      await api.setAbilitySettings(slug, a.id, through, moved ? { [name]: value.trim() } : settingValues(a, { [name]: value }));
       onSaved();
     } catch (e) {
       setError((e as Error).message);
@@ -481,10 +490,23 @@ function SettingPick({ slug, a, account, name, f, cur, onCancel, onSaved }: { sl
   return (
     <div className="ab-pick">
       {!cur && <p className="sm">Pick the {f.label || name}</p>}
-      <SettingField slug={slug} account={account} name={name} f={f} value={value} onChange={setValue} />
+      {all.length > 1 && (
+        <label className="acc-field">
+          <span className="nm">Through</span>
+          <FieldInput
+            options={all.map((x) => x.id)}
+            labels={Object.fromEntries(all.map((x) => [x.id, x.label]))}
+            value={through}
+            onChange={(v) => (setThrough(v), setValue(v === account.id ? cur : ""))}
+            ariaLabel="Account"
+            plain
+          />
+        </label>
+      )}
+      <SettingField key={through} slug={slug} account={{ id: via.id, label: via.label }} name={name} f={f} value={value} onChange={setValue} />
       {error && <p className="err sm">{error}</p>}
       <div className="acts">
-        <button className="btn p sm" disabled={busy || !value.trim() || value === cur} onClick={() => void save()}>
+        <button className="btn p sm" disabled={busy || !value.trim() || (value === cur && !moved)} onClick={() => void save()}>
           {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Use it
         </button>
         {onCancel && (

@@ -18,7 +18,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Download, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal, Users } from "lucide-react";
 import { api, useAsync, useEvents, ACCOUNT_EVENTS, AUDIENCE_EVENTS, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability, type Account, type ProgramStatus } from "../api";
 import { ConnectButton } from "./ConnectButton";
-import { AccountKeys, accountIdentity, accountService, ActOnOwn, byGroup, Fields, LoginEditor, permissionSummary, PermissionMatrix, sentence, serviceOf, SettingField, settingValues, signInNow, signsInByHand, StateChip, stateChip, type Field } from "./Accounts";
+import { AccountKeys, accountIdentity, accountService, ActOnOwn, byGroup, Fields, LoginEditor, permissionSummary, PermissionMatrix, sentence, serviceOf, SettingField, settingsPicked, settingValues, signInNow, signsInByHand, StateChip, stateChip, type Field } from "./Accounts";
 import { Hands, startUrlOf } from "./Hands";
 import { LogPane, SystemProgram, useMachine, useProgramLog } from "./Programs";
 import { isService, serviceIcon } from "./abilityBits";
@@ -583,6 +583,7 @@ function Measures({ slug, abilities, account, onDone }: { slug: string; abilitie
   const [values, setValues] = useState<Record<string, string>>(() => (a?.setting?.account === account ? settingValues(a) : {}));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
   useEffect(() => {
     if (gone || !a) onDone();
   }, [gone, a]);
@@ -594,6 +595,7 @@ function Measures({ slug, abilities, account, onDone }: { slug: string; abilitie
     setError(null);
     if (!n) return onDone();
     setValues(n.setting?.account === account ? settingValues(n) : {});
+    setMoving(false);
     setI(i + 1);
   };
   const save = async () => {
@@ -610,6 +612,30 @@ function Measures({ slug, abilities, account, onDone }: { slug: string; abilitie
   };
   const one = fields.length === 1 ? fields[0][1].label || fields[0][0] : null;
   const who = { id: acc.id, label: accountIdentity(acc) || acc.label };
+  // Picked already, through another account of the service (a second Google login): keep that unless the user moves it here.
+  const elsewhere = !moving && a.setting?.account && a.setting.account !== account && settingsPicked(a) ? (a.accounts ?? []).find((x) => x.id === a.setting!.account) : undefined;
+  if (elsewhere)
+    return (
+      <motion.div key={`${a.id}-keep`} className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+        <div className="cw-head">
+          <div>
+            <h2>{a.name} is set up already</h2>
+            <p className="muted sm">
+              It reads {fields.map(([k, f]) => `${(f.label || k).toLowerCase()} ${String(a.setting?.[k] ?? "")}`).join(", ")} through {elsewhere.label}. Keep that, or pick one {who.label} sees instead.
+              {abilities.length > 1 ? ` ${i + 1} of ${abilities.length}.` : ""}
+            </p>
+          </div>
+        </div>
+        <div className="acts">
+          <button className="btn p" onClick={next}>
+            <Check size={14} /> Keep it
+          </button>
+          <button className="btn g" onClick={() => setMoving(true)}>
+            Use {who.label} instead
+          </button>
+        </div>
+      </motion.div>
+    );
   return (
     <motion.div key={a.id} className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       <div className="cw-head">
