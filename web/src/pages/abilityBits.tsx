@@ -2,7 +2,7 @@
 // the icon, the vendor, the state, what an ability includes.
 import { useState } from "react";
 import { BarChart3, BookOpen, Zap, Brain, Globe, Image as ImageIcon, KeyRound, ListChecks, LogIn, Mail, MessageCircle, MessageSquareText, Music, PenTool, Plug, Send, ShieldCheck, Sparkles, Terminal, Video, Wrench, type LucideIcon } from "lucide-react";
-import type { Ability } from "../api";
+import type { Ability, AccountSummary } from "../api";
 import "../signin.css";
 import { assetIcon } from "../assetIcons";
 
@@ -69,6 +69,19 @@ export function serviceName(a: Ability): string {
   return a.service_card?.name || a.name;
 }
 
+/** The accounts an ability can work through right now: keys complete, and signed in where it signs in. */
+export function workingAccounts(a: Ability): AccountSummary[] {
+  return (a.accounts ?? []).filter((x) => x.works !== false && x.missing.length === 0);
+}
+
+/** Why an ability's accounts do not work, in the user's words: "signed out", "needs a hand", "not connected". */
+export function accountTrouble(a: Ability): string {
+  const all = a.accounts ?? [];
+  if (all.some((x) => x.session === "needs_hand")) return all.length === 1 ? "needs a hand" : "accounts need a hand";
+  if (all.some((x) => x.session === "signed_out")) return all.length === 1 ? "signed out" : "accounts signed out";
+  return all.length === 1 ? "not connected" : "accounts not connected";
+}
+
 /** One phrase for where an ability stands in this project. A service ability stands with its account. */
 export function stateOf(a: Ability): State {
   if (!a.installed) return isService(a) ? { id: "via", text: "needs an account", tone: "" } : { id: "available", text: "not installed", tone: "" };
@@ -76,9 +89,12 @@ export function stateOf(a: Ability): State {
   if (a.paused) return { id: "off-here", text: "off here", tone: "" };
   if (a.program_found === false) return { id: "noprogram", text: "program missing", tone: "warn" };
   if (!a.ready) return { id: a.missing.length ? "missing" : "setup", text: isService(a) && !(a.accounts?.length ?? 0) ? "needs an account" : a.missing.length ? "not connected" : "needs setup", tone: "warn" };
-  const n = a.accounts?.length ?? 0;
+  const all = a.accounts?.length ?? 0;
+  const n = workingAccounts(a).length;
   // A core ability with accounts of its own (the browser and its sites) is on with or without them.
-  if (a.core && isService(a)) return n > 0 ? { id: "own", text: n === 1 ? "1 account" : `${n} accounts`, tone: "ok" } : { id: "on", text: "on", tone: "ok" };
+  if (a.core && isService(a)) return all > 0 ? { id: "own", text: n === all ? (n === 1 ? "1 account" : `${n} accounts`) : `${n} of ${all} accounts signed in`, tone: n > 0 ? "ok" : "warn" } : { id: "on", text: "on", tone: "ok" };
+  // Accounts there, none of them working (signed out, waiting for a hand, keys missing): not "via your account".
+  if (all > 0 && n === 0) return { id: "setup", text: accountTrouble(a), tone: "warn" };
   if (n > 0) return { id: "own", text: isService(a) ? (n === 1 ? `via your ${serviceName(a)} account` : `via ${n} ${serviceName(a)} accounts`) : n === 1 ? "connected" : `${n} accounts`, tone: "ok" };
   if (a.signed_in) return { id: "own", text: a.signed_in === "project" ? "signed in here" : "signed in", tone: "ok" };
   if (a.auth.length) return { id: "machine", text: "machine key", tone: "ok" };
@@ -109,8 +125,8 @@ export function needsOf(a: Ability): Part[] {
   if (a.core && isService(a)) {
     // Part of KIQR, with accounts of its own (the browser's sites): on without any, each connected under Accounts.
     const n = a.accounts?.length ?? 0;
-    const ready = (a.accounts ?? []).filter((x) => x.missing.length === 0).length;
-    out.push({ icon: KeyRound, label: "Its accounts", detail: n === 0 ? "none yet; connect a site under Accounts and Seemo browses it" : `${ready} of ${n} ready`, tone: "" });
+    const ready = workingAccounts(a).length;
+    out.push({ icon: KeyRound, label: "Its accounts", detail: n === 0 ? "none yet; connect a site under Accounts and Seemo browses it" : `${ready} of ${n} signed in`, tone: n > 0 && ready === 0 ? "warn" : "" });
   } else if (a.auth.length && a.core) {
     // Signed in to the service (`signed_in`), its key is not needed: the sign-in stands in for it.
     const signedIn = a.signed_in ? `not needed: signed in for ${a.signed_in === "project" ? "this project" : "every project"}` : null;
@@ -120,11 +136,11 @@ export function needsOf(a: Ability): Part[] {
   } else if (isService(a)) {
     // It works through an account of its service, signed in once and shared by every ability of it.
     const n = a.accounts?.length ?? 0;
-    const ready = (a.accounts ?? []).filter((x) => x.missing.length === 0).length;
+    const ready = workingAccounts(a).length;
     out.push({
       icon: KeyRound,
       label: `Your ${serviceName(a)} account`,
-      detail: !a.installed || n === 0 ? "not connected in this project yet" : `${ready} of ${n} connected`,
+      detail: !a.installed || n === 0 ? "not connected in this project yet" : ready === n ? (n === 1 ? "connected" : `${n} connected`) : n === 1 ? accountTrouble(a) : `${ready} of ${n} connected`,
       tone: a.installed && n > 0 && ready === 0 ? "warn" : "",
     });
   }

@@ -561,11 +561,16 @@ pub struct Download {
 }
 
 /// Signing an account in on a hosted program and knowing whether it is:
-/// `check` steps say (the last answer's text matched by `signed_in_when`),
-/// `login` steps type the credentials (`{{credential.username}}`,
+/// `check` steps say (the last answer's text matched by `signed_in_when`, or
+/// when neither marker is set, the model reading the page), the sign-in
+/// starts at `login_url` (the model reads each page's controls, in whatever
+/// language, and names the user, password and code fields; the runner types
+/// into those and nothing else, the password only into a password field) or
+/// follows `login` steps that type the credentials (`{{credential.username}}`,
 /// `{{credential.password}}`, `{{credential.otp}}`: only here, never in a
 /// tool Seemo calls), `blocked_when` texts in an answer mean a person is
-/// needed, and `every` is how often the check runs.
+/// needed (the model reading the page says so too), and `every` is how often
+/// the check runs.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
@@ -574,6 +579,9 @@ pub struct Session {
     pub signed_in_when: String,
     /// Or the other way round: texts that mean signed out (a password field on the start page); signed in when none shows.
     pub signed_out_when: Vec<String>,
+    /// Where signing in starts. The model reads the pages from here and the runner fills them: no selectors to keep up to date.
+    pub login_url: String,
+    /// Or fixed steps, for a site whose form never changes (a test site).
     pub login: Vec<Step>,
     pub blocked_when: Vec<String>,
     /// `6h`, `30m`, `1d`; empty: 6 hours.
@@ -581,6 +589,11 @@ pub struct Session {
 }
 
 impl Session {
+    /// Whether the runner can sign in on its own (else a person does, once, in the live view).
+    pub fn signs_in(&self) -> bool {
+        !self.login_url.trim().is_empty() || !self.login.is_empty()
+    }
+
     pub fn every(&self) -> std::time::Duration {
         let t = self.every.trim();
         let (n, unit) = t.split_at(t.len().saturating_sub(1));
@@ -1175,8 +1188,15 @@ pub fn validate(m: &Manifest) -> Result<()> {
                 bail!("session: step '{}' needs the program tool it calls", st.name);
             }
         }
-        if sess.check.is_empty() || (sess.signed_in_when.trim().is_empty() && sess.signed_out_when.is_empty()) {
-            bail!("session needs check steps and signed_in_when or signed_out_when");
+        if sess.check.is_empty() {
+            bail!("session needs check steps");
+        }
+        // With no marker, the model reads the check's page; that needs the sign-in to be the model's too.
+        if sess.signed_in_when.trim().is_empty() && sess.signed_out_when.is_empty() && sess.login_url.trim().is_empty() {
+            bail!("session needs signed_in_when or signed_out_when, or a login_url (then the model reads the page)");
+        }
+        if !sess.login_url.trim().is_empty() && url::Url::parse(sess.login_url.trim()).is_err() && !sess.login_url.contains("${") {
+            bail!("session: login_url '{}' is not a URL", sess.login_url.trim());
         }
     }
     if let Some(lv) = &m.live_view {

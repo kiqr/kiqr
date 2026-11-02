@@ -544,6 +544,10 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
             .iter()
             .map(|c| {
                 let keys = c.keys(home, slug);
+                let missing = c.missing(home, slug, m);
+                // An account the ability signs in on: signed out or waiting for a hand, it does not work yet.
+                let session = m.session.as_ref().map(|_| c.session(home, slug).state).filter(|s| !s.is_empty());
+                let works = missing.is_empty() && !session.as_deref().is_some_and(|s| s == kiqr_core::connections::SessionStatus::SIGNED_OUT || s == kiqr_core::connections::SessionStatus::NEEDS_HAND);
                 json!({
                     "id": c.id,
                     "label": c.label,
@@ -553,7 +557,9 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
                     "kind": c.kind,
                     "destination_text": c.destination_text(),
                     "places": c.places,
-                    "missing": c.missing(home, slug, m),
+                    "missing": missing,
+                    "session": session,
+                    "works": works,
                     "set": m.auth.iter().filter(|a| keys.contains_key(&a.env)).map(|a| a.env.clone()).collect::<Vec<_>>(),
                 })
             })

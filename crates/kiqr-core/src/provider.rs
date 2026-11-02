@@ -252,6 +252,24 @@ pub fn extract_json(text: &str) -> Result<serde_json::Value> {
         return Ok(v);
     }
     let start = t.find(['[', '{']).ok_or_else(|| anyhow!("no JSON in model output"))?;
+    // The first complete value from there; words after it (an explanation, a second value) are left alone.
+    if let Some(Ok(v)) = serde_json::Deserializer::from_str(&t[start..]).into_iter::<serde_json::Value>().next() {
+        return Ok(v);
+    }
     let end = t.rfind([']', '}']).ok_or_else(|| anyhow!("no JSON in model output"))?;
     serde_json::from_str(&t[start..=end]).context("model output was not valid JSON")
+}
+
+#[cfg(test)]
+mod extract_tests {
+    use super::extract_json;
+
+    #[test]
+    fn the_first_value_counts_whatever_follows() {
+        let v = extract_json("Here you go:\n{\"state\": \"form\"}\nThe page shows a form {with braces}.").unwrap();
+        assert_eq!(v["state"], "form");
+        let v = extract_json("```json\n{\"a\": [1, 2]}\n```").unwrap();
+        assert_eq!(v["a"][1], 2);
+        assert!(extract_json("no json here").is_err());
+    }
 }

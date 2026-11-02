@@ -346,7 +346,8 @@ export type Scope = { scope: "global" } | { scope: "project"; project: string };
 /** A key an ability needs. `set` says where, for a core ability's own key (this project or the machine); an installed ability's keys live on its accounts. */
 export type MarketAuth = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: "project" | "global" | boolean | null };
 /** One of this project's accounts of an ability: which keys it has, never their values. */
-export type AccountSummary = { id: string; label: string; default: boolean; channel: boolean; kind: string; destination_text: string; missing: string[]; set: string[] };
+/** An ability's account in this project. `works`: keys complete and, where the ability signs in, not signed out or waiting for a hand (`session`: unknown | checking | signed_in | signed_out | needs_hand). */
+export type AccountSummary = { id: string; label: string; default: boolean; channel: boolean; kind: string; destination_text: string; missing: string[]; set: string[]; session?: string | null; works?: boolean };
 /** A kind an ability publishes as, and the fields a place of it has. */
 export type KindInfo = { kind: string; label: string; name: string; place: Record<string, PlaceField>; does?: string[] };
 /** How far Seemo may go with one role on an account: on its own, after a yes, or not at all. Roles that never act know only auto (on) and off. */

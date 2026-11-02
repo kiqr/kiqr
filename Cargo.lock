@@ -1386,6 +1386,7 @@ dependencies = [
  "futures",
  "kiqr-core",
  "lettre",
+ "libc",
  "mime_guess",
  "reqwest",
  "ring",

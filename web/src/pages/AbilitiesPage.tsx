@@ -15,7 +15,7 @@ import { Switch } from "./Switch";
 import { AbilityModal } from "./AbilityModal";
 import { Advanced, Marketplace } from "./Marketplace";
 import { TeachForm, type TeachDraft } from "./TeachForm";
-import { AbilityIcon, Author, hasNewer, isOn, isService, OneClick, oneClick, RELOAD_ON, serviceName, stateOf } from "./abilityBits";
+import { AbilityIcon, Author, accountTrouble, hasNewer, isOn, isService, OneClick, oneClick, RELOAD_ON, serviceName, stateOf, workingAccounts } from "./abilityBits";
 import { connectPath, serviceOf } from "./Accounts";
 import "../profile.css";
 import "../settings.css";
@@ -230,11 +230,11 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
               )}
               {service && a.core ? (
                 <button className="part" title="Part of KIQR; the accounts it works through (a site behind a login) are connected under Accounts" onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
-                  <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? `${a.accounts!.length} ${a.accounts!.length === 1 ? "account" : "accounts"}` : "no accounts yet"}
+                  <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? (workingAccounts(a).length === a.accounts!.length ? `${a.accounts!.length} ${a.accounts!.length === 1 ? "account" : "accounts"}` : `${workingAccounts(a).length} of ${a.accounts!.length} accounts signed in`) : "no accounts yet"}
                 </button>
               ) : service ? (
-                <button className={`part ${!a.ready && !(a.accounts?.length ?? 0) ? "warn" : ""}`} title={`Every ability of ${serviceName(a)} shares this project's ${serviceName(a)} account`} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
-                  <Plug size={11} /> {(a.accounts?.length ?? 0) > 0 ? `via your ${serviceName(a)} account` : "needs an account"}
+                <button className={`part ${workingAccounts(a).length === 0 ? "warn" : ""}`} title={`Every ability of ${serviceName(a)} shares this project's ${serviceName(a)} account`} onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>
+                  <Plug size={11} /> {workingAccounts(a).length > 0 ? `via your ${serviceName(a)} account` : (a.accounts?.length ?? 0) > 0 ? accountTrouble(a) : "needs an account"}
                 </button>
               ) : a.auth.length > 0 ? (
                 <button className={`part ${a.missing.length ? "warn" : ""}`} title="KIQR's own key" onClick={(e) => (e.stopPropagation(), onOpen(a, "connect"))}>

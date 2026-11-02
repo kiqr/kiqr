@@ -1,7 +1,11 @@
 //! Signing an account in on a hosted program (a browser) and keeping it so.
 //! The manifest's `session` says how: `check` steps tell whether the account
-//! is signed in, `login` steps type the credentials, `blocked_when` texts mean
-//! a person is needed. The credentials come from the account's login: saved
+//! is signed in; the sign-in starts at `login_url`, where the model reads each
+//! page's controls (any site, any language) and names the user, password and
+//! code fields, and the runner types into those and nothing else (`guided`
+//! below); or `login` steps type the credentials into fixed fields;
+//! `blocked_when` texts mean a person is needed, and so does the model
+//! saying the page is a captcha or a check. The credentials come from the account's login: saved
 //! in KIQR (its own `.env`) or an item in a password manager account
 //! (`provides.credential`). Only this runner ever reads them, right before
 //! typing; the model, transcripts, events and logs see names only, and what
@@ -118,7 +122,15 @@ async fn run_check(app: &App, slug: &str, c: &Connection, m: &Manifest) -> Resul
     tracing::debug!(account = %c.id, steps = sess.check.len(), text = %kiqr_core::profile::truncate_chars(&text, 400), "session check read");
     let needle = sess.signed_in_when.trim();
     let lower = text.to_lowercase();
-    let signed_in = if needle.is_empty() { !sess.signed_out_when.iter().any(|t| !t.trim().is_empty() && lower.contains(&t.trim().to_lowercase())) } else { text.contains(needle) };
+    let markers = sess.signed_out_when.iter().filter(|t| !t.trim().is_empty()).count();
+    let signed_in = if !needle.is_empty() {
+        text.contains(needle)
+    } else if markers > 0 {
+        !sess.signed_out_when.iter().any(|t| !t.trim().is_empty() && lower.contains(&t.trim().to_lowercase()))
+    } else {
+        // No marker to look for: the model reads the page.
+        guided::read_page(app, &guided::page_of(&last, &text), &[]).await?.state == guided::State::SignedIn
+    };
     Ok((signed_in, text))
 }
 
@@ -155,7 +167,7 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     if let Some(b) = blocked(&sess, &text) {
         return Ok(set_state(app, slug, &c, SessionStatus::NEEDS_HAND, format!("the site asks for a person: {b}")).await);
     }
-    if sess.login.is_empty() {
+    if !sess.signs_in() {
         return Ok(set_state(app, slug, &c, SessionStatus::NEEDS_HAND, "signed out; sign in once in the live view").await);
     }
     let cred = match credential(app, slug, &c).await {
@@ -165,10 +177,11 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
     // What is typed never comes back in an answer, a transcript or a log while it is in use.
     let struck = cred.values();
     app.redact.write().unwrap_or_else(|e| e.into_inner()).extend(struck.iter().cloned());
-    let result = run_login(app, slug, &c, &m, &sess, &cred).await;
+    set_state(app, slug, &c, SessionStatus::CHECKING, "signing in").await;
+    let result = if sess.login_url.trim().is_empty() { run_login(app, slug, &c, &m, &sess, &cred).await } else { guided::run(app, slug, &c, &m, &sess, &cred).await };
     drop(cred);
     let outcome = match result {
-        Ok(Some(b)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, format!("the site asks for a person: {b}")).await,
+        Ok(Some(b)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &format!("the site asks for a person: {b}"))).await,
         Ok(None) => match run_check(app, slug, &c, &m).await {
             Ok((true, _)) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
             Ok((false, t)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, blocked(&sess, &t).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| "the sign-in did not go through; finish it in the live view".into())).await,
@@ -196,6 +209,289 @@ async fn run_login(app: &App, slug: &str, c: &Connection, m: &Manifest, sess: &k
         }
     }
     Ok(None)
+}
+
+
+/// The model-led sign-in: from `login_url`, each page is read as the program's
+/// snapshot (title, URL, the visible controls, each with a selector the
+/// program built; a password field's value is masked by the program), the
+/// model says what the page is and which controls are the user, password and
+/// code fields, and the runner types into them. The model never gets a
+/// credential, and the runner types only into a control the page listed,
+/// the password only into one of `type=password`, and only on the service's
+/// own hosts: a page in any language works, and a site changing its markup
+/// does not break it.
+pub mod guided {
+    use super::*;
+    use kiqr_core::extensions::Step;
+    use kiqr_core::provider::{self, Request};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum State {
+        SignedIn,
+        Form,
+        Code,
+        Blocked,
+        Unknown,
+    }
+
+    /// What the model said about one page.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(default)]
+    pub struct Read {
+        pub state: State,
+        pub username: Option<String>,
+        pub password: Option<String>,
+        pub code: Option<String>,
+        pub submit: Option<String>,
+        pub reason: String,
+    }
+
+    impl Default for Read {
+        fn default() -> Self {
+            Read { state: State::Unknown, username: None, password: None, code: None, submit: None, reason: String::new() }
+        }
+    }
+
+    /// At most this many pages per sign-in.
+    const ROUNDS: usize = 6;
+    /// The controls handed to the model: this many, these keys.
+    const MAX_CONTROLS: usize = 80;
+    const KEPT: &[&str] = &["selector", "tag", "type", "name", "id", "placeholder", "label", "text", "role", "checked"];
+
+    const SYSTEM: &str = "You help KIQR sign a person in to a website in a browser KIQR drives. You get one page: its title, URL, its visible controls (from a snapshot) and its text (the labels, headings and notices that say which control is which), in whatever language the site uses, and which fields were typed already. You never get the password or any other value. Say what the page is and which controls to use. Answer with JSON only:\n{\"state\": \"signed_in\" | \"form\" | \"code\" | \"blocked\" | \"unknown\", \"username\": selector or null, \"password\": selector or null, \"code\": selector or null, \"submit\": selector or null, \"reason\": one short sentence in English about what the page shows}\n- signed_in: the person is signed in already (a feed, an account menu, a compose box, a welcome; no sign-in form).\n- form: a sign-in form asking for a user name, email or phone, a password, or both. A single user-name field with a Next button is still a form; the password comes on the next page.\n- code: the page asks for a one-time code, verification code or authenticator code.\n- blocked: a captcha or puzzle, an identity check, a phone or email confirmation, 'unusual activity', a suspended or locked account, a wrong-password notice, or anything else a person must do.\n- unknown: none of these.\nusername is the field for the user name, email or phone; password the password field; code the one-time code field; submit the button that sends the form (Log in, Next, Continue, Verify), or null when Enter in the last field does it.\nCopy selectors verbatim from the controls; never write one yourself. Ignore cookie banners, language pickers, 'remember me' boxes and links to register or reset a password; a cookie banner is not a block.";
+
+    /// The page as the model gets it: from the program's snapshot when the answer is one, else the text.
+    pub fn page_of(last: &Value, text: &str) -> Value {
+        page_with(last, text, None)
+    }
+
+    /// The same, with the page's prose beside the controls (labels, headings, notices: what says which field is which).
+    pub fn page_with(last: &Value, text: &str, prose: Option<&str>) -> Value {
+        if let Some(snap) = snapshot_of(last) {
+            let controls: Vec<Value> = snap["interactive_elements"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .take(MAX_CONTROLS)
+                        .map(|e| Value::Object(e.as_object().map(|o| o.iter().filter(|(k, _)| KEPT.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut page = json!({ "title": snap["title"], "url": snap["url"], "controls": controls });
+            if let Some(p) = prose.map(str::trim).filter(|p| !p.is_empty()) {
+                page["text"] = json!(kiqr_core::profile::truncate_chars(p, 2000));
+            }
+            return page;
+        }
+        json!({ "text": kiqr_core::profile::truncate_chars(text, 3000) })
+    }
+
+    /// The snapshot in a step's answer: the object itself, JSON in a string of
+    /// it, or either inside a wrapper (`result`, `text`), however the program framed it.
+    pub fn snapshot_of(last: &Value) -> Option<Value> {
+        match last {
+            Value::Object(o) => {
+                if o.contains_key("interactive_elements") {
+                    return Some(last.clone());
+                }
+                o.values().find_map(snapshot_of)
+            }
+            Value::Array(a) => a.iter().find_map(snapshot_of),
+            Value::String(t) => {
+                let t = t.trim();
+                if !t.starts_with('{') {
+                    return None;
+                }
+                let v: Value = serde_json::from_str(t).ok()?;
+                v.get("interactive_elements").is_some().then_some(v)
+            }
+            _ => None,
+        }
+    }
+
+    /// Ask the model what the page is and which controls to use.
+    pub async fn read_page(app: &App, page: &Value, typed: &[&str]) -> Result<Read> {
+        let spec = app.config.read().await.models.chat.clone();
+        let (prov, model) = provider::resolve(&spec)?;
+        let prompt = json!({ "page": page, "typed_already": typed }).to_string();
+        let text = prov.complete(&Request { system: SYSTEM.into(), prompt, model, json: true, max_tokens: 400 }).await.map_err(|e| anyhow!("the model could not read the page: {e:#}"))?;
+        let v = provider::extract_json(&text).map_err(|e| {
+            tracing::debug!(answer = %kiqr_core::profile::truncate_chars(&text, 600), "the model's answer about the page was not JSON");
+            e
+        })?;
+        let r: Read = serde_json::from_value(v).map_err(|e| anyhow!("the model's answer about the page made no sense: {e}"))?;
+        tracing::debug!(state = ?r.state, user = r.username.is_some(), pass = r.password.is_some(), code = r.code.is_some(), reason = %r.reason, "sign-in page read");
+        Ok(r)
+    }
+
+    /// The control the model named, as the page listed it: a text-like field
+    /// (`password` only a password field, the others never one). None when
+    /// the page listed nothing by that selector.
+    pub fn field<'a>(snap: &'a Value, selector: Option<&str>, password: bool) -> Option<&'a Value> {
+        let sel = selector?.trim();
+        if sel.is_empty() {
+            return None;
+        }
+        let e = snap["interactive_elements"].as_array()?.iter().find(|e| e["selector"].as_str() == Some(sel))?;
+        let tag = e["tag"].as_str().unwrap_or("");
+        let ty = e["type"].as_str().unwrap_or("text");
+        let textual = tag == "textarea" || (tag == "input" && !["checkbox", "radio", "submit", "button", "file", "hidden", "image", "reset", "range", "color"].contains(&ty)) || e["role"].as_str() == Some("textbox");
+        (textual && (ty == "password") == password).then_some(e)
+    }
+
+    /// A button the model named, as the page listed it.
+    pub fn button<'a>(snap: &'a Value, selector: Option<&str>) -> Option<&'a Value> {
+        let sel = selector?.trim();
+        snap["interactive_elements"].as_array()?.iter().find(|e| e["selector"].as_str() == Some(sel) && !matches!(e["tag"].as_str(), Some("input") | Some("textarea")) || (e["selector"].as_str() == Some(sel) && matches!(e["type"].as_str(), Some("submit") | Some("button"))))
+    }
+
+    fn step(name: &str, call: &str, args: Value) -> Step {
+        Step { name: name.into(), call: call.into(), args: Some(args), ..Default::default() }
+    }
+
+    /// Sign in from `login_url`. Returns what blocked, if anything; an error
+    /// when the pages could not be followed.
+    pub async fn run(app: &App, slug: &str, c: &Connection, m: &Manifest, sess: &kiqr_core::extensions::Session, cred: &Credential) -> Result<Option<String>> {
+        let program = crate::ext::program_of(app, Some(slug), m).await?;
+        let env = kiqr_core::connections::env_for(app.store.home(), slug, Some(c), m);
+        let launch = crate::ext::mcp_env(app, slug, m, Some(c), &env);
+        let args = json!({ "credential": { "username": cred.username, "password": cred.password, "otp": cred.otp.clone().unwrap_or_default() } });
+        let map: kiqr_core::extensions::ResultMap = Default::default();
+        let go = |steps: Vec<Step>| {
+            let (program, launch, args, map, env) = (&program, &launch, &args, &map, &env);
+            async move { crate::ext::mcp_steps(app, program, launch, m, &steps, args, map, env).await }
+        };
+        let url = kiqr_core::extensions::fill(sess.login_url.trim(), &json!({}), env.clone());
+        go(vec![step("open", "browser_navigate", json!({ "url": url, "wait_until": "domcontentloaded" }))]).await?;
+        let mut typed: Vec<&str> = Vec::new();
+        let mut forms = 0;
+        for round in 0..ROUNDS {
+            if round > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+            }
+            let (last, text) = go(vec![step("look", "browser_snapshot", json!({}))]).await?;
+            let snap = snapshot_of(&last).ok_or_else(|| anyhow!("the program's snapshot of the page could not be read"))?;
+            // The page's words too: the labels and notices that say which field is which, in any language.
+            let prose = go(vec![step("read", "browser_read_text", json!({ "selector": "body" }))]).await.ok().and_then(|(l, t)| t.or_else(|| l.get("text").and_then(Value::as_str).map(str::to_string)));
+            let read = read_page(app, &page_with(&last, &text.unwrap_or_default(), prose.as_deref()), &typed).await?;
+            match read.state {
+                State::SignedIn => return Ok(None),
+                State::Blocked => return Ok(Some(if read.reason.trim().is_empty() { "the page needs a person".into() } else { read.reason.trim().to_string() })),
+                State::Unknown => {
+                    // Before anything was typed the page may still be loading: one more look. After, it is where the sign-in ended up.
+                    if typed.is_empty() && round == 0 {
+                        continue;
+                    }
+                    bail!("after the sign-in the page at {} is not one I understand: {}", snap["url"].as_str().unwrap_or("?"), read.reason);
+                }
+                State::Form | State::Code => {}
+            }
+            // Nothing is typed off the service's own hosts.
+            crate::ext::check_host(m, snap["url"].as_str().unwrap_or(""), &env)?;
+            let mut steps = Vec::new();
+            if read.state == State::Code {
+                let Some(f) = field(&snap, read.code.as_deref(), false) else {
+                    bail!("the page asks for a code but named no field for it");
+                };
+                if cred.otp.is_none() {
+                    return Ok(Some("the site asks for a one-time code; add the code's secret to the login, or finish in the live view".into()));
+                }
+                steps.push(step("code", "browser_type", json!({ "selector": f["selector"], "text": "{{credential.otp}}" })));
+                typed.push("code");
+            } else {
+                forms += 1;
+                if forms > 3 {
+                    bail!("the site keeps showing the sign-in form; the user name or password may be wrong");
+                }
+                let user = field(&snap, read.username.as_deref(), false);
+                let pass = field(&snap, read.password.as_deref(), true);
+                if user.is_none() && pass.is_none() {
+                    bail!("the page shows a sign-in form but none of its fields could be used");
+                }
+                if let Some(f) = user {
+                    steps.push(step("user", "browser_type", json!({ "selector": f["selector"], "text": "{{credential.username}}" })));
+                    if !typed.contains(&"username") {
+                        typed.push("username");
+                    }
+                }
+                if let Some(f) = pass {
+                    steps.push(step("pass", "browser_type", json!({ "selector": f["selector"], "text": "{{credential.password}}" })));
+                    if !typed.contains(&"password") {
+                        typed.push("password");
+                    }
+                }
+            }
+            match button(&snap, read.submit.as_deref()) {
+                Some(b) => steps.push(step("go", "browser_click", json!({ "selector": b["selector"] }))),
+                None => steps.push(step("go", "browser_press_key", json!({ "key": "Enter" }))),
+            }
+            let (last, text) = go(steps).await?;
+            let said = match text { Some(t) if !last.is_object() => t, _ => flat_text(&last) };
+            tracing::debug!(round, said = %crate::redact(app, &kiqr_core::profile::truncate_chars(&said, 300)), "sign-in page filled");
+            if let Some(b) = blocked(sess, &said) {
+                return Ok(Some(b));
+            }
+        }
+        bail!("the sign-in did not finish within {ROUNDS} pages")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn snap() -> Value {
+            json!({ "title": "Logga in", "url": "https://x.com/i/flow/login", "interactive_elements": [
+                { "tag": "input", "type": "text", "name": "username_or_email", "selector": "input[name='username_or_email']", "placeholder": "Telefon, e-post eller användarnamn" },
+                { "tag": "input", "type": "password", "name": "password", "selector": "input[name='password']" },
+                { "tag": "button", "type": "submit", "selector": "button[type='submit']", "text": "Logga in" },
+                { "tag": "input", "type": "checkbox", "selector": "input[name='remember']" },
+                { "tag": "a", "selector": "a[href='/signup']", "text": "Registrera dig" }
+            ] })
+        }
+
+        #[test]
+        fn a_password_goes_only_into_a_password_field() {
+            let s = snap();
+            assert!(field(&s, Some("input[name='password']"), true).is_some());
+            assert!(field(&s, Some("input[name='username_or_email']"), true).is_none(), "a text field never takes the password");
+            assert!(field(&s, Some("input[name='password']"), false).is_none(), "the user name never goes into the password field");
+            assert!(field(&s, Some("input[name='username_or_email']"), false).is_some());
+        }
+
+        #[test]
+        fn only_controls_the_page_listed_count() {
+            let s = snap();
+            assert!(field(&s, Some("input[name='made_up']"), false).is_none());
+            assert!(field(&s, Some("input[name='remember']"), false).is_none(), "a checkbox is not a field to type into");
+            assert!(field(&s, None, false).is_none());
+            assert!(button(&s, Some("button[type='submit']")).is_some());
+            assert!(button(&s, Some("input[name='password']")).is_none(), "a field is not a button");
+            assert!(button(&s, Some("a[href='/signup']")).is_some(), "a link can be the way on");
+        }
+
+        #[test]
+        fn the_model_sees_controls_without_coordinates_and_the_text_when_there_is_no_snapshot() {
+            let page = page_of(&json!({ "text": snap().to_string() }), "");
+            assert_eq!(page["url"], "https://x.com/i/flow/login");
+            assert_eq!(page["controls"].as_array().unwrap().len(), 5);
+            assert!(page["controls"][0].get("at").is_none());
+            let plain = page_of(&json!({ "text": "Welcome back, Jane" }), "Welcome back, Jane");
+            assert_eq!(plain["text"], "Welcome back, Jane");
+            let wrapped = page_of(&json!({ "result": snap().to_string() }), "");
+            assert_eq!(wrapped["controls"].as_array().unwrap().len(), 5, "a snapshot inside a wrapper is found");
+        }
+
+        #[test]
+        fn the_models_answer_parses_with_missing_fields() {
+            let r: Read = serde_json::from_value(json!({ "state": "form", "password": "input[name='password']" })).unwrap();
+            assert_eq!(r.state, State::Form);
+            assert!(r.username.is_none());
+            let r: Read = serde_json::from_value(json!({ "state": "blocked", "reason": "A captcha." })).unwrap();
+            assert_eq!(r.state, State::Blocked);
+        }
+    }
 }
 
 /// Forget the sign-in: stop the account's programs and wipe what they kept
@@ -257,7 +553,7 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
         "login": c.login,
         "live_view": m.as_ref().and_then(|m| m.live_view.as_ref()).is_some(),
         // No login steps: a person signs in once in the live view; the program keeps it.
-        "by_hand": m.as_ref().and_then(|m| m.session.as_ref()).is_some_and(|s| s.login.is_empty()),
+        "by_hand": m.as_ref().and_then(|m| m.session.as_ref()).is_some_and(|s| !s.signs_in()),
         "start_url": m.as_ref().and_then(|m| start_url(app, slug, c, m)),
     })
 }
@@ -265,8 +561,13 @@ pub async fn view(app: &App, slug: &str, c: &Connection) -> Value {
 /// Where the live view opens: the first page the session's check visits, with the account's keys filled.
 pub fn start_url(app: &App, slug: &str, c: &Connection, m: &Manifest) -> Option<String> {
     let env = kiqr_core::connections::env_for(app.store.home(), slug, Some(c), m);
-    let st = m.session.as_ref()?.check.iter().find(|s| s.args.as_ref().is_some_and(|a| a.get("url").is_some()))?;
-    let u = kiqr_core::extensions::fill(st.args.as_ref()?["url"].as_str()?, &json!({}), env);
+    let sess = m.session.as_ref()?;
+    let template = match sess.check.iter().find(|s| s.args.as_ref().is_some_and(|a| a.get("url").is_some())) {
+        Some(st) => st.args.as_ref()?["url"].as_str()?.to_string(),
+        None if !sess.login_url.trim().is_empty() => sess.login_url.trim().to_string(),
+        None => return None,
+    };
+    let u = kiqr_core::extensions::fill(&template, &json!({}), env);
     (!u.contains("${")).then_some(u)
 }
 
