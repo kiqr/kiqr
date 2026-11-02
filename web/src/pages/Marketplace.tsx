@@ -160,7 +160,7 @@ function MarketCard({ slug, a, i, onOpen, onChange }: { slug: string; a: Ability
             {p.label}
           </span>
         ))}
-        {a.channels.map((c) => (
+        {(a.publishes_to ?? []).map((c) => (
           <span key={c} className="chip">
             Publishes to {c}
           </span>

@@ -282,3 +282,5 @@
   .agenda .side { position: static; }
   .teach-form .grid { grid-template-columns: 1fr; }
 }
+/* A yes that adds somewhere new to the Audience: said in indigo, on approval cards and the asset actions. */
+.new-spot { color: var(--accent-2); margin-top: 6px; font-size: 12.5px; }

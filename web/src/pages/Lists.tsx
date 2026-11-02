@@ -1,18 +1,21 @@
-// Marketing → Audience: the lists of people this project emails. The
+// Marketing → Audience → a list: the people this project emails there. The
 // addresses stay on this machine, outside the project's history; the page
 // shows them, adds people (pasted, or a CSV file read here and sent as text)
 // with how they agreed to hear from the business, marks those who asked to
 // leave, and shows what was sent. A send itself goes through Seemo: "Send to
 // this list" starts a chat, and the email comes back as a card for a yes.
 import { useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Check, FileUp, Loader2, Mail, Plus, Search, Send, Trash2, UserMinus, Users, X } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { ArrowLeft, Check, FileUp, Loader2, Mail, Plus, Search, Send, Trash2, UserMinus, X } from "lucide-react";
 import { api, useAsync, useEvents, type Contact, type MailList } from "../api";
 import { openSeemo } from "../SeemoWidget";
-import { LIST_EVENTS } from "./Accounts";
+import { useAudience } from "./Audience";
 import { ago } from "./Project";
 import "../profile.css";
 import "../accounts.css";
+
+/** What changes a list: its people, a send, the list itself. */
+const LIST_EVENTS = ["list_changed", "list_deleted", "list_sending", "audience_saved", "audience_deleted"];
 
 /** People on it who still hear from the business. */
 const reachable = (l: MailList) => l.contacts - l.unsubscribed;
@@ -22,95 +25,6 @@ async function askForEmail(slug: string, l: MailList) {
   const c = await api.createChat(slug, `Email to ${l.label}`);
   openSeemo(c.id);
   await api.sendMessage(slug, c.id, `Write an email to the ${l.label} list (${reachable(l)} people) and propose sending it to them from our mail account.`);
-}
-
-export function ListsPage() {
-  const { slug = "", id } = useParams();
-  return id ? <ListPage slug={slug} id={decodeURIComponent(id)} /> : <ListIndex slug={slug} />;
-}
-
-function ListIndex({ slug }: { slug: string }) {
-  const data = useAsync(() => api.lists(slug), [slug]);
-  useEvents(slug, (e) => LIST_EVENTS.includes(e.type) && data.reload(), { demo: false });
-  const [adding, setAdding] = useState(false);
-  const [label, setLabel] = useState("");
-  const [description, setDescription] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const navigate = useNavigate();
-  const lists = data.data?.lists ?? [];
-  const create = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const l = await api.createList(slug, { label: label.trim(), description: description.trim() });
-      navigate(`/p/${slug}/audience/${encodeURIComponent(l.id)}`);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="prof">
-      <div className="cm-head">
-        <div>
-          <p className="cap">Marketing</p>
-          <h1 className="d2">Audience</h1>
-          <p className="muted">The people this project emails, in lists. The addresses stay on this machine and out of the project's history; Seemo only sees how many there are.</p>
-        </div>
-        {!adding && (
-          <button className="btn p" onClick={() => setAdding(true)}>
-            <Plus size={15} /> New list
-          </button>
-        )}
-      </div>
-      {adding && (
-        <div className="pcard ls-new">
-          <label className="acc-field">
-            <span className="nm">Name</span>
-            <input className="input" autoFocus value={label} placeholder="Newsletter" onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && label.trim() && void create()} />
-          </label>
-          <label className="acc-field">
-            <span className="nm">
-              What it is for<small className="dim"> optional</small>
-            </span>
-            <input className="input" value={description} placeholder="Product news, once a month" onChange={(e) => setDescription(e.target.value)} />
-          </label>
-          <button className="btn p sm" disabled={busy || !label.trim()} onClick={() => void create()}>
-            {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Make the list
-          </button>
-          <button className="btn t sm" onClick={() => setAdding(false)}>
-            Cancel
-          </button>
-          {error && <p className="err sm">{error}</p>}
-        </div>
-      )}
-      {data.data && lists.length === 0 && !adding && (
-        <div className="pcard none">
-          <Users size={22} className="ac2" />
-          <p className="t">No lists yet</p>
-          <p className="muted">Make a list, add the people who asked to hear from you, and Seemo can write to all of them from your mail account. Every send asks you first.</p>
-          <button className="btn g" onClick={() => setAdding(true)}>
-            <Plus size={14} /> New list
-          </button>
-        </div>
-      )}
-      <div className="ls-grid">
-        {lists.map((l) => (
-          <Link key={l.id} className="pcard ls-card" to={`/p/${slug}/audience/${encodeURIComponent(l.id)}`}>
-            <h3>{l.label}</h3>
-            <p className="n">
-              {reachable(l)}
-              <small>{reachable(l) === 1 ? "person" : "people"}</small>
-            </p>
-            {l.description && <p className="muted sm">{l.description}</p>}
-            {l.unsubscribed > 0 && <p className="dim sm">{l.unsubscribed} unsubscribed</p>}
-          </Link>
-        ))}
-      </div>
-    </div>
-  );
 }
 
 /** Lines of addresses into people: "Ana Ruiz <ana@example.com>", "ana@example.com, Ana Ruiz", or the address alone. */
@@ -131,14 +45,15 @@ function parsePeople(text: string): { email: string; name?: string }[] {
   return out;
 }
 
-function ListPage({ slug, id }: { slug: string; id: string }) {
+export function ListPage({ slug, id }: { slug: string; id: string }) {
   const navigate = useNavigate();
   const list = useAsync(() => api.list(slug, id), [slug, id]);
   const people = useAsync(() => api.contacts(slug, id), [slug, id]);
+  const audience = useAudience(slug);
   const sends = useAsync(() => api.listSends(slug, id).catch(() => ({ list: id, sends: [] })), [slug, id]);
   useEvents(slug, (e) => {
-    if (!LIST_EVENTS.includes(e.type) || (e.list && e.list !== id)) return;
-    if (e.type === "list_deleted") return navigate(`/p/${slug}/audience`);
+    if (!LIST_EVENTS.includes(e.type) || (e.list && e.list !== id) || (e.entry && e.entry !== id)) return;
+    if (e.type === "list_deleted" || e.type === "audience_deleted") return navigate(`/p/${slug}/audience`);
     if (e.type === "list_sending") return sends.reload();
     list.reload();
     people.reload();
@@ -148,6 +63,8 @@ function ListPage({ slug, id }: { slug: string; id: string }) {
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const l = list.data;
+  // The account it is sent from, as the Audience says (whether it works now).
+  const via = audience.data?.entries.find((e) => e.id === id)?.via;
   const all = people.data?.contacts ?? [];
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -188,6 +105,22 @@ function ListPage({ slug, id }: { slug: string; id: string }) {
           <p className="muted">
             {l ? `${reachable(l)} ${reachable(l) === 1 ? "person hears" : "people hear"} from you here${l.unsubscribed ? `; ${l.unsubscribed} asked to leave` : ""}.` : ""} {l?.description}
           </p>
+          {l && (
+            <p className="muted sm">
+              {via ? (
+                <>
+                  Sent from <Link to={`/p/${slug}/accounts#account=${encodeURIComponent(via.account)}`}>{via.label}</Link>
+                  {!via.ready && <span className="warn"> · it does not work right now</span>}
+                </>
+              ) : l.account ? (
+                <>Sent from {l.account}</>
+              ) : (
+                <>
+                  No mail account sends it yet. <Link to={`/p/${slug}/audience`}>Pick one on the Audience page</Link>.
+                </>
+              )}
+            </p>
+          )}
         </div>
         <div className="cm-acts">
           {confirm ? (

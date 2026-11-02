@@ -223,7 +223,7 @@ export function CrawlLive({ slug, fresh }: { slug: string; fresh: boolean }) {
               {s.completed.blocked > 0 && health.data && !health.data.unblockingapi && (
                 <p className="cr-done-s warn">
                   {s.completed.blocked} {s.completed.blocked === 1 ? "page was" : "pages were"} blocked or need JavaScript. Connect UnblockingAPI in{" "}
-                  <Link to="/connections">Connections</Link> to read them too.
+                  <Link to="/connections">Abilities</Link> to read them too.
                 </p>
               )}
             </div>

@@ -146,29 +146,33 @@ export type Asset = {
   updated_at: string;
   files: { role: string; path: string; bytes: number; sha256: string }[];
   source?: Record<string, unknown>;
-  /** The account the user approved it for (Ready), and the place in it; when the daemon publishes it (Scheduled); why a scheduled publish failed. */
-  channel?: string | null;
-  place?: string | null;
+  /** The Audience entry the user approved it for (Ready); when the daemon publishes it (Scheduled); why a scheduled publish failed. */
+  target?: string | null;
   publish_at?: string | null;
   publish_error?: string | null;
   archived?: boolean;
-  publications: { connector: string; place?: string | null; account?: string; url?: string; at: string; run?: string }[];
+  publications: Publication[];
 };
+/** Where an asset went: the Audience entry (empty for an email to one address), the account it went through, the ability that sent it. */
+export type Publication = { audience?: string; account: string; ability?: string; from?: string | null; to?: string | null; url?: string | null; at: string; run?: string | null };
 export type TypeCount = { type: string; count: number };
 export type NewAsset = { type: string; title: string; tags?: string[]; summary?: string; source?: Record<string, unknown>; files?: { role: string; name: string; text: string }[] };
 
 export type KiqrEvent = { at: string; project: string | null; type: string } & Record<string, unknown>;
-/** How an account's sign-in on a hosted program changed (`session_changed`). */
-export type SessionChangedEvent = { type: "session_changed"; connection: string; state: SessionState; message: string };
+/** Whether an account works changed (`account_state_changed`): its sign-in on a hosted program. */
+export type AccountStateEvent = { type: "account_state_changed"; account: string; state: SessionState; message: string };
 /** One picture of the live view (`hands_frame`), a few a second while someone watches. Never kept. */
-export type HandsFrameEvent = { type: "hands_frame"; connection: string; hands: string; mime: string; data: string; url?: string };
-export type HandsStartedEvent = { type: "hands_started"; connection: string; hands: string };
-export type HandsEndedEvent = { type: "hands_ended"; connection: string; hands: string; message: string };
+export type HandsFrameEvent = { type: "hands_frame"; account: string; hands: string; mime: string; data: string; url?: string };
+export type HandsStartedEvent = { type: "hands_started"; account: string; hands: string };
+export type HandsEndedEvent = { type: "hands_ended"; account: string; hands: string; message: string };
 /** A program KIQR installs for an ability (machine-wide events, on the stream without a project). */
 export type ProgramInstallingEvent = { type: "program_installing"; program: string; version: string; note: string };
 export type ProgramInstalledEvent = { type: "program_installed"; program: string; version: string };
 export type ProgramFailedEvent = { type: "program_failed"; program: string; version: string; message: string };
-export const SESSION_EVENTS = ["session_changed"];
+export const SESSION_EVENTS = ["account_state_changed"];
+/** Everything that changes an account or the Audience: pages listing them reload on these. */
+export const ACCOUNT_EVENTS = ["account_saved", "account_deleted", "account_state_changed", "ability_settings_saved", "connect_finished", "secret_set", "extension_installed", "extension_removed", "extension_paused"];
+export const AUDIENCE_EVENTS = ["audience_saved", "audience_deleted", "account_saved", "account_deleted", "account_state_changed"];
 export const HANDS_EVENTS = ["hands_frame", "hands_started", "hands_ended"];
 export const PROGRAM_EVENTS = ["program_installing", "program_installed", "program_failed", "program_log"];
 
@@ -318,10 +322,10 @@ export type PerfSource = { id: string; label: string; provider: string | null; c
 export type PerfMetric = { source: string; metric: string; label: string; lower_is_better: boolean; last7: number | null; prev7: number | null; last30: number | null; series: { date: string; value: number }[] };
 export type PerfKpi = { objective: string; title: string; kpi: string; label: string | null; target: number | null; unit: string; by: string | null; source: string | null; measured: boolean; value: number | null; prev: number | null; window_days: number };
 export type Performance = { sources: PerfSource[]; metrics: PerfMetric[]; tops: Record<string, { key: string; value: number }[]>; kpis: PerfKpi[]; plan_period: string | null; today: string; refreshed?: { note: string; ok: boolean }[] };
-/** A task run coming up, or a publish the daemon will do (`kind: "publish"`, with the asset, the account and the place in it). */
-export type CalendarItem = { kind?: "task" | "publish"; task?: string; asset?: { type: string; id: string; title: string }; channel?: string | null; channel_label?: string; place?: string | null; place_label?: string | null; title: string; at: string; schedule_text: string };
+/** A task run coming up, or a publish the daemon will do (`kind: "publish"`, with the asset, the Audience entry and the account that reaches it). */
+export type CalendarItem = { kind?: "task" | "publish"; task?: string; asset?: { type: string; id: string; title: string }; target?: string | null; target_label?: string; via?: string | null; title: string; at: string; schedule_text: string };
 /** What waits for the user: open approvals from every chat, drafts to approve, what is approved but not sent, publishes coming up, failed publishes. */
-/** A kind of place content can go (the code's channel kind). Installed ones carry what their ability declares; listed ones only a name. */
+/** A kind of place content goes (a network, a blog, an inbox). Installed ones carry what their ability declares; listed ones only a name. */
 export type Network = { kind: string; name: string; icon: string; network: boolean; installed: boolean; text_limit?: number | null; image?: { width: number; height: number } | null; preview?: string; ability?: string };
 /** A profile the business has where an ability in the marketplace could publish. */
 export type Suggestion = { kind: string; name: string; profile_url: string; ability: string; ability_name: string };
@@ -338,32 +342,66 @@ export type Todo = {
   count: number;
 };
 /** An account whose sign-in waits for a person in the live view. */
-export type NeedsHand = { connection: string; label: string; message: string; service?: string; since?: string | null };
+export type NeedsHand = { account: string; label: string; message: string; service?: string; since?: string | null };
 export type ToolGroup = { id: string; label: string; tools: string[] };
 
 // ---- Abilities
 export type Scope = { scope: "global" } | { scope: "project"; project: string };
 /** A key an ability needs. `set` says where, for a core ability's own key (this project or the machine); an installed ability's keys live on its accounts. */
 export type MarketAuth = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: "project" | "global" | boolean | null };
-/** One of this project's accounts of an ability: which keys it has, never their values. */
-/** An ability's account in this project. `works`: keys complete and, where the ability signs in, not signed out or waiting for a hand (`session`: unknown | checking | signed_in | signed_out | needs_hand). */
-export type AccountSummary = { id: string; label: string; default: boolean; channel: boolean; kind: string; destination_text: string; missing: string[]; set: string[]; session?: string | null; works?: boolean };
-/** A kind an ability publishes as, and the fields a place of it has. */
-export type KindInfo = { kind: string; label: string; name: string; place: Record<string, PlaceField>; does?: string[] };
+/** An ability's account in this project. `works`: the one readiness rule says ready (`state`: ready | missing_keys | needs_program | signed_out | needs_hand | checking). */
+export type AccountSummary = { id: string; label: string; default: boolean; missing: string[]; set: string[]; state?: AccountStateWord; works?: boolean };
+/** A kind an ability publishes as, and the target fields that name a spot of it (a subreddit). */
+export type KindInfo = { kind: string; label: string; name: string; section: AudienceSection; target: Record<string, SpecField>; publishes: boolean };
 /** How far Seemo may go with one role on an account: on its own, after a yes, or not at all. Roles that never act know only auto (on) and off. */
 export type Allow = "auto" | "ask" | "off";
 /** One role an account can be allowed: `acts` roles change something out there and have three choices. */
 export type Permission = { role: string; allow: Allow; acts: boolean };
-/** Somewhere inside an account content can go: a subreddit, a branch, a list of people (`kind: "list"`, `fields.list`). */
-export type Place = { id: string; kind: string; label: string; fields?: Record<string, unknown>; default?: boolean };
-/** One field a place has, as its kind declares it. */
-export type PlaceField = { type?: string; label?: string; help?: string; optional?: boolean; enum?: string[]; placeholder?: string; /** Picked from a list read through the account (`GET …/choices/{field}`), not typed. */ choices?: Record<string, unknown> | boolean | null };
-/**
- * One kind of place an account can have: the kind it publishes as ("Publishes to"), or an ability of
- * its service that works on a place of its own (a GA4 property, a Search Console site: "Measures",
- * "Works on"; `kind` is that ability's id). `needs`: a required field is missing and no place of it exists yet.
- */
-export type PlaceKind = { kind: string; label: string; verb: string; fields: Record<string, PlaceField>; needs: boolean; lists?: boolean };
+/** One field a manifest declares: a kind's target field (a subreddit) or an ability's setting (a GA4 property). */
+export type SpecField = { type?: string; label?: string; help?: string; optional?: boolean; enum?: string[]; placeholder?: string; pattern?: string; /** Picked from a list read through the account (`GET …/accounts/{id}/choices/{field}`), not typed. */ choices?: Record<string, unknown> | boolean | null };
+/** Where an Audience entry is listed. */
+export type AudienceSection = "page" | "community" | "list";
+export const SECTIONS: { id: AudienceSection; label: string; hint: string }[] = [
+  { id: "page", label: "Your pages", hint: "The business's own: a profile, a company page, a blog" },
+  { id: "community", label: "Communities", hint: "Where it takes part: a subreddit, a group" },
+  { id: "list", label: "Lists", hint: "The people it emails" },
+];
+/** Everywhere the business's people are, each reached through an account. */
+export type AudienceEntry = {
+  id: string;
+  label: string;
+  section: AudienceSection;
+  kind: string;
+  account: string;
+  fields?: Record<string, unknown>;
+  url?: string;
+  description?: string;
+  added_by: string;
+  suggested: boolean;
+  reason?: string;
+  created_at: string;
+  publications?: number;
+  last_published?: string | null;
+  /** The account that reaches it, and whether that works now. Null: it needs an account. */
+  via: { account: string; label: string; service: string; service_name: string; state: AccountStateWord; ready: boolean; allow: { publish: Allow; reply: Allow } } | null;
+  needs_account?: boolean;
+  kind_name?: string;
+  kind_label?: string;
+  icon?: string;
+  publishes?: boolean;
+  network?: boolean;
+  /** A list's people, counted. */
+  contacts?: number;
+  unsubscribed?: number;
+  /** Choices a publish there offers (a blog's status), and what Seemo prepares for each publish. */
+  options?: Record<string, { type?: string; enum?: string[]; description?: string }>;
+  prepared?: string[];
+};
+/** What can be added to the Audience: a kind with its target fields and the accounts that reach it. */
+export type AudienceKind = { kind: string; label: string; name: string; icon: string; section: AudienceSection; target: Record<string, SpecField>; account_is_target: boolean; publishes?: boolean; service?: string; service_name?: string; accounts: { id: string; label: string }[] };
+export type AudienceView = { entries: AudienceEntry[]; kinds: AudienceKind[] };
+/** Somewhere to publish that the Audience may not have yet: it joins with the yes. */
+export type Spot = { kind: string; fields: Record<string, unknown>; account?: string };
 /** A service as the grid of things to connect shows it. `group` is one of SERVICE_GROUPS. */
 export type ServiceCard = { id: string; name?: string; icon?: string; group?: string; profile_hosts?: string[] };
 /** Where a service sits in the grid of things to connect, in the order shown. */
@@ -398,7 +436,8 @@ export type Ability = {
   icon: string;
   cost: string | null;
   provides: { ability: string; label: string }[];
-  channels: string[];
+  /** The networks it publishes to, by name. */
+  publishes_to: string[];
   sources: string[];
   avatar?: string | null;
   tools: number;
@@ -438,8 +477,9 @@ export type Ability = {
   accounts?: AccountSummary[];
   /** The kinds it publishes as. */
   kinds?: KindInfo[];
-  /** The place of its own it works on (a property, a site), field by field, when it has one. */
-  places?: Record<string, PlaceField>;
+  /** What the project picks once for it (a property, a site), field by field, and what it picked. */
+  settings?: Record<string, SpecField> | null;
+  setting?: AbilitySetting | null;
   /** The service it is an ability of: its id, and when the daemon sends it, the card the grid shows. */
   service?: string | null;
   service_card?: ServiceCard | null;
@@ -458,85 +498,69 @@ export type AbilitiesView = { abilities: Ability[]; market: Ability[]; contracts
 export type SignIn = { id: string; name: string; signed_in: boolean; account: string | null; per_project?: boolean; scope?: "project" | "machine" | null; waiting: { user_code: string; verification_uri: string; verification_uri_complete?: string | null } | null };
 /** A key on one account: set or not, never its value. */
 export type AccountKey = { env: string; label: string; help: string; optional: boolean; options?: string[]; placeholder?: string; set: boolean; /** A sign-in keeps it (a token): never typed. */ written?: boolean; /** Its values are read through the account once it is signed in. */ choices?: boolean };
-/** One account in this project: everything Seemo signs in to (an X account, a mail account, a site), with its own keys, what Seemo may do there, and the places inside it. */
+/** The one readiness rule's word for an account. */
+export type AccountStateWord = "ready" | "missing_keys" | "needs_program" | "signed_out" | "needs_hand" | "checking";
+/** Whether an account works, with what is missing and a sentence for the user. */
+export type AccountState = { state: AccountStateWord; ready: boolean; says: string; keys?: string[]; programs?: string[] };
+/** Where an account's secrets are kept: in KIQR, or an item in a password manager account. */
+export type SecretsRef = { store: string; item?: string };
+/** What a project picked once for an ability (a GA4 property), and the account it was read through. */
+export type AbilitySetting = { account: string } & Record<string, unknown>;
+/** One account in this project: who Seemo signs in as on a service (a Reddit login, a Google account, a mail account). It never says where content goes: that is the Audience. */
 export type Account = {
   id: string;
   label: string;
-  ability: string;
-  ability_name: string;
+  service: string;
   default: boolean;
-  /** It has a kind: its service publishes. */
-  channel: boolean;
-  /** It may be published to now (a kind, and publishing is not off). */
-  publishes?: boolean;
-  kind: string;
-  kind_label?: string;
-  kind_name?: string;
   created_by: string;
   created_at: string;
+  /** Whether it works now, by the one rule. */
+  state: AccountState;
+  ready: boolean;
   /** What Seemo may do here, by role. */
   allow?: Permission[];
-  /** Where inside it content goes. */
-  places?: Place[];
-  /** The fields a place here has, and whether one is needed before anything goes out. */
-  place_fields?: Record<string, PlaceField>;
-  needs_place?: boolean;
-  /** Every kind of place it can have, with what each needs. */
-  place_kinds?: PlaceKind[];
+  /** Where it reaches: the Audience entries through it. */
+  audience?: { id: string; label: string; section: AudienceSection }[];
   /** Who it is out there (a mail address, a site's host), when the daemon tells. */
-  identity?: string;
-  /** Its places are lists of people (a mail account), when the daemon says so. */
-  takes_lists?: boolean;
+  identity?: string | null;
+  /** The label is the user's, not the service's name. */
+  label_set?: boolean;
   service_card?: ServiceCard;
   /** The service's mark (its ability's avatar), as a URL, when it has one. */
   avatar?: string | null;
-  publications: number;
-  last_published?: string | null;
-  connection_name: string;
-  ready: boolean;
-  missing: string[];
   auth: AccountKey[];
   connect?: ConnectInfo | null;
-  destination_text: string;
-  icon?: string;
   error?: string;
   /** Signed in one way or another (a token kept, a key file set). */
   signed_in?: boolean;
-  /** The service it is an account of; every ability of that service on here uses it. */
-  service?: string;
-  /** Those abilities, with what each does on this channel (empty for a plain account). */
+  /** The abilities that use it, with what each does through it. */
   used_by?: { id: string; name: string; does: string[] }[];
-  /** A channel's: the ability that publishes to it, and those that could. */
-  publisher?: string | null;
-  publisher_name?: string | null;
-  publishers?: { id: string; name: string }[];
   /** Learning from it is allowed: the project learns from it into the profile. */
   source?: boolean;
   can_learn?: boolean;
-  /** Its ability can teach the project; what the switch says. */
   learn?: LearnInfo | null;
-  /** Its ability publishes somewhere: it can be a channel. */
   can_publish?: boolean;
   last_learned?: string | null;
-  /** Documents read the last time. */
   learned?: number;
   /** It signs in on a hosted program (a browser), and how that stands. */
   has_session?: boolean;
   session?: SessionStatus;
-  /** Where its login lives; null when none is saved. */
-  login?: LoginRef | null;
+  /** A login to sign in with is there (saved in KIQR, or in a password manager). */
+  has_login?: boolean;
+  /** Where its secrets are kept. */
+  secrets?: SecretsRef & { store_label: string; in_kiqr: boolean };
   /** Which values of a login saved in KIQR are there (names only). */
   login_set?: string[];
   /** A person can take the controls of its program. */
   live_view?: boolean;
+  by_hand?: boolean;
+  start_url?: string | null;
 };
 export type LearnInfo = { label: string };
 /** `unknown`, `checking`, `signed_in`, `signed_out`, `needs_hand`. */
 export type SessionState = "unknown" | "checking" | "signed_in" | "signed_out" | "needs_hand";
 /** How an account's sign-in on a hosted program stands. */
-export type SessionStatus = { state: SessionState | ""; message: string; checked_at: string | null; signed_in_at: string | null };
-/** Where an account's login lives: saved in KIQR (`store: "kiqr"`) or a password manager account and its item. */
-export type LoginRef = { store: string; ref?: string };
+export type SessionStatus = { state: SessionState | ""; message: string; checked_at: string | null; signed_in_at: string | null; by_user?: boolean };
 /** The values a login saved in KIQR has, by key name. */
 export const LOGIN_KEYS = ["LOGIN_USERNAME", "LOGIN_PASSWORD", "LOGIN_TOTP_SECRET"] as const;
 /** A program an ability needs: found here or not, and how KIQR gets it (`system`: a package the user installs; by package manager). */
@@ -557,16 +581,14 @@ export type ProgramStatus = {
 export type HandsCan = { click: boolean; key: boolean; type: boolean; navigate: boolean };
 /** One input from the person at the controls: x, y are fractions of the picture, width and height its pixel size. */
 export type HandsInput = { kind: "click"; x: number; y: number; width: number; height: number } | { kind: "key"; key: string } | { kind: "type"; text: string } | { kind: "navigate"; url: string };
-export type Channel = Account;
 /** Where KIQR listens, when a factory reset could keep it (it isn't the default). `remote`: reachable from other machines. */
 export type ResetNetwork = { host: string; port: number; remote: boolean };
-export type AccountActivity = { connection: string; service: string; today: number; daily_cap: number | null; activity: { at: string; ability: string; role: string; tool: string; target?: string; url?: string | null }[] };
-/** A list of people the project emails. The addresses live outside git; this is the record and the counts. */
-export type MailList = { id: string; label: string; description: string; contacts: number; unsubscribed: number; created_at: string; created_by?: string };
+export type AccountActivity = { account: string; service: string; today: number; daily_cap: number | null; activity: { at: string; ability: string; role: string; tool: string; target?: string; audience?: string; url?: string | null }[] };
+/** A list of people the project emails: an Audience entry of kind `list`, sent from `account`. The addresses live outside git; this is the record and the counts. */
+export type MailList = { id: string; label: string; description: string; account: string; contacts: number; unsubscribed: number; created_at: string; added_by?: string };
 export type Contact = { email: string; name?: string; consent?: string; added?: string | null; unsubscribed?: string | null };
 /** One send to a list: so many sent, so many failed, still running or not. */
 export type ListSend = { key: string; sent: number; failed: number; at: string | null; running: boolean };
-export type ChannelKindInfo = { kind: string; label: string; connection: string; connection_name: string; ready: boolean; place: Record<string, PlaceField>; needs_place?: boolean; takes_lists?: boolean; auth?: MarketAuth[]; connect?: ConnectInfo | null; name?: string; icon?: string; accounts?: { id: string; label: string }[]; options?: Record<string, { type?: string; enum?: string[]; description?: string }>; /** Inputs the publish needs that Seemo prepares (a site's source files): a plain Publish cannot send there. */ prepared?: string[]; learn?: LearnInfo | null };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -701,53 +723,56 @@ export const api = {
   /** The same for one project: its own .env wins over the machine's. */
   setProjectSecret: (slug: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
 
-  /** Start signing in, into one account: `connection` to sign one in again, else a new one is added first (with its `kind`, a first `place` and the permissions chosen). Saves what was asked first and returns the page to open; `callback: false` means the user pastes what it shows into the account. */
-  startConnect: (slug: string, id: string, b: { connection?: string; label?: string; kind?: string; place?: Record<string, string>; allow?: Record<string, Allow>; origin: string; values: Record<string, string> }) =>
-    req<{ url: string; callback: boolean; connection: string; fields: string[] }>(`/api/projects/${slug}/connect/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(b) }),
-
-  // KIQR's own sign-ins: kiqr.cloud, and UnblockingAPI by account
+  /** Start signing in: `account` to sign one in again, else a new one is made when the sign-in comes back (with the name and permissions chosen). Saves what was asked first and returns the page to open; `callback: false` means the user pastes what it shows into the account. */
+  startConnect: (slug: string, id: string, b: { account?: string; label?: string; allow?: Record<string, Allow>; origin: string; values: Record<string, string> }) =>
+    req<{ url: string; callback: boolean; relayed?: boolean; account: string | null; fields: string[] }>(`/api/projects/${slug}/connect/${id}`, { method: "POST", body: JSON.stringify(b) }),
   signIns: (slug?: string) => req<{ signins: SignIn[]; cloud_url: string }>(`/api/signins${slug ? `?project=${encodeURIComponent(slug)}` : ""}`),
   /** `redirect`: open `url`. `device`: show the code and where to enter it; the daemon waits for the approval. */
   startSignIn: (id: string, origin: string, project?: string) => req<{ mode: "redirect"; url: string } | { mode: "device"; user_code: string; verification_uri: string; verification_uri_complete?: string | null }>(`/api/signins/${id}/start`, { method: "POST", body: JSON.stringify({ origin, project }) }),
   signOut: (id: string, project?: string) => req<{ signed_in: boolean }>(`/api/signins/${id}${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "DELETE" }),
 
-  // Accounts: one setup of an ability in a project, with its own keys
-  accounts: (slug: string, ability?: string) => req<{ connections: Account[] }>(`/api/projects/${slug}/connections${ability ? `?ability=${encodeURIComponent(ability)}` : ""}`),
-  account: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}`),
-  /** A new account: its kind and first place when it publishes, its keys, what Seemo may do there (over the manifest's defaults). */
-  createAccount: (slug: string, b: { ability: string; label?: string; kind?: string; place?: Record<string, string>; place_label?: string; secrets?: Record<string, string>; same_as?: string; allow?: Record<string, Allow> }) => req<Account>(`/api/projects/${slug}/connections`, { method: "POST", body: JSON.stringify(b) }),
-  updateAccount: (slug: string, id: string, p: { label?: string; allow?: Record<string, Allow>; publisher?: string; kind?: string; place?: Record<string, unknown>; login?: LoginRef }) => req<Account>(`/api/projects/${slug}/connections/${id}`, { method: "PUT", body: JSON.stringify(p) }),
-  /** What Seemo may do here: role → auto, ask or off (on/off for roles that never act). */
-  setAllow: (slug: string, id: string, allow: Record<string, Allow>) => req<Account>(`/api/projects/${slug}/connections/${id}/allow`, { method: "PUT", body: JSON.stringify(allow) }),
-  /** A place inside an account: the kind's fields, or a list of people (`list`, its id) on a mail account. */
-  addPlace: (slug: string, id: string, b: { kind?: string; label?: string; fields?: Record<string, string>; default?: boolean; list?: string }) => req<Account & { place: Place }>(`/api/projects/${slug}/connections/${id}/places`, { method: "POST", body: JSON.stringify(b) }),
-  updatePlace: (slug: string, id: string, place: string, b: { label?: string; fields?: Record<string, string>; default?: boolean }) => req<Account>(`/api/projects/${slug}/connections/${id}/places/${encodeURIComponent(place)}`, { method: "PUT", body: JSON.stringify(b) }),
-  removePlace: (slug: string, id: string, place: string) => req<Account>(`/api/projects/${slug}/connections/${id}/places/${encodeURIComponent(place)}`, { method: "DELETE" }),
-  deleteAccount: (slug: string, id: string) => req<void>(`/api/projects/${slug}/connections/${id}`, { method: "DELETE" }),
-  /** One key of an account; an empty value clears it. Never read back. */
-  accountChoices: (slug: string, id: string, name: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/connections/${id}/choices/${name}`),
-  setAccountSecret: (slug: string, id: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/connections/${id}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
-  /** Signing in on a hosted program: check and sign in now (in the background; `session_changed` says how it went), forget it, or read how it stands. */
-  accountSignIn: (slug: string, id: string) => req<{ started: boolean; note?: string; session?: SessionStatus }>(`/api/projects/${slug}/connections/${id}/signin`, { method: "POST", body: "{}" }),
-  accountSignOut: (slug: string, id: string) => req<{ session: SessionStatus }>(`/api/projects/${slug}/connections/${id}/signout`, { method: "POST", body: "{}" }),
-  accountSession: (slug: string, id: string) => req<{ has_session: boolean; session: SessionStatus; login: LoginRef | null; live_view: boolean }>(`/api/projects/${slug}/connections/${id}/session`),
-  /** Take the controls of the account's program (plain same-origin requests: the daemon checks where they come from). */
-  startHands: (slug: string, id: string, url?: string) => req<{ hands: string; token: string; can: HandsCan }>(`/api/projects/${slug}/connections/${id}/hands`, { method: "POST", body: JSON.stringify(url ? { url } : {}) }),
+  // Accounts: who Seemo signs in as, per service, with its own keys
+  accounts: (slug: string, service?: string) => req<{ accounts: Account[] }>(`/api/projects/${slug}/accounts${service ? `?service=${encodeURIComponent(service)}` : ""}`),
+  account: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/accounts/${id}`),
+  /** A new account of a service: its keys, what Seemo may do there (over the manifest's defaults), where its secrets are kept. */
+  createAccount: (slug: string, b: { service: string; label?: string; secrets?: Record<string, string>; same_as?: string; allow?: Record<string, Allow>; keep?: SecretsRef }) => req<Account>(`/api/projects/${slug}/accounts`, { method: "POST", body: JSON.stringify(b) }),
+  updateAccount: (slug: string, id: string, p: { label?: string; allow?: Record<string, Allow>; secrets?: SecretsRef }) => req<Account>(`/api/projects/${slug}/accounts/${id}`, { method: "PUT", body: JSON.stringify(p) }),
+  setAllow: (slug: string, id: string, allow: Record<string, Allow>) => req<Account>(`/api/projects/${slug}/accounts/${id}/allow`, { method: "PUT", body: JSON.stringify(allow) }),
+  deleteAccount: (slug: string, id: string) => req<void>(`/api/projects/${slug}/accounts/${id}`, { method: "DELETE" }),
+  /** The values a key or a setting can take, read through the account once it is signed in. */
+  accountChoices: (slug: string, id: string, name: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/accounts/${id}/choices/${name}`),
+  setAccountSecret: (slug: string, id: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/accounts/${id}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
+  /** Signing in on a hosted program: check and sign in now (in the background; `account_state_changed` says how it went), forget it, or read how it stands. */
+  accountSignIn: (slug: string, id: string) => req<{ started: boolean; note?: string; session?: SessionStatus }>(`/api/projects/${slug}/accounts/${id}/signin`, { method: "POST", body: "{}" }),
+  accountSignOut: (slug: string, id: string) => req<{ session: SessionStatus }>(`/api/projects/${slug}/accounts/${id}/signout`, { method: "POST", body: "{}" }),
+  accountSession: (slug: string, id: string) => req<{ has_session: boolean; session: SessionStatus; has_login: boolean; live_view: boolean }>(`/api/projects/${slug}/accounts/${id}/session`),
+  /** Take the controls of an account's program: the live view. */
+  startHands: (slug: string, id: string, url?: string) => req<{ hands: string; token: string; can: HandsCan }>(`/api/projects/${slug}/accounts/${id}/hands`, { method: "POST", body: JSON.stringify(url ? { url } : {}) }),
   handsInput: (slug: string, hands: string, token: string, input: HandsInput) => req<{ ok: boolean; message?: string | null }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/input`, { method: "POST", body: JSON.stringify({ token, ...input }) }),
   endHands: (slug: string, hands: string, token: string, signedIn: boolean) => req<{ ended: boolean }>(`/api/projects/${slug}/hands/${encodeURIComponent(hands)}/end`, { method: "POST", body: JSON.stringify({ token, signed_in: signedIn }), keepalive: true }),
-  /** The account its ability uses when nothing names one. */
-  defaultAccount: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/connections/${id}/default`, { method: "POST", body: "{}" }),
+  /** Make an account the one its service uses when nothing names one. */
+  defaultAccount: (slug: string, id: string) => req<Account>(`/api/projects/${slug}/accounts/${id}/default`, { method: "POST", body: "{}" }),
+  learnAccount: (slug: string, id: string) => req<{ started: boolean }>(`/api/projects/${slug}/accounts/${id}/learn`, { method: "POST" }),
+  accountActivity: (slug: string, id: string, limit = 20) => req<AccountActivity>(`/api/projects/${slug}/accounts/${id}/activity?limit=${limit}`),
+  /** What the project picks once for an ability (a GA4 property), through one of its service's accounts. */
+  setAbilitySettings: (slug: string, ability: string, account: string, values: Record<string, string>) => req<{ ability: string; setting: AbilitySetting }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/settings`, { method: "PUT", body: JSON.stringify({ account, values }) }),
 
-  // Publishing. `/channels` is the older view: the accounts that publish, and the kinds with their per-publish options.
-  channels: (slug: string) => req<{ channels: Channel[]; kinds: ChannelKindInfo[] }>(`/api/projects/${slug}/channels`),
-  learnAccount: (slug: string, id: string) => req<{ started: boolean }>(`/api/projects/${slug}/connections/${id}/learn`, { method: "POST" }),
-  accountActivity: (slug: string, id: string, limit = 20) => req<AccountActivity>(`/api/projects/${slug}/connections/${id}/activity?limit=${limit}`),
-  /** Publish an asset now, to the account (and place) it was approved for or the one given. From the UI the click is the yes. */
-  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, account = "", note = "", options: Record<string, unknown> = {}, place = "") =>
-    req<{ published: boolean; url: string | null; detail: string; channel_label: string; place_label?: string | null; recipients?: number }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ channel: account, place, note, options, by: "user" }) }),
-  /** The user's yes to an asset, for an account and a place in it: it becomes Ready. Status is never set by hand; these change what it follows from. */
-  approveAsset: (slug: string, a: Pick<Asset, "type" | "id">, account: string, place = "") => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/approve`, { method: "POST", body: JSON.stringify({ channel: account, place }) }),
-  scheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">, at: string, account = "", options: Record<string, unknown> = {}, place = "") => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "POST", body: JSON.stringify({ at, channel: account, place, options }) }),
+  // The Audience: everywhere the business's people are
+  audience: (slug: string) => req<AudienceView>(`/api/projects/${slug}/audience`),
+  /** Add somewhere (a kind, the account that reaches it, its fields), or a list (`kind: "list"`). */
+  addAudience: (slug: string, b: { kind: string; account?: string; fields?: Record<string, unknown>; label?: string; description?: string }) => req<AudienceEntry>(`/api/projects/${slug}/audience`, { method: "POST", body: JSON.stringify(b) }),
+  /** Rename, move to another account, or add a suggestion (`add: true`). */
+  updateAudience: (slug: string, id: string, b: { label?: string; description?: string; account?: string; add?: boolean }) => req<AudienceEntry>(`/api/projects/${slug}/audience/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(b) }),
+  /** Remove it (a list with everyone on it), or dismiss a suggestion. */
+  removeAudience: (slug: string, id: string) => req<void>(`/api/projects/${slug}/audience/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // Publishing: to an Audience entry (`target`), or to a new spot that joins with the yes.
+  /** Publish an asset now, to the entry it was approved for or the one given. From the UI the click is the yes. */
+  publishAsset: (slug: string, a: Pick<Asset, "type" | "id">, where: { target?: string; spot?: Spot } = {}, note = "", options: Record<string, unknown> = {}) =>
+    req<{ published: boolean; url: string | null; detail: string; target: string; target_label: string; recipients?: number }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/publish`, { method: "POST", body: JSON.stringify({ ...where, note, options, by: "user" }) }),
+  /** The user's yes to an asset, for an Audience entry (or a new spot, which joins it): it becomes Ready. Status is never set by hand; these change what it follows from. */
+  approveAsset: (slug: string, a: Pick<Asset, "type" | "id">, where: { target?: string; spot?: Spot }) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/approve`, { method: "POST", body: JSON.stringify(where) }),
+  scheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">, at: string, where: { target?: string; spot?: Spot } = {}, options: Record<string, unknown> = {}) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "POST", body: JSON.stringify({ at, ...where, options }) }),
   unscheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "DELETE" }),
   unpublishAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/unpublish`, { method: "POST", body: "{}" }),
   archiveAsset: (slug: string, a: Pick<Asset, "type" | "id">, archived: boolean) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}`, { method: "PATCH", body: JSON.stringify({ archived }) }),
@@ -756,7 +781,7 @@ export const api = {
   // Lists: the people the project emails (Audience)
   lists: (slug: string) => req<{ lists: MailList[] }>(`/api/projects/${slug}/lists`),
   list: (slug: string, id: string) => req<MailList>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}`),
-  createList: (slug: string, b: { label: string; description?: string }) => req<MailList>(`/api/projects/${slug}/lists`, { method: "POST", body: JSON.stringify(b) }),
+  createList: (slug: string, b: { label: string; description?: string; account?: string }) => req<MailList>(`/api/projects/${slug}/lists`, { method: "POST", body: JSON.stringify(b) }),
   updateList: (slug: string, id: string, b: { label?: string; description?: string }) => req<MailList>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(b) }),
   deleteList: (slug: string, id: string) => req<void>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}`, { method: "DELETE" }),
   contacts: (slug: string, id: string) => req<{ list: string; contacts: Contact[] }>(`/api/projects/${slug}/lists/${encodeURIComponent(id)}/contacts`),
@@ -782,7 +807,7 @@ let demoIntake: Intake = { goal: "", goal_note: "", customers: "", time: "", net
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith("/api/signins")) return Promise.resolve({ signins: [{ id: "kiqr-cloud", name: "kiqr.cloud", signed_in: false, account: null, waiting: null }, { id: "unblockingapi", name: "UnblockingAPI", signed_in: false, account: null, waiting: null }], cloud_url: "https://kiqr.cloud" } as T);
-  if (/\/(chats|approvals|tasks|calendar|channels|connections|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|lists|hands)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|accounts|audience|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|lists|hands)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

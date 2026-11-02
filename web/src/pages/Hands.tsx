@@ -19,7 +19,7 @@ import "../accounts.css";
 const SPECIAL = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
 const TYPE_DELAY = 150;
 
-/** A web address from what the account view shows about it (its identity, its destination), when it is one. */
+/** A web address from what the account view shows about it (where it starts, its identity), when it is one. */
 export function startUrlOf(...values: (string | undefined | null)[]): string | undefined {
   for (const v of values) {
     const t = (v ?? "").trim();
@@ -74,7 +74,8 @@ export function Hands({ slug, account, name, startUrl, onClose }: { slug: string
     slug,
     (e) => {
       const s = live.current;
-      if (!s || e.hands !== s.hands) return;
+      // Events name the account (`account`) and the session (`hands`): only this one's.
+      if (!s || e.hands !== s.hands || (e.account != null && e.account !== account)) return;
       if (e.type === "hands_frame" && !over.current) {
         // Only the latest picture is held, to paint it.
         setFrame(`data:${String(e.mime || "image/png")};base64,${String(e.data ?? "")}`);

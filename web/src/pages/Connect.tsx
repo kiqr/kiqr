@@ -1,22 +1,24 @@
 // Connect an account: pick the service (grouped as on the Accounts page,
 // from what is installed and what the marketplace has; one tile per service,
 // however many abilities it has), which installs every ability of it not
-// installed yet, sign in once (or give the few keys it needs), pick the
-// places it needs (the GA4 property, the Search Console property), then
-// choose what Seemo may do there. Done lands on the Accounts page with
-// the new card lit. Opened from "Connect an account" and from every place
-// that used to send the user to install or add something for a service;
-// `?service=` or `?group=` (or the props) narrow it. A service that runs a
-// program KIQR installs (a browser) waits for it first; one that signs in
-// on that program asks where the password is and signs in, with the live
-// view when a person is needed.
+// installed yet; when the project has accounts of it already, sign one of
+// them in again or add another; sign in once (a button, or the few keys it
+// needs); pick what its abilities read through it (the GA4 property) when
+// they need that; choose what Seemo may do there; and Done says what joined
+// the Audience. A one-button sign-in makes no account until it comes back:
+// the daemon makes it and `connect_finished` names it. Opened from "Connect
+// an account" and from every place that used to send the user to install or
+// add something for a service; `?service=` or `?group=` (or the props)
+// narrow it. A service that runs a program KIQR installs (a browser) waits
+// for it first; one that signs in on that program asks where the password
+// is and signs in, with the live view when a person is needed.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertCircle, ArrowLeft, Check, Download, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal } from "lucide-react";
-import { api, useAsync, useEvents, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability, type Account, type KindInfo, type PlaceKind, type ProgramStatus } from "../api";
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Download, Hand, KeyRound, Loader2, LogIn, Plus, RefreshCw, Terminal, Users } from "lucide-react";
+import { api, useAsync, useEvents, ACCOUNT_EVENTS, AUDIENCE_EVENTS, PROGRAM_EVENTS, SERVICE_GROUPS, type Ability, type Account, type ProgramStatus } from "../api";
 import { ConnectButton } from "./ConnectButton";
-import { AccountKeys, ACCOUNT_EVENTS, accountIdentity, accountService, byGroup, chosenLabel, Fields, LoginEditor, ownLabel, permissionSummary, PermissionMatrix, PlaceFieldsForm, placeKinds, placeNoun, placeReady, placesOf, sentence, serviceOf, sessionChip, signsInByHand, useSession, type Field } from "./Accounts";
+import { AccountKeys, accountIdentity, accountService, ActOnOwn, byGroup, Fields, LoginEditor, permissionSummary, PermissionMatrix, sentence, serviceOf, SettingField, settingValues, signInNow, signsInByHand, StateChip, stateChip, type Field } from "./Accounts";
 import { Hands, startUrlOf } from "./Hands";
 import { LogPane, SystemProgram, useMachine, useProgramLog } from "./Programs";
 import { isService, serviceIcon } from "./abilityBits";
@@ -32,7 +34,7 @@ function primary(list: Ability[]): Ability | undefined {
   return [...list].sort((a, b) => score(b) - score(a))[0];
 }
 function score(a: Ability) {
-  return (a.channels.length ? 4 : 0) + (a.connect ? 2 : 0) + (a.sources.length ? 1 : 0) - (a.paused ? 8 : 0);
+  return ((a.publishes_to ?? []).length ? 4 : 0) + (a.connect ? 2 : 0) + (a.sources.length ? 1 : 0) - (a.paused ? 8 : 0);
 }
 
 /** What a service's tile and sign-in say: the one ability's summary, or the names of its several. */
@@ -69,20 +71,34 @@ function runsHere(s: Service, os: string): boolean {
   return !all.length || all.some((a) => !a.platforms?.length || a.platforms.includes(os));
 }
 
+/** The abilities of a service that pick something once through the account (a GA4 property). */
+function measuring(s: Service): Ability[] {
+  return s.installed.filter((a) => Object.keys(a.settings ?? {}).length > 0);
+}
+
+/** The steps along the top, the current one lit. */
+function Steps({ names, at }: { names: string[]; at: number }) {
+  return (
+    <div className="cw-steps" aria-label="Steps">
+      {names.map((t, i) => (
+        <span key={t} className={at === i ? "on" : at > i ? "done" : ""}>
+          {at > i ? <Check size={11} /> : <b className="mono">{i + 1}</b>} {t}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function ConnectPage({ service: givenService, group: givenGroup }: { service?: string; group?: string }) {
   const { slug = "" } = useParams();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const data = useAsync(() => api.abilities(slug), [slug]);
-  const accounts = useAsync(() => api.accounts(slug).catch(() => ({ connections: [] as Account[] })), [slug]);
+  const accounts = useAsync(() => api.accounts(slug).catch(() => ({ accounts: [] as Account[] })), [slug]);
   useEvents(null, (e) => ["extension_installed", "extension_removed", "marketplace_refreshed"].includes(e.type) && data.reload(), { demo: false });
   const wantService = givenService ?? params.get("service") ?? "";
   const [group, setGroup] = useState(givenGroup ?? params.get("group") ?? "all");
   const [picked, setPicked] = useState<string | null>(wantService || null);
-  const [created, setCreated] = useState<string | null>(null);
-  const [startUrl, setStartUrl] = useState<string | undefined>(undefined);
-  const [signedIn, setSignedIn] = useState(false);
-  const [placed, setPlaced] = useState(false);
   // Installing a service's abilities, one after the other: which, and how many are done.
   const [installing, setInstalling] = useState<{ id: string; names: string[]; done: number } | null>(null);
   const tried = useRef<string | null>(null);
@@ -104,7 +120,7 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
     return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [data.data]);
   const service = services.find((s) => s.id === picked || s.installed.some((a) => a.id === picked) || s.market.some((a) => a.id === picked)) ?? null;
-  const have = (id: string) => (accounts.data?.connections ?? []).filter((c) => accountService(c).id === id).length;
+  const ofService = (id: string) => (accounts.data?.accounts ?? []).filter((c) => accountService(c).id === id);
   const shown = services.filter((s) => group === "all" || s.group === group);
   const groups = byGroup(shown, (s) => s.group);
   const present = SERVICE_GROUPS.filter((g) => services.some((s) => s.group === g.id));
@@ -138,8 +154,7 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
   useEffect(() => {
     if (service && service.market.length && !installing && !error && tried.current !== service.id) void choose(service);
   }, [service?.id, service?.market.length]);
-  const step = created && signedIn ? (placed ? 4 : 3) : created || (service?.installed.length && !installing) ? 2 : 1;
-  const done = (id: string) => navigate(`/p/${slug}/accounts#account=${encodeURIComponent(id)}`);
+  const open = !!service && service.installed.length > 0 && !installing && !!accounts.data;
 
   return (
     <div className="prof">
@@ -153,17 +168,11 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
           <ArrowLeft size={14} /> Accounts
         </Link>
       </div>
-      <div className="cw-steps" aria-label="Steps">
-        {["Service", "Sign in", "Places", "What Seemo may do"].map((t, i) => (
-          <span key={t} className={step === i + 1 ? "on" : step > i + 1 ? "done" : ""}>
-            {step > i + 1 ? <Check size={11} /> : <b className="mono">{i + 1}</b>} {t}
-          </span>
-        ))}
-      </div>
+      {!open && <Steps names={["Service", "Sign in", "What Seemo may do", "Done"]} at={0} />}
       {error && <p className="err">{error}</p>}
 
-      {step === 1 && installing && <Installing names={installing.names} done={installing.done} />}
-      {step === 1 && !installing && (
+      {!open && installing && <Installing names={installing.names} done={installing.done} />}
+      {!open && !installing && (
         <>
           {present.length > 1 && (
             <div className="cw-filter">
@@ -184,7 +193,7 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
                 <h2>{g.label}</h2>
                 <div className="cw-grid">
                   {g.items.map((s) => (
-                    <Tile key={s.id} s={s} count={have(s.id)} os={os} onPick={() => void choose(s)} />
+                    <Tile key={s.id} s={s} count={ofService(s.id).length} os={os} onPick={() => void choose(s)} />
                   ))}
                 </div>
               </section>
@@ -207,20 +216,104 @@ export function ConnectPage({ service: givenService, group: givenGroup }: { serv
         </>
       )}
 
-      {step === 2 && service && !created && (
-        <SignIn
+      {open && service && (
+        <Flow
           key={service.id}
           slug={slug}
           service={service}
+          existing={ofService(service.id)}
+          withService
           onBack={() => (setPicked(null), setError(null))}
-          onCreated={(id, url) => (setStartUrl(url), setCreated(id))}
           onPrograms={data.reload}
+          onFinish={(id) => navigate(`/p/${slug}/accounts#account=${encodeURIComponent(id)}`)}
         />
       )}
-      {step === 2 && created && <SessionStep slug={slug} id={created} startUrl={startUrl} onDone={() => setSignedIn(true)} />}
-      {step === 3 && created && <PlaceSteps slug={slug} id={created} onDone={() => setPlaced(true)} />}
-      {step === 4 && created && <Permissions slug={slug} id={created} onDone={() => done(created)} />}
     </div>
+  );
+}
+
+type Stage = "again" | "signin" | "session" | "measures" | "allow" | "done";
+
+/**
+ * From a picked service to Done: sign one of its accounts in again or add
+ * another, sign in, the program's sign-in when it has one, what its
+ * abilities read through it, what Seemo may do, and what joined the Audience.
+ */
+function Flow({ slug, service, existing, withService, backLabel, onBack, onPrograms, onFinish }: { slug: string; service: Service; existing: Account[]; withService?: boolean; backLabel?: string; onBack: () => void; onPrograms?: () => void; onFinish: (id: string) => void }) {
+  const measured = measuring(service);
+  const [stage, setStage] = useState<Stage>(existing.length ? "again" : "signin");
+  const [again, setAgain] = useState<Account | null>(null);
+  const [id, setId] = useState<string | null>(null);
+  const [startUrl, setStartUrl] = useState<string | undefined>(undefined);
+  const names = [...(withService ? ["Service"] : []), "Sign in", ...(measured.length ? ["Measures"] : []), "What Seemo may do", "Done"];
+  const cur = stage === "measures" ? "Measures" : stage === "allow" ? "What Seemo may do" : stage === "done" ? "Done" : "Sign in";
+  const signedIn = (acc: string, url?: string) => (setId(acc), setStartUrl(url), setStage("session"));
+  return (
+    <>
+      <Steps names={names} at={names.indexOf(cur)} />
+      {stage === "again" && (
+        <Again
+          service={service}
+          existing={existing}
+          onAgain={(a) => (a.has_session ? signedIn(a.id) : (setAgain(a), setStage("signin")))}
+          onNew={() => (setAgain(null), setStage("signin"))}
+          backLabel={backLabel ?? "Another service"}
+          onBack={onBack}
+        />
+      )}
+      {stage === "signin" && (
+        <SignIn
+          key={again?.id ?? "new"}
+          slug={slug}
+          service={service}
+          again={again}
+          backLabel={existing.length ? "Back" : backLabel}
+          onBack={existing.length ? () => setStage("again") : onBack}
+          onSignedIn={signedIn}
+          onPrograms={onPrograms}
+        />
+      )}
+      {stage === "session" && id && <SessionStep slug={slug} id={id} startUrl={startUrl} onDone={() => setStage(measured.length ? "measures" : "allow")} />}
+      {stage === "measures" && id && <Measures slug={slug} abilities={measured} account={id} onDone={() => setStage("allow")} />}
+      {stage === "allow" && id && <Permissions slug={slug} id={id} onDone={() => setStage("done")} />}
+      {stage === "done" && id && <Done slug={slug} id={id} onFinish={() => onFinish(id)} />}
+    </>
+  );
+}
+
+/** "You already have u/acme on Reddit. Sign it in again, or add another?" */
+function Again({ service, existing, onAgain, onNew, backLabel, onBack }: { service: Service; existing: Account[]; onAgain: (a: Account) => void; onNew: () => void; backLabel: string; onBack: () => void }) {
+  const one = existing.length === 1;
+  return (
+    <motion.div className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+      <div className="cw-head">
+        <div>
+          <h2>{one ? `You already have ${accountIdentity(existing[0]) || "an account"} on ${service.name}` : `You already have ${existing.length} ${service.name} accounts`}</h2>
+          <p className="muted sm">{one ? "Sign it in again, or add another?" : "Sign one of them in again, or add another?"}</p>
+        </div>
+      </div>
+      <div className="cw-choice">
+        {existing.map((a) => (
+          <button key={a.id} onClick={() => onAgain(a)}>
+            <b>
+              <LogIn size={13} /> Sign {one ? "it" : accountIdentity(a) || a.label} in again
+            </b>
+            <small>{stateChip(a.state).text}. Its permissions and Audience stay as they are.</small>
+          </button>
+        ))}
+        <button onClick={onNew}>
+          <b>
+            <Plus size={13} /> Add another
+          </b>
+          <small>A second {service.name} account, signed in on its own.</small>
+        </button>
+      </div>
+      <div className="acts">
+        <button className="btn t" onClick={onBack}>
+          <ArrowLeft size={14} /> {backLabel}
+        </button>
+      </div>
+    </motion.div>
   );
 }
 
@@ -262,31 +355,30 @@ function Tile({ s, count, os, onPick }: { s: Service; count: number; os: string;
   );
 }
 
-/** Step two: the service's way in. A sign-in button when it has one, else as few fields as possible; the first place when it needs one. */
-function SignIn({ slug, service, backLabel = "Another service", onBack, onCreated, onPrograms }: { slug: string; service: Service; backLabel?: string; onBack: () => void; onCreated: (id: string, startUrl?: string) => void; onPrograms?: () => void }) {
+/**
+ * Signing in: the service's button when it has one, else as few fields as
+ * possible. A new account through the button exists only once the sign-in
+ * came back; through typed keys it is made with them. Signing one in again
+ * goes to that account.
+ */
+function SignIn({ slug, service, again, backLabel = "Another service", onBack, onSignedIn, onPrograms }: { slug: string; service: Service; again?: Account | null; backLabel?: string; onBack: () => void; onSignedIn: (id: string, startUrl?: string) => void; onPrograms?: () => void }) {
   // The one-button sign-in is always the way in when any ability of the service has one; typed keys are the last resort.
   const ab = service.installed.filter((a) => a.connect).sort((a, b) => score(b) - score(a))[0] ?? primary(service.installed);
   const Icon = serviceIcon(service.icon, service.group);
-  // The kind it publishes as: this ability's, else another of the service's (the one signing in may only read).
-  const kind: KindInfo | undefined = ab?.kinds?.[0] ?? service.installed.flatMap((a) => a.kinds ?? [])[0];
-  // Connecting is signing in; places (a subreddit, a property) come in the places step after it, which can wait.
-  const place: Field[] = [];
   const [mode, setMode] = useState<"connect" | "keys">(ab?.connect ? "connect" : "keys");
   const [values, setValues] = useState<Record<string, string>>({});
   const [label, setLabel] = useState("");
   const [moreKeys, setMoreKeys] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [started, setStarted] = useState<{ id: string; paste: boolean } | null>(null);
-  const [account, setAccount] = useState<Account | null>(null);
-  const reload = async (id: string) => setAccount(await api.account(slug, id).catch(() => null));
+  // The values the service showed for pasting, when it would not send them back to a plain-http KIQR.
+  const [paste, setPaste] = useState<string[] | null>(null);
+  // The account signed in again, kept fresh while its keys are typed.
+  const [acc, setAcc] = useState<Account | null>(again ?? null);
+  useEvents(slug, (e) => again && ACCOUNT_EVENTS.includes(e.type) && void api.account(slug, again.id).then(setAcc, () => undefined), { demo: false });
   // The programs the service runs (a browser) are installed when its abilities are; until they are here, that comes first.
   const [programsReady, setProgramsReady] = useState(false);
   const needPrograms = service.installed.filter((a) => (a.programs ?? []).some((p) => !p.found));
-  useEvents(slug, (e) => started && ACCOUNT_EVENTS.includes(e.type) && void reload(started.id), { demo: false });
-  useEffect(() => {
-    if (started) void reload(started.id);
-  }, [started?.id]);
   if (!ab)
     return (
       <div className="pcard cw-panel">
@@ -304,51 +396,75 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
   // With a button: only what it asks first. With keys: the required ones, the rest behind More.
   const asked = mode === "connect" ? ab.auth.filter((k) => ab.connect?.needs.includes(k.env)) : ab.auth.filter((k) => !k.optional);
   const extra = mode === "keys" ? ab.auth.filter((k) => k.optional) : [];
-  const fields = [...place, ...asked.map(keyField)];
-  const placeValues = Object.fromEntries(place.map((f) => [f.key, values[f.key] ?? ""]).filter(([, v]) => v.trim()));
+  const fields = asked.map(keyField);
   const ok = fields.every((f) => f.optional || (values[f.key] ?? "").trim());
   const name = label.trim() || hostOf(Object.values(values));
-  const save = async () => {
+  const pasteFields = (paste ?? []).map((n) => {
+    const k = ab.auth.find((x) => x.env === n);
+    return k ? keyField(k) : { key: n, label: n, secret: true };
+  });
+  const run = async (f: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
-      const secrets = Object.fromEntries(ab.auth.map((k) => [k.env, values[k.env] ?? ""]).filter(([, v]) => v.trim()));
-      const c = await api.createAccount(slug, { ability: ab.id, label: name || undefined, kind: kind?.kind, place: Object.keys(placeValues).length ? placeValues : undefined, secrets });
-      onCreated(c.id, startUrlOf(...Object.values(values)));
+      await f();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
-  return (
-    <div className="pcard cw-panel">
-      <div className="cw-head">
-        <span className="ic">{service.avatar ? <img src={service.avatar} alt="" /> : <Icon size={19} />}</span>
-        <div>
-          <h2>{service.name}</h2>
-          <p className="muted sm">{serviceSummary(service)}</p>
+  const typed = (): Record<string, string> => Object.fromEntries(Object.entries(values).filter(([k, v]) => v.trim() && (ab.auth.some((x) => x.env === k) || (paste ?? []).includes(k))));
+  // Typed keys, or what the service showed: into the account signed in again, or a new one made with them.
+  const save = () =>
+    run(async () => {
+      if (again) {
+        for (const [k, v] of Object.entries(typed())) await api.setAccountSecret(slug, again.id, k, v);
+        onSignedIn(again.id, startUrlOf(...Object.values(values)));
+        return;
+      }
+      const c = await api.createAccount(slug, { service: ab.service ?? service.id, label: name || undefined, secrets: typed() });
+      onSignedIn(c.id, startUrlOf(...Object.values(values)));
+    });
+  const head = (
+    <div className="cw-head">
+      <span className="ic">{service.avatar ? <img src={service.avatar} alt="" /> : <Icon size={19} />}</span>
+      <div>
+        <h2>{again ? `Sign ${accountIdentity(again) || service.name} in again` : service.name}</h2>
+        <p className="muted sm">{serviceSummary(service)}</p>
+      </div>
+    </div>
+  );
+  // Signing in again with keys only: the account's own keys, saved as they are typed.
+  if (again && mode === "keys" && acc)
+    return (
+      <div className="pcard cw-panel">
+        {head}
+        <AccountKeys slug={slug} a={acc} onChange={() => void api.account(slug, again.id).then(setAcc, () => undefined)} />
+        <div className="acts">
+          <button className={`btn ${acc.state.ready ? "p" : "g"}`} onClick={() => onSignedIn(again.id)}>
+            {acc.state.ready ? "Next" : "Next, finish this later"}
+          </button>
+          <button className="btn t" onClick={onBack}>
+            <ArrowLeft size={14} /> {backLabel}
+          </button>
         </div>
       </div>
-      {started ? (
+    );
+  return (
+    <div className="pcard cw-panel">
+      {head}
+      {paste ? (
         <>
-          {account?.ready ? (
-            <p className="ok sm">
-              <Check size={13} /> Connected{accountIdentity(account) ? ` as ${accountIdentity(account)}` : ""}.
-            </p>
-          ) : account?.signed_in ? (
-            <p className="muted sm">Signed in. One more step: choose below.</p>
-          ) : started.paste ? (
-            <p className="muted sm">Approve in the tab that opened. It shows what KIQR needs once, because it only sends it back over https: paste it below.</p>
-          ) : (
-            <p className="muted sm">
-              <Loader2 size={12} className="spin" /> Waiting for you to approve in the tab that opened.
-            </p>
-          )}
-          {account && !account.ready && <AccountKeys slug={slug} a={account} only={started.paste || account.signed_in ? "missing" : undefined} onChange={() => void reload(started.id)} />}
+          <p className="muted sm">Approve in the tab that opened. It shows what KIQR needs once, because it only sends it back over https: paste it here.</p>
+          <Fields fields={pasteFields} values={values} onChange={(k, v) => setValues({ ...values, [k]: v })} />
+          {error && <p className="err sm">{error}</p>}
           <div className="acts">
-            <button className={`btn ${account?.ready ? "p" : "g"}`} onClick={() => onCreated(started.id)}>
-              {account?.ready ? "Next" : "Next, finish this later"}
+            <button className="btn p" disabled={busy || pasteFields.some((f) => !f.optional && !(values[f.key] ?? "").trim())} onClick={() => void save()}>
+              {busy ? <Loader2 size={14} className="spin" /> : <Check size={14} />} Connect
+            </button>
+            <button className="btn t" onClick={() => setPaste(null)}>
+              <ArrowLeft size={14} /> Back
             </button>
           </div>
         </>
@@ -357,19 +473,33 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
           <Fields fields={fields} values={values} onChange={(k, v) => setValues({ ...values, [k]: v })} />
           {moreKeys && (
             <>
-              <label className="acc-field">
-                <span className="nm">
-                  Name<small className="dim"> optional</small>
-                </span>
-                <input className="input" value={label} placeholder={hostOf(Object.values(values)) || service.name} onChange={(e) => setLabel(e.target.value)} aria-label="Name" />
-              </label>
+              {!again && (
+                <label className="acc-field">
+                  <span className="nm">
+                    Name<small className="dim"> optional</small>
+                  </span>
+                  <input className="input" value={label} placeholder={hostOf(Object.values(values)) || service.name} onChange={(e) => setLabel(e.target.value)} aria-label="Name" />
+                </label>
+              )}
               <Fields fields={extra.map(keyField)} values={values} onChange={(k, v) => setValues({ ...values, [k]: v })} />
             </>
           )}
           {error && <p className="err sm">{error}</p>}
           <div className="acts">
             {mode === "connect" && ab.connect ? (
-              <ConnectButton slug={slug} ability={ab.id} connect={ab.connect} auth={ab.auth.map((k) => ({ ...k, set: null }))} values={values} disabled={!ok} fresh={{ label: name || undefined, kind: kind?.kind, place: Object.keys(placeValues).length ? placeValues : undefined }} onStarted={(id, paste) => setStarted({ id, paste })} />
+              <ConnectButton
+                slug={slug}
+                ability={ab.id}
+                connect={ab.connect}
+                auth={ab.auth.map((k) => ({ ...k, set: null }))}
+                account={again?.id}
+                label={again ? "Sign in again" : undefined}
+                values={values}
+                disabled={!ok}
+                fresh={{ label: name || undefined }}
+                onStarted={(_, p) => p && setPaste(p)}
+                onDone={(id) => (id ? onSignedIn(id) : setError("The sign-in finished, but KIQR did not say which account it made. It is under Accounts."))}
+              />
             ) : (
               <button className="btn p" disabled={!ok || busy} onClick={() => void save()}>
                 {busy ? <Loader2 size={14} className="spin" /> : <Check size={14} />} Connect
@@ -390,7 +520,7 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
                 {ab.connect.label} instead
               </button>
             )}
-            {!moreKeys && (
+            {!moreKeys && (extra.length > 0 || !again) && (
               <button className="lnk-btn" onClick={() => setMoreKeys(true)}>
                 More
               </button>
@@ -403,16 +533,12 @@ function SignIn({ slug, service, backLabel = "Another service", onBack, onCreate
 }
 
 /**
- * The wizard's last two steps in place, for one ability's service (the
- * ability window, which the welcome flow opens before the app is): sign in,
- * then what Seemo may do. One not installed yet is installed first.
+ * The wizard in place, for one ability's service (the ability window, which
+ * the welcome flow opens before the app is): sign in, what it reads through
+ * the account, what Seemo may do, Done. One not installed yet is installed first.
  */
 export function ConnectService({ slug, ability, onInstalled, onDone, onCancel }: { slug: string; ability: Ability; onInstalled: () => void; onDone: (id: string) => void; onCancel: () => void }) {
   const svc = serviceOf(ability);
-  const [created, setCreated] = useState<string | null>(null);
-  const [startUrl, setStartUrl] = useState<string | undefined>(undefined);
-  const [signedIn, setSignedIn] = useState(false);
-  const [placed, setPlaced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!ability.installed)
@@ -430,119 +556,168 @@ export function ConnectService({ slug, ability, onInstalled, onDone, onCancel }:
         </div>
       </div>
     );
-  if (created && !signedIn) return <SessionStep slug={slug} id={created} startUrl={startUrl} onDone={() => setSignedIn(true)} />;
-  if (created && !placed) return <PlaceSteps slug={slug} id={created} onDone={() => setPlaced(true)} />;
-  if (created) return <Permissions slug={slug} id={created} onDone={() => onDone(created)} />;
-  return <SignIn slug={slug} service={{ id: svc.id, name: svc.name, icon: svc.icon, group: svc.group, avatar: ability.avatar ?? null, installed: [ability], market: [] }} backLabel="Cancel" onBack={onCancel} onCreated={(id, url) => (setStartUrl(url), setCreated(id))} onPrograms={onInstalled} />;
+  return <Flow slug={slug} service={{ id: svc.id, name: svc.name, icon: svc.icon, group: svc.group, avatar: ability.avatar ?? null, installed: [ability], market: [] }} existing={[]} backLabel="Cancel" onBack={onCancel} onPrograms={onInstalled} onFinish={onDone} />;
 }
 
-/** Step three: what Seemo may do there, with the defaults the account started with. Saved as it is changed. */
-function Permissions({ slug, id, onDone }: { slug: string; id: string; onDone: () => void }) {
+/** One account, loaded and kept fresh while a step shows it. */
+function useAccount(slug: string, id: string, also: string[] = []): [Account | null, () => void, boolean] {
   const [a, setA] = useState<Account | null>(null);
-  const load = () => api.account(slug, id).then(setA, () => setA(null));
+  const [gone, setGone] = useState(false);
+  const load = () => api.account(slug, id).then(setA, () => setGone(true));
   useEffect(() => {
     void load();
   }, [slug, id]);
-  return (
-    <AnimatePresence>
-      <motion.div className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-        {!a ? (
-          <Loader2 size={16} className="spin" />
-        ) : (
-          <>
-            <div className="cw-head">
-              <div>
-                <h2>
-                  What Seemo may do on {accountService(a).name}
-                  {accountIdentity(a) ? ` (${accountIdentity(a)})` : ""}
-                </h2>
-                <p className="muted sm">{permissionSummary(a)}. Change it here or on the account at any time.</p>
-              </div>
-            </div>
-            <PermissionMatrix slug={slug} a={a} onChange={() => void load()} />
-            <p className="muted sm">“Ask me first” puts a card in the chat and waits for your yes. “On its own” still puts the card there, as the record.</p>
-            <div className="acts">
-              <button className="btn p" onClick={onDone}>
-                <Check size={14} /> Done
-              </button>
-            </div>
-          </>
-        )}
-      </motion.div>
-    </AnimatePresence>
-  );
+  useEvents(slug, (e) => [...ACCOUNT_EVENTS, ...also].includes(e.type) && void load(), { demo: false });
+  return [a, () => void load(), gone];
 }
 
-
 /**
- * Step three: one question per kind of place the account still needs ("Which GA4 property?",
- * "Which Search Console property?"), each picked from what the account has. Skipped when none is
- * needed. With exactly one place and no name of its own, the account is named after it.
+ * What the service's abilities read through the account, one ability at a
+ * time ("Which GA4 property?"), each picked from what the account has.
+ * "Pick it later" leaves it for Performance or the ability window.
  */
-function PlaceSteps({ slug, id, onDone }: { slug: string; id: string; onDone: () => void }) {
-  const [a, setA] = useState<Account | null>(null);
-  const [todo, setTodo] = useState<PlaceKind[] | null>(null);
+function Measures({ slug, abilities, account, onDone }: { slug: string; abilities: Ability[]; account: string; onDone: () => void }) {
+  const [acc, , gone] = useAccount(slug, account);
   const [i, setI] = useState(0);
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [read, setRead] = useState<Record<string, { value: string; label: string }[]>>({});
+  const a = abilities[i];
+  const [values, setValues] = useState<Record<string, string>>(() => (a?.setting?.account === account ? settingValues(a) : {}));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    api.account(slug, id).then(
-      (acc) => {
-        setA(acc);
-        const need = placeKinds(acc).filter((k) => k.needs && !k.lists && !placesOf(acc, k).length && Object.keys(k.fields ?? {}).length > 0);
-        setTodo(need);
-        if (!need.length) onDone();
-      },
-      () => onDone(),
-    );
-  }, [slug, id]);
-  const finish = async (acc: Account | null) => {
-    if (acc && !ownLabel(acc) && (acc.places ?? []).length === 1) await api.updateAccount(slug, id, { label: acc.places![0].label }).catch(() => undefined);
-    onDone();
-  };
-  const next = async (acc: Account | null) => {
-    setValues({});
-    setRead({});
+    if (gone || !a) onDone();
+  }, [gone, a]);
+  if (!acc || !a) return <Loader2 size={16} className="spin" />;
+  const fields = Object.entries(a.settings ?? {});
+  const ok = fields.every(([k, f]) => f.optional || (values[k] ?? "").trim());
+  const next = () => {
+    const n = abilities[i + 1];
     setError(null);
-    if (todo && i + 1 < todo.length) setI(i + 1);
-    else await finish(acc);
+    if (!n) return onDone();
+    setValues(n.setting?.account === account ? settingValues(n) : {});
+    setI(i + 1);
   };
-  const k = todo?.[i];
-  if (!a || !k) return <Loader2 size={16} className="spin" />;
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.addPlace(slug, id, { kind: k.kind, fields: values, label: chosenLabel(k.fields, values, read) });
-      setA(r);
-      await next(r);
+      await api.setAbilitySettings(slug, a.id, account, settingValues(a, values));
+      next();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
+  const one = fields.length === 1 ? fields[0][1].label || fields[0][0] : null;
+  const who = { id: acc.id, label: accountIdentity(acc) || acc.label };
   return (
-    <motion.div key={k.kind} className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+    <motion.div key={a.id} className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       <div className="cw-head">
         <div>
-          <h2>Which {placeNoun(k)}?</h2>
+          <h2>{one ? `Which ${one}?` : `What ${a.name} reads`}</h2>
           <p className="muted sm">
-            {k.verb === "Measures" ? "Seemo reads the numbers of the one you pick, once a day, into Performance." : k.lists ? "Who Seemo sends to." : "Where Seemo works on your account."}
-            {todo!.length > 1 ? ` ${i + 1} of ${todo!.length}.` : ""}
+            {a.sources.length ? `${a.name} reads the numbers of the one you pick through ${who.label}, once a day, into Performance.` : `${a.name} works with the one you pick, through ${who.label}.`}
+            {abilities.length > 1 ? ` ${i + 1} of ${abilities.length}.` : ""}
           </p>
         </div>
       </div>
-      <PlaceFieldsForm slug={slug} account={id} fields={k.fields} values={values} onChange={(f, v) => setValues((cur) => ({ ...cur, [f]: v }))} onChoices={(f, c) => setRead((cur) => ({ ...cur, [f]: c }))} />
+      {fields.map(([k, f]) => (
+        <SettingField key={k} slug={slug} account={who} name={k} f={f} value={values[k] ?? ""} onChange={(v) => setValues((cur) => ({ ...cur, [k]: v }))} />
+      ))}
       {error && <p className="err sm">{error}</p>}
       <div className="acts">
-        <button className="btn p" disabled={busy || !placeReady(k.fields, values)} onClick={() => void save()}>
+        <button className="btn p" disabled={busy || !ok} onClick={() => void save()}>
           {busy ? <Loader2 size={14} className="spin" /> : <Check size={14} />} Use it
         </button>
-        <button className="btn t" disabled={busy} onClick={() => void next(a)}>
+        <button className="btn t" disabled={busy} onClick={next}>
           Pick it later
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+/** What Seemo may do there: one switch, and every permission folded under it. Saved as it is changed. */
+function Permissions({ slug, id, onDone }: { slug: string; id: string; onDone: () => void }) {
+  const [a, load] = useAccount(slug, id);
+  const [all, setAll] = useState(false);
+  return (
+    <motion.div className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+      {!a ? (
+        <Loader2 size={16} className="spin" />
+      ) : (
+        <>
+          <div className="cw-head">
+            <div>
+              <h2>
+                What Seemo may do on {accountService(a).name}
+                {accountIdentity(a) ? ` (${accountIdentity(a)})` : ""}
+              </h2>
+              <p className="muted sm">{permissionSummary(a)}. Change it here or on the account at any time.</p>
+            </div>
+          </div>
+          <ActOnOwn slug={slug} a={a} onChange={load} />
+          <button className="acx-more" onClick={() => setAll((v) => !v)} aria-expanded={all}>
+            {all ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Every permission
+          </button>
+          <AnimatePresence initial={false}>
+            {all && (
+              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }} style={{ overflow: "hidden" }}>
+                <PermissionMatrix slug={slug} a={a} onChange={load} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <p className="muted sm">“Ask me first” puts a card in the chat and waits for your yes. “On its own” still puts the card there, as the record, and only ever applies in your Audience.</p>
+          <div className="acts">
+            <button className="btn p" onClick={onDone}>
+              Next
+            </button>
+          </div>
+        </>
+      )}
+    </motion.div>
+  );
+}
+
+/** Done: the account, how it stands, and what joined the Audience through it. */
+function Done({ slug, id, onFinish }: { slug: string; id: string; onFinish: () => void }) {
+  const [a] = useAccount(slug, id, AUDIENCE_EVENTS);
+  if (!a) return <Loader2 size={16} className="spin" />;
+  const joined = a.audience ?? [];
+  const name = accountIdentity(a);
+  return (
+    <motion.div className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+      <div className="cw-head">
+        <div>
+          <h2>
+            {accountService(a).name}
+            {name ? ` (${name})` : ""} is connected
+          </h2>
+          <p className="sm">
+            <StateChip s={a.state} />
+          </p>
+        </div>
+      </div>
+      {joined.length ? (
+        <div className="cw-joined">
+          <p className="sm">
+            <Users size={13} /> Joined your Audience:
+          </p>
+          <ul>
+            {joined.map((x) => (
+              <li key={x.id}>{x.label}</li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="muted sm">Nothing joined your Audience through it yet. Add the pages, communities and lists it reaches there, or Seemo suggests them as it finds them.</p>
+      )}
+      <div className="acts">
+        <Link className="btn p" to={`/p/${slug}/audience`}>
+          <Users size={14} /> Open your Audience
+        </Link>
+        <button className="btn g" onClick={onFinish}>
+          <Check size={14} /> Done
         </button>
       </div>
     </motion.div>
@@ -673,44 +848,36 @@ function ProgramsStep({ service, abilities, onReady, onBack, backLabel }: { serv
  * "Needs a hand" opens the live view. Skipped for one that does not.
  */
 function SessionStep({ slug, id, startUrl, onDone }: { slug: string; id: string; startUrl?: string; onDone: () => void }) {
-  const [a, setA] = useState<Account | null>(null);
+  const [a, load, gone] = useAccount(slug, id);
   const [phase, setPhase] = useState<"where" | "kiqr" | "signin">("where");
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hands, setHands] = useState(false);
-  const load = () =>
-    api.account(slug, id).then(
-      (acc) => {
-        setA(acc);
-        if (!acc.has_session) onDone();
-      },
-      () => onDone(),
-    );
   useEffect(() => {
-    void load();
-  }, [slug, id]);
-  useEvents(slug, (e) => ACCOUNT_EVENTS.includes(e.type) && e.connection === id && void load(), { demo: false });
-  const [st, setSt] = useSession(slug, a ?? { id, session: undefined });
+    if (gone || (a && !a.has_session)) onDone();
+  }, [gone, a?.has_session]);
   if (!a?.has_session) return <Loader2 size={16} className="spin" />;
   const byHand = signsInByHand(a);
   const name = accountIdentity(a) || accountService(a).name;
   const signIn = async () => {
     setBusy(true);
     setError(null);
+    setNote(null);
     try {
-      const r = await api.accountSignIn(slug, id);
-      if (r.started) setSt({ ...(st ?? { message: "", checked_at: null, signed_in_at: null }), state: "checking", message: "" });
-      else if (r.session) setSt(r.session);
-      void load();
+      setNote(await signInNow(slug, a));
+      load();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
-  const state = st?.state ?? "unknown";
-  const chip = sessionChip(st);
-  const ask = phase === "where" && !byHand && a.login?.store !== "kiqr";
+  const state = a.state.state;
+  const hasLogin = !!a.has_login || (a.login_set ?? []).includes("LOGIN_PASSWORD");
+  // A login kept in a password manager is read from there: nothing to ask.
+  const ask = phase === "where" && !byHand && !hasLogin && (a.secrets?.in_kiqr ?? true);
+  const settled = state === "ready" || state === "checking";
   return (
     <motion.div className="pcard cw-panel" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       <div className="cw-head">
@@ -736,41 +903,40 @@ function SessionStep({ slug, id, startUrl, onDone }: { slug: string; id: string;
           </button>
         </div>
       )}
-      {phase === "kiqr" && <LoginEditor slug={slug} a={a} ask={false} onChange={() => void load()} onSaved={() => (setPhase("signin"), void signIn())} />}
+      {phase === "kiqr" && <LoginEditor slug={slug} a={a} onChange={load} onSaved={() => (setPhase("signin"), void signIn())} />}
 
       {!ask && phase !== "kiqr" && (
         <>
           <p className="sm">
-            <span className={`chip sm ${chip.cls}`}>
-              {chip.spin ? <Loader2 size={11} className="spin" /> : <b />} {chip.text}
-            </span>
+            <StateChip s={a.state} />
           </p>
           {state === "needs_hand" && (
             <div className="acx-hand">
               <p>
-                {st?.message ? `${sentence(st.message)}. ` : ""}Finish the sign-in in the live view.
+                {a.session?.message ? `${sentence(a.session.message)}. ` : ""}Finish the sign-in in the live view.
               </p>
             </div>
           )}
+          {note && <p className="muted sm">{note}</p>}
           {error && <p className="err sm">{error}</p>}
           <div className="acts">
-            {!byHand && state !== "signed_in" && state !== "checking" && (
-              <button className={`btn ${state === "needs_hand" ? "g" : "p"}`} disabled={busy} onClick={() => void signIn()}>
+            {!byHand && !settled && (
+              <button className={`btn ${state === "needs_hand" || !hasLogin ? "g" : "p"}`} disabled={busy} onClick={() => void signIn()}>
                 {busy ? <Loader2 size={14} className="spin" /> : <LogIn size={14} />} {state === "needs_hand" ? "Try again" : "Sign in"}
               </button>
             )}
-            {a.live_view && state !== "signed_in" && state !== "checking" && (byHand || state === "needs_hand" || a.login?.store !== "kiqr") && (
-              <button className={`btn ${byHand || state === "needs_hand" ? "p" : "g"}`} onClick={() => setHands(true)}>
+            {a.live_view && !settled && (byHand || state === "needs_hand" || !hasLogin) && (
+              <button className={`btn ${byHand || state === "needs_hand" || !hasLogin ? "p" : "g"}`} onClick={() => setHands(true)}>
                 <Hand size={14} /> Take the controls
               </button>
             )}
-            <button className={`btn ${state === "signed_in" ? "p" : "t"}`} onClick={onDone}>
-              {state === "signed_in" ? "Next" : "Next, finish this later"}
+            <button className={`btn ${state === "ready" ? "p" : "t"}`} onClick={onDone}>
+              {state === "ready" ? "Next" : "Next, finish this later"}
             </button>
           </div>
         </>
       )}
-      {hands && <Hands slug={slug} account={id} name={name} startUrl={startUrl ?? startUrlOf(a.identity, a.destination_text)} onClose={(signedIn) => (setHands(false), signedIn && setSt({ ...(st ?? { message: "", checked_at: null, signed_in_at: null }), state: "checking", message: "" }), void load())} />}
+      {hands && <Hands slug={slug} account={id} name={name} startUrl={startUrl ?? startUrlOf(a.start_url, a.identity)} onClose={() => (setHands(false), load())} />}
     </motion.div>
   );
 }

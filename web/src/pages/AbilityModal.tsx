@@ -11,7 +11,7 @@ import { AlertTriangle, Check, ChevronDown, ChevronRight, Download, FolderOpen, 
 import { api, type Ability, type Contract } from "../api";
 import { ProgramList } from "./Programs";
 import { Markdown } from "../markdown";
-import { serviceOf, ServiceAccounts } from "./Accounts";
+import { AbilitySettings, serviceOf, ServiceAccounts } from "./Accounts";
 import { SecretField } from "./SecretField";
 import { SignInById } from "./SignIns";
 import { Switch } from "./Switch";
@@ -328,6 +328,12 @@ function Overview({ slug, a, onConnect, onChange }: { slug: string; a: Ability; 
         <p className="muted sm">
           It works through your {serviceOf(a).name} account, shared by every ability of {serviceOf(a).name}. Connect it, and choose what Seemo may do there, under <Link to={`/p/${slug}/accounts`}>Accounts</Link>.
         </p>
+      )}
+      {a.installed && Object.keys(a.settings ?? {}).length > 0 && (
+        <div className="ab-settings">
+          <p className="cap">What it works with</p>
+          <AbilitySettings slug={slug} a={a} lead={a.sources.length ? "Measured by" : "Through"} onChange={onChange} />
+        </div>
       )}
       <AdvancedParts a={a} />
     </div>

@@ -1,13 +1,14 @@
-// Setup → Accounts: everything Seemo signs in to for this project, grouped
-// by kind of service (Social, Website and blog, Email, Numbers…). Each card
-// says what Seemo may do there in one line with one switch, where inside it
-// content goes, and keeps the rest under Details. "Connect an account" opens
-// the wizard. `#hands=<id>` opens the live view of that account (from To do).
+// Setup → Accounts: who Seemo signs in as for this project, grouped by kind
+// of service (Social, Website and blog, Email, Numbers…). Each card says
+// whether it works, what Seemo may do there in one line with one switch,
+// which Audience entries it reaches, and keeps the rest under Details.
+// "Connect an account" opens the wizard. `#hands=<id>` opens the live view of
+// that account (from To do).
 import { useMemo } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Plug, Plus } from "lucide-react";
-import { api, useAsync, useEvents, type MailList } from "../api";
-import { AccountCard, accountIdentity, accountService, ACCOUNT_EVENTS, byGroup, connectPath, LIST_EVENTS } from "./Accounts";
+import { api, useAsync, useEvents, ACCOUNT_EVENTS } from "../api";
+import { AccountCard, accountIdentity, accountService, byGroup, connectPath } from "./Accounts";
 import { Hands, startUrlOf } from "./Hands";
 import "../profile.css";
 import "../accounts.css";
@@ -17,15 +18,11 @@ export function AccountsPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const data = useAsync(() => api.accounts(slug), [slug]);
-  const lists = useAsync(() => api.lists(slug).catch(() => ({ lists: [] as MailList[] })), [slug]);
-  useEvents(slug, (e) => {
-    if ([...ACCOUNT_EVENTS, "asset_published"].includes(e.type)) data.reload();
-    if (LIST_EVENTS.includes(e.type)) lists.reload();
-  }, { demo: false });
+  useEvents(slug, (e) => [...ACCOUNT_EVENTS, "audience_saved", "audience_deleted"].includes(e.type) && data.reload(), { demo: false });
   useEvents(null, (e) => ["extension_installed", "extension_removed"].includes(e.type) && data.reload(), { demo: false });
   // The wizard lands here with the new account: `#account=<id>` lights its card.
   const highlight = /#account=([^&]+)/.exec(location.hash)?.[1] ?? null;
-  const all = data.data?.connections ?? [];
+  const all = data.data?.accounts ?? [];
   // `#hands=<id>`: the live view of that account; closing it lands on its card.
   const handsId = decodeURIComponent(/#hands=([^&]+)/.exec(location.hash)?.[1] ?? "");
   const handsFor = handsId && data.data ? all.find((a) => a.id === handsId) : undefined;
@@ -38,7 +35,7 @@ export function AccountsPage() {
         <div>
           <p className="cap">Setup</p>
           <h1 className="d2">Accounts</h1>
-          <p className="muted">Everything Seemo signs in to for this project: your social accounts, your mail account, your site, your analytics. On each you choose what Seemo may do there, and where inside it things go.</p>
+          <p className="muted">Who Seemo signs in as for this project: your social accounts, your mail sender, your site, your analytics. On each you choose what Seemo may do there; where it posts is your Audience.</p>
         </div>
         <Link className="btn p" to={connectPath(slug)}>
           <Plus size={15} /> Connect an account
@@ -64,7 +61,7 @@ export function AccountsPage() {
           slug={slug}
           account={handsFor.id}
           name={accountIdentity(handsFor) || accountService(handsFor).name}
-          startUrl={startUrlOf(handsFor.identity, handsFor.destination_text)}
+          startUrl={startUrlOf(handsFor.start_url, handsFor.identity)}
           onClose={() => (navigate({ hash: `account=${encodeURIComponent(handsFor.id)}` }, { replace: true }), data.reload())}
         />
       )}
@@ -77,7 +74,7 @@ export function AccountsPage() {
             </h2>
             <div className="acx-grid">
               {g.items.map((a) => (
-                <AccountCard key={a.id} slug={slug} a={a} lists={lists.data?.lists ?? []} several={several(accountService(a).id)} highlight={a.id === highlight} onChange={data.reload} />
+                <AccountCard key={a.id} slug={slug} a={a} several={several(accountService(a).id)} highlight={a.id === highlight} onChange={data.reload} />
               ))}
             </div>
           </section>

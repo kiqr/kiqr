@@ -893,7 +893,7 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         if m.transport == Transport::Mcp {
             let st = crate::accounts::state(app, slug, c).await;
             if !st.ready() {
-                bail!("{}; the user sees to it under Setup → Accounts before Seemo works there", crate::accounts::state_view(c, &st)["says"].as_str().unwrap_or("not ready"));
+                bail!("{}; the user sees to it under Setup → Accounts before Seemo works there", crate::accounts::state_text(c, &st));
             }
         }
     }

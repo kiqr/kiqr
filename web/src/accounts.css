@@ -21,18 +21,14 @@
 .acx-say { display: flex; flex-direction: column; gap: 8px; }
 .acx-say > p { font-size: 13.5px; color: color-mix(in oklab, var(--fg) 88%, transparent); }
 .acx-own { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.acx-own > span { display: flex; flex-direction: column; gap: 1px; }
+.acx-own small { font-size: 11.5px; color: var(--dim); }
+.acx-reach { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acx-reach .lb { color: var(--muted); }
+.acx-reach a { color: var(--fg); font: 500 12px var(--mono); }
+.acx-reach a:hover { color: var(--accent); }
+.acx-kept { display: inline-flex; align-items: center; gap: 6px; }
 
-.acx-places { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
-.acx-places .lb { color: var(--muted); }
-.acx-place { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 9px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); font: 500 12px/1.4 var(--mono); color: var(--fg); }
-.acx-place.def { border-color: color-mix(in oklab, var(--accent) 35%, var(--line)); }
-.acx-place .x { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 0; background: none; color: var(--dim); cursor: pointer; }
-.acx-place .x:hover { color: var(--fg); background: var(--line); }
-.acx-place .of { font: 400 11.5px/1.4 var(--sans); color: var(--dim); margin-left: 2px; }
-.acx-need { display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 999px; border: 1px solid color-mix(in oklab, var(--warn, #f59e0b) 45%, var(--line)); background: color-mix(in oklab, var(--warn, #f59e0b) 10%, transparent); color: var(--fg); font: 500 12px/1.4 var(--sans); cursor: pointer; }
-.acx-need:hover { border-color: var(--warn, #f59e0b); }
-.acx-add { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r); background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
-.acx-add .acts { display: flex; gap: 6px; }
 .acx-fix { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r); background: var(--warn-soft); border: 1px solid color-mix(in oklab, var(--warn) 25%, transparent); }
 
 .acx-more { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; padding: 2px 4px; margin-left: -4px; border-radius: 6px; font: 500 12.5px/1.4 var(--sans); color: var(--muted); cursor: pointer; }
@@ -40,7 +36,6 @@
 .acx-details { display: flex; flex-direction: column; gap: 14px; overflow: hidden; padding-top: 4px; border-top: 1px solid var(--line); }
 .acx-details section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; }
 .acx-details .cap { font-size: 11px; }
-.acx-pub { display: flex; flex-direction: column; gap: 6px; }
 .acx-acts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-top: 4px; }
 .acx-acts .grow { flex: 1; }
 
@@ -172,3 +167,15 @@
 .pg-list { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; padding: 0; }
 .pg-list li { list-style: none; }
 .pg-list code { font-size: 12px; }
+
+/* An ability's settings (the GA4 property): one quiet line, or the pick */
+.ab-settings { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.ab-setting { font-size: 12.5px; }
+.ab-setting b.mono { font-weight: 500; font-size: 12px; }
+.ab-setting .lnk-btn { font-size: 12.5px; }
+.ab-pick { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+.ab-pick .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.perf-measured { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.cw-joined p { display: inline-flex; align-items: center; gap: 6px; }
+.cw-joined ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.cw-joined li { padding: 2px 10px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); font: 500 12px/1.4 var(--mono); }

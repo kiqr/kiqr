@@ -19,7 +19,7 @@ import { CalendarPage, TasksPage } from "./pages/Tasks";
 import { TodoPage } from "./pages/Todo";
 import { AccountsPage } from "./pages/AccountsPage";
 import { ConnectPage } from "./pages/Connect";
-import { ListsPage } from "./pages/Lists";
+import { AudiencePage } from "./pages/Audience";
 import { PlanPage } from "./pages/Plan";
 import { PerformancePage } from "./pages/Performance";
 
@@ -62,10 +62,10 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/p/:slug/abilities" element={<AbilitiesPage />} />
           <Route path="/p/:slug/accounts" element={<AccountsPage />} />
           <Route path="/p/:slug/accounts/connect" element={<ConnectPage />} />
-          <Route path="/p/:slug/audience" element={<ListsPage />} />
-          <Route path="/p/:slug/audience/:id" element={<ListsPage />} />
-          {/* Channels became accounts (with places in them). */}
-          <Route path="/p/:slug/channels" element={<Redirect to="accounts" />} />
+          <Route path="/p/:slug/audience" element={<AudiencePage />} />
+          <Route path="/p/:slug/audience/:id" element={<AudiencePage />} />
+          {/* Channels became accounts (who) and the Audience (where). */}
+          <Route path="/p/:slug/channels" element={<Redirect to="audience" />} />
           <Route path="/p/:slug/connectors" element={<Redirect to="accounts" />} />
           <Route path="/p/:slug/settings" element={<ProjectSettings />} />
           {/* Abilities moved under each project; these older links follow. */}

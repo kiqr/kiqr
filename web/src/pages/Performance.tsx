@@ -7,10 +7,11 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Loader2, Minus, Plug, RefreshCw, Sparkles, Target } from "lucide-react";
-import { api, useAsync, useEvents, type PerfKpi, type PerfMetric } from "../api";
+import { api, useAsync, useEvents, ACCOUNT_EVENTS, type PerfKpi, type PerfMetric } from "../api";
 import { ago } from "./Project";
-import { connectPath } from "./Accounts";
+import { AbilitySettings, connectPath } from "./Accounts";
 import "../profile.css";
+import "../accounts.css";
 
 export const PERF_EVENTS = ["metrics_snapshot", "metrics_failed", "plan_saved", "extension_installed", "extension_removed", "secret_set", "config_changed"];
 
@@ -18,6 +19,10 @@ export function PerformancePage() {
   const { slug = "" } = useParams();
   const data = useAsync(() => api.performance(slug), [slug]);
   useEvents(slug, (e) => PERF_EVENTS.includes(e.type) && data.reload(), { demo: false });
+  // What each source reads through its account (the GA4 property): one quiet line each, with Change.
+  const abilities = useAsync(() => api.abilities(slug).catch(() => null), [slug]);
+  useEvents(slug, (e) => [...ACCOUNT_EVENTS, "ability_settings_saved"].includes(e.type) && abilities.reload(), { demo: false });
+  const measured = (abilities.data?.abilities ?? []).filter((a) => a.installed && !a.paused && Object.keys(a.settings ?? {}).length > 0);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string }[] | null>(null);
   const d = data.data;
@@ -158,6 +163,14 @@ export function PerformancePage() {
           </div>
           <Tops tops={d.tops} source={cur.id} />
         </section>
+      )}
+
+      {measured.length > 0 && (
+        <div className="perf-measured">
+          {measured.map((a) => (
+            <AbilitySettings key={a.id} slug={slug} a={a} lead="Measured by" onChange={abilities.reload} />
+          ))}
+        </div>
       )}
 
       {d && (

@@ -1,15 +1,15 @@
-// Accounts: everything Seemo signs in to for this project (an X account, a
-// mail account, a WordPress site, an analytics property). Each has its own
-// keys, what Seemo may do there (its permissions), and, where its service
-// has several places to publish, its places: a subreddit, a branch, a list of
-// people on a mail account. Every ability of the service shares the account.
-// The pieces here are used by the Accounts page, the connect wizard and the
-// ability window.
+// Accounts: who Seemo signs in as for this project (a Reddit login, a Google
+// account, a mail sender). Each has its own keys or a password manager item,
+// what Seemo may do there (its permissions) and one state by the one
+// readiness rule. An account never says where content goes: that is the
+// Audience, and the card only says which Audience entries it reaches. Every
+// ability of the service shares the account. The pieces here are used by the
+// Accounts page, the connect wizard, the ability window and Performance.
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertCircle, Check, ChevronDown, ChevronRight, ExternalLink, Hand, KeyRound, LogIn, LogOut, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Users, X } from "lucide-react";
-import { api, useEvents, LOGIN_KEYS, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type Allow, type MailList, type Permission, type PlaceField, type PlaceKind, type ServiceCard, type SessionStatus } from "../api";
+import { Check, ChevronDown, ChevronRight, ExternalLink, Hand, KeyRound, LogIn, LogOut, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Users, X } from "lucide-react";
+import { api, useEvents, ACCOUNT_EVENTS, LOGIN_KEYS, SERVICE_GROUPS, type Ability, type Account, type AccountActivity, type AccountState, type AccountStateWord, type Allow, type Permission, type ServiceCard, type SpecField } from "../api";
 import { Hands, startUrlOf } from "./Hands";
 import { Switch } from "./Switch";
 import { ago } from "./Project";
@@ -21,8 +21,8 @@ import { ConnectService } from "./Connect";
 import "../settings.css";
 import "../accounts.css";
 
-export const ACCOUNT_EVENTS = ["connection_saved", "connection_deleted", "secret_set", "connect_finished", "session_changed"];
-export const LIST_EVENTS = ["list_changed", "list_deleted", "list_sending"];
+export { ACCOUNT_EVENTS };
+export const LIST_EVENTS = ["list_changed", "list_deleted", "list_sending", "audience_saved", "audience_deleted"];
 
 const ROLE_WORDS: Record<string, string> = { publish: "publishes", read: "reads", reply: "replies", manage: "manages", learn: "learns from it", measure: "reads its numbers" };
 const DONE_WORDS: Record<string, string> = { publish: "Published", reply: "Replied", manage: "Changed", read: "Read" };
@@ -40,14 +40,14 @@ export function serviceOf(a: Ability): ServiceCard & { group: string; name: stri
 function guessGroup(a: Ability): string {
   if (a.provides.some((p) => p.ability === "email") || a.categories.includes("email")) return "email";
   if (a.sources.length) return "numbers";
-  if (a.channels.length) return a.categories.includes("social") ? "social" : "website";
+  if ((a.publishes_to ?? []).length || a.kinds?.length) return a.categories.includes("social") ? "social" : "website";
   return "tools";
 }
 
-/** The service of an account: its card, else its ability's name. */
+/** The service of an account: its card, else its service id. */
 export function accountService(a: Account): ServiceCard & { group: string; name: string } {
   const c = a.service_card;
-  return { id: c?.id || a.service || a.ability, name: c?.name || a.ability_name, icon: c?.icon || a.icon, group: c?.group || "", profile_hosts: c?.profile_hosts };
+  return { id: c?.id || a.service, name: c?.name || a.service, icon: c?.icon, group: c?.group || "", profile_hosts: c?.profile_hosts };
 }
 
 /** Group things by service group in the order SERVICE_GROUPS gives; unknown groups last, under "Other". */
@@ -66,6 +66,54 @@ export function connectPath(slug: string, at: { service?: string; group?: string
   return `/p/${slug}/accounts/connect${s ? `?${s}` : ""}`;
 }
 
+// ---- The one state
+
+/** The chip for an account's state, by the one readiness rule. */
+export function stateChip(s: Pick<AccountState, "state"> | AccountStateWord | undefined): { text: string; cls: string; spin?: boolean } {
+  switch (typeof s === "string" ? s : s?.state) {
+    case "ready":
+      return { text: "Ready", cls: "ok" };
+    case "signed_out":
+      return { text: "Signed out", cls: "warn" };
+    case "needs_hand":
+      return { text: "Needs a hand", cls: "warn" };
+    case "missing_keys":
+      return { text: "Missing keys", cls: "warn" };
+    case "needs_program":
+      return { text: "Needs a program", cls: "warn" };
+    case "checking":
+      return { text: "Signing in", cls: "", spin: true };
+    default:
+      return { text: "Not checked yet", cls: "" };
+  }
+}
+
+export function StateChip({ s }: { s: AccountState }) {
+  const c = stateChip(s);
+  return (
+    <span className={`chip sm ${c.cls}`} title={s.says ? sentence(s.says) : undefined}>
+      {c.spin ? <Loader2 size={11} className="spin" /> : <b />} {c.text}
+    </span>
+  );
+}
+
+/** "The site asks for a person: captcha" from the daemon's "the site asks for a person: captcha". */
+export function sentence(m: string): string {
+  const t = m.trim().replace(/[.\s]+$/, "");
+  return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}` : "";
+}
+
+/** Who the account is: the name the user gave it, else what the daemon says it is (a mail address, a host), else its label. Never an ability's name. */
+export function accountIdentity(a: Account): string {
+  if (a.label_set) return a.label.trim();
+  return a.identity || a.label.trim();
+}
+
+/** Whether the account's name is one somebody gave it, not the service's name the daemon fell back on. */
+export function ownLabel(a: Account): boolean {
+  return !!a.label_set;
+}
+
 // ---- Permissions
 
 const ROLE_LABEL: Record<string, string> = { read: "Read", reply: "Reply", publish: "Publish", manage: "Change settings and profile", learn: "Learn the business from it", measure: "Read its numbers into Performance" };
@@ -81,7 +129,7 @@ const ROLE_HELP: Record<string, string> = {
 /** The verb for publishing on this account, by its service: post, send or publish. */
 function publishVerb(a: Account): { now: string; s: string } {
   const g = accountService(a).group;
-  if (g === "email" || a.takes_lists) return { now: "send", s: "sends" };
+  if (g === "email") return { now: "send", s: "sends" };
   if (g === "social") return { now: "post", s: "posts" };
   return { now: "publish", s: "publishes" };
 }
@@ -118,8 +166,8 @@ export function permissionSummary(a: Account): string {
   return `Seemo ${joinOr(own.map(third), "and")} here on its own and asks before it ${joinOr(asks.map(third))}`;
 }
 
-/** The one switch: every acting role that is not off goes on its own, or back to asking. */
-function ActOnOwn({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
+/** The one switch: every acting role that is not off goes on its own, or back to asking. On its own only ever applies in the Audience. */
+export function ActOnOwn({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
   const on = acting(a);
   const own = on.length > 0 && on.every((p) => p.allow === "auto");
   const [busy, setBusy] = useState(false);
@@ -141,7 +189,10 @@ function ActOnOwn({ slug, a, onChange }: { slug: string; a: Account; onChange: (
     <>
       <label className="acx-own" title={own ? "Seemo acts when it decides to; each card stays in the chat as the record" : "Every action Seemo proposes waits for your yes"}>
         <Switch on={own} disabled={busy} onChange={(v) => void flip(v)} />
-        <span>Let Seemo act here on its own</span>
+        <span>
+          Let Seemo act here on its own
+          <small>Only in your Audience; anywhere else Seemo asks first</small>
+        </span>
       </label>
       {error && <p className="err sm">{error}</p>}
     </>
@@ -236,14 +287,9 @@ export function PermissionChoices({ perms, value, verb, onChange }: { perms: { r
   );
 }
 
-// ---- Places
+// ---- Fields
 
 export type Field = { key: string; label: string; help?: string; placeholder?: string; optional?: boolean; options?: string[]; secret?: boolean };
-
-/** A kind's place fields as form fields, labels from the manifest. */
-export function placeFields(spec: Record<string, PlaceField> | undefined): Field[] {
-  return Object.entries(spec ?? {}).map(([k, s]) => ({ key: k, label: s.label || k, help: s.help, placeholder: s.placeholder, optional: s.optional, options: enumOf(s) }));
-}
 
 export function Fields({ fields, values, onChange }: { fields: Field[]; values: Record<string, string>; onChange: (k: string, v: string) => void }) {
   return (
@@ -266,100 +312,136 @@ export function Fields({ fields, values, onChange }: { fields: Field[]; values: 
   );
 }
 
-/** Whether an account's places are lists of people: the daemon says so, or a place already is one. */
-export function takesLists(a: Account): boolean {
-  return !!a.takes_lists || (a.places ?? []).some((p) => p.kind === "list");
+// ---- Where it reaches
+
+/** "Reaches: @acme, r/selfhosted (+2)", linking to the Audience; nothing when it reaches nowhere yet. */
+export function Reaches({ slug, a }: { slug: string; a: Account }) {
+  const all = a.audience ?? [];
+  if (!all.length) return null;
+  const shown = all.slice(0, 3);
+  return (
+    <p className="acx-reach">
+      <span className="lb">Reaches:</span>{" "}
+      <Link to={`/p/${slug}/audience`} title="Open your Audience">
+        {shown.map((x) => x.label).join(", ")}
+        {all.length > shown.length && <span className="dim"> (+{all.length - shown.length})</span>}
+      </Link>
+    </p>
+  );
 }
 
-/** "Newsletter (412)": a place's label, with the list's count when it is a list. */
-export function placeText(p: { kind: string; label: string; fields?: Record<string, unknown> }, lists: MailList[]) {
-  if (p.kind !== "list") return p.label;
-  const l = lists.find((x) => x.id === p.fields?.list);
-  return l ? `${p.label} (${l.contacts - l.unsubscribed})` : p.label;
+// ---- Ability settings: what the project picks once for an ability (a GA4 property)
+
+type Choice = { value: string; label: string };
+
+/** The values a setting can take, read through the account; null while reading. */
+function useChoices(slug: string, account: string | undefined, name: string, on: boolean): { list: Choice[] | null; error: string | null } {
+  const [list, setList] = useState<Choice[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!on || !account) return;
+    let gone = false;
+    setList(null);
+    setError(null);
+    api.accountChoices(slug, account, name).then(
+      (r) => !gone && setList(r.choices),
+      (e) => !gone && (setError((e as Error).message), setList([])),
+    );
+    return () => {
+      gone = true;
+    };
+  }, [slug, account, name, on]);
+  return { list, error };
 }
 
-/** Every kind of place the account can have. The daemon sends them; an older one only the publishing kind's fields. */
-export function placeKinds(a: Account): PlaceKind[] {
-  const lists = takesLists(a);
-  const own = (k: PlaceKind) => (k.lists || (lists && k.kind === a.kind) ? { ...k, lists: true, verb: "Sends to" } : k);
-  if (a.place_kinds) return a.place_kinds.map(own);
-  if (!a.channel) return [];
-  return [own({ kind: a.kind, label: a.kind_label ?? "", verb: "Publishes to", fields: a.place_fields ?? {}, needs: !!a.needs_place && !(a.places ?? []).length, lists })];
+/** The account an ability's settings are read through: the one it was picked with, else the service's default that works, else any. */
+export function settingAccount(a: Ability): { id: string; label: string } | null {
+  const all = a.accounts ?? [];
+  const picked = a.setting?.account ? all.find((x) => x.id === a.setting!.account) : undefined;
+  const works = (x: (typeof all)[number]) => x.works ?? x.state === "ready";
+  const c = picked ?? all.find((x) => x.default && works(x)) ?? all.find(works) ?? all.find((x) => x.default) ?? all[0];
+  return c ? { id: c.id, label: c.label } : a.setting?.account ? { id: a.setting.account, label: a.setting.account } : null;
 }
 
-/** What to call a place of a kind: its first field's label ("GA4 property"), else the kind's own label. */
-export function placeNoun(k: PlaceKind): string {
-  return Object.values(k.fields ?? {})[0]?.label || k.label;
+/** Whether every required setting of an ability is picked. */
+export function settingsPicked(a: Ability): boolean {
+  return Object.entries(a.settings ?? {}).every(([k, f]) => f.optional || !!String(a.setting?.[k] ?? "").trim());
 }
 
-/** The places of one kind on the account; a list belongs to the kind that sends. */
-export function placesOf(a: Account, k: PlaceKind) {
-  return (a.places ?? []).filter((p) => p.kind === k.kind || (k.lists && p.kind === "list"));
-}
-
-/** A kind that is not where the account publishes: its places say what they are ("Acme site (GA4 property)"). */
-function ownKind(k: PlaceKind) {
-  return !k.lists && k.verb !== "Publishes to";
-}
-
-/** Whether the account's name is one somebody gave it, not the service's or an ability's name the daemon fell back on. */
-export function ownLabel(a: Account): boolean {
-  const label = a.label.trim().toLowerCase();
-  const given = [a.ability_name, a.connection_name, accountService(a).name, ...(a.used_by ?? []).map((u) => u.name)].filter(Boolean).map((s) => s.toLowerCase());
-  return !!label && !given.includes(label);
-}
-
-/** Who the account is: the name the user gave it, else its places, else what the daemon says it is (a mail address, a host). Never an ability's name. */
-export function accountIdentity(a: Account, lists: MailList[] = []): string {
-  if (ownLabel(a)) return a.label.trim();
-  const places = (a.places ?? []).map((p) => placeText(p, lists));
-  if (places.length) return places.join(" · ");
-  return a.identity || a.destination_text || "";
-}
-
-/** A place field read from a list through the account, or with a fixed set of values, or typed. */
-export function PlaceFieldsForm({ slug, account, fields, values, onChange, onChoices }: { slug: string; account: string; fields: Record<string, PlaceField>; values: Record<string, string>; onChange: (k: string, v: string) => void; onChoices?: (k: string, c: { value: string; label: string }[]) => void }) {
+/**
+ * An ability's settings, one line each: "Measured by Google · GA4 property
+ * Acme site · Change", or "Pick the GA4 property" with the select read
+ * through the account. Saved with the other values as they are.
+ */
+export function AbilitySettings({ slug, a, lead = "Through", onChange }: { slug: string; a: Ability; /** The line's first words: "Measured by". */ lead?: string; onChange: () => void }) {
+  const fields = Object.entries(a.settings ?? {});
+  const acc = settingAccount(a);
+  if (!fields.length) return null;
+  if (!acc)
+    return (
+      <p className="ab-setting muted sm">
+        {a.name} reads through an account of its service. <Link to={connectPath(slug, { service: a.service ?? a.id })}>Connect one</Link> first.
+      </p>
+    );
   return (
     <>
-      {Object.entries(fields).map(([k, f]) =>
-        f.choices ? (
-          <ChoiceField key={k} slug={slug} account={account} name={k} f={f} value={values[k] ?? ""} onChange={(v) => onChange(k, v)} onLoaded={(c) => onChoices?.(k, c)} />
-        ) : (
-          <Fields key={k} fields={placeFields({ [k]: f })} values={values} onChange={onChange} />
-        ),
-      )}
+      {fields.map(([k, f]) => (
+        <SettingLine key={k} slug={slug} a={a} account={acc} name={k} f={f} lead={lead} onChange={onChange} />
+      ))}
     </>
   );
 }
 
-/** One field picked from what the account has (its properties, its sites): read once, a search field when long. */
-function ChoiceField({ slug, account, name, f, value, onChange, onLoaded }: { slug: string; account: string; name: string; f: PlaceField; value: string; onChange: (v: string) => void; onLoaded: (c: { value: string; label: string }[]) => void }) {
-  const [list, setList] = useState<{ value: string; label: string }[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function SettingLine({ slug, a, account, name, f, lead, onChange }: { slug: string; a: Ability; account: { id: string; label: string }; name: string; f: SpecField; lead: string; onChange: () => void }) {
+  const cur = String(a.setting?.[name] ?? "");
+  const [editing, setEditing] = useState(false);
+  const open = editing || !cur;
+  // The label of the current value, read once when the field is a list.
+  const { list } = useChoices(slug, account.id, name, !!f.choices && !!cur && !editing);
+  const shown = list?.find((c) => c.value === cur)?.label ?? cur;
+  const label = f.label || name;
+  return (
+    <div className="ab-setting">
+      {!open ? (
+        <p className="sm">
+          <span className="muted">
+            {lead} {account.label} ·
+          </span>{" "}
+          {label} <b className="mono">{shown}</b> <span className="muted">·</span>{" "}
+          <button className="lnk-btn" onClick={() => setEditing(true)}>
+            Change
+          </button>
+        </p>
+      ) : (
+        <SettingPick slug={slug} a={a} account={account} name={name} f={f} cur={cur} onCancel={cur ? () => setEditing(false) : undefined} onSaved={() => (setEditing(false), onChange())} />
+      )}
+    </div>
+  );
+}
+
+/** One setting's input: a select of what the account has (a search field when long), a select of fixed values, or typed. */
+export function SettingField({ slug, account, name, f, value, onChange }: { slug: string; account: { id: string; label: string }; name: string; f: SpecField; value: string; onChange: (v: string) => void }) {
+  const { list, error } = useChoices(slug, account.id, name, !!f.choices);
+  const label = f.label || name;
   useEffect(() => {
-    setList(null);
-    setError(null);
-    api.accountChoices(slug, account, name).then(
-      (r) => (setList(r.choices), onLoaded(r.choices), r.choices.length === 1 && !value && onChange(r.choices[0].value)),
-      (e) => (setError((e as Error).message), setList([])),
-    );
-  }, [slug, account, name]);
+    if (list?.length === 1 && !value) onChange(list[0].value);
+  }, [list]);
   return (
     <label className="acc-field">
       <span className="nm">
-        {f.label || name}
+        {label}
         {f.optional && <small className="dim"> optional</small>}
       </span>
-      {list === null ? (
+      {f.choices && list === null ? (
         <span className="muted sm">
-          <Loader2 size={12} className="spin" /> Reading what the account has…
+          <Loader2 size={12} className="spin" /> Reading what {account.label} has…
         </span>
-      ) : list.length ? (
-        <FieldInput options={list.map((c) => c.value)} labels={Object.fromEntries(list.map((c) => [c.value, c.label]))} search={list.length > 12} optional={f.optional} value={value} onChange={onChange} ariaLabel={f.label || name} />
+      ) : f.choices && list && list.length ? (
+        <FieldInput options={list.map((c) => c.value)} labels={Object.fromEntries(list.map((c) => [c.value, c.label]))} search={list.length > 12} optional={f.optional} value={value} onChange={onChange} ariaLabel={label} />
       ) : (
         <>
-          <FieldInput value={value} onChange={onChange} placeholder={f.placeholder ?? ""} ariaLabel={f.label || name} />
-          <span className="muted sm">{error ? `The list could not be read (${error}); type it instead.` : "Nothing to choose from; type it instead."}</span>
+          <FieldInput options={enumOf(f)} optional={f.optional} value={value} onChange={onChange} placeholder={f.placeholder ?? ""} ariaLabel={label} />
+          {f.choices && <span className="muted sm">{error ? `The list could not be read (${error}); type it instead.` : "Nothing to choose from; type it instead."}</span>}
         </>
       )}
       {f.help && (
@@ -371,142 +453,56 @@ function ChoiceField({ slug, account, name, f, value, onChange, onLoaded }: { sl
   );
 }
 
-/** The label a new place is saved with: the picked option's label when a field was picked from a list. */
-export function chosenLabel(fields: Record<string, PlaceField>, values: Record<string, string>, read: Record<string, { value: string; label: string }[]>): string | undefined {
-  for (const [k, f] of Object.entries(fields)) {
-    if (!f.choices || !values[k]) continue;
-    const hit = read[k]?.find((c) => c.value === values[k]);
-    if (hit) return hit.label;
-  }
-  return undefined;
+/** The values to save for an ability's settings: what it has, with the changes over them. */
+export function settingValues(a: Ability, changes: Record<string, string> = {}): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(a.setting ?? {})) if (k !== "account" && v != null && String(v).trim()) out[k] = String(v);
+  for (const [k, v] of Object.entries(changes)) if (v.trim()) out[k] = v.trim();
+  return out;
 }
 
-/** Whether every required field has a value, and at least one is given. */
-export function placeReady(fields: Record<string, PlaceField>, values: Record<string, string>) {
-  const e = Object.entries(fields);
-  return e.every(([k, f]) => f.optional || (values[k] ?? "").trim()) && e.some(([k]) => (values[k] ?? "").trim());
-}
-
-/**
- * The places inside an account, one line per verb: "Publishes to: r/rust, r/selfhosted", "Sends to:
- * Newsletter (412)", "Measures: Acme site (GA4 property) · sc-domain:acme.test (Search Console property)",
- * each with add and remove; a kind that still needs one says "Pick a …".
- */
-function Places({ slug, a, lists, onChange }: { slug: string; a: Account; lists: MailList[]; onChange: () => void }) {
-  // Only a kind with somewhere inside it to choose, or places already, shows.
-  const kinds = placeKinds(a).filter((k) => k.lists || Object.keys(k.fields ?? {}).length > 0 || placesOf(a, k).length > 0);
-  const verbs = [...new Set(kinds.map((k) => k.verb))];
-  if (!kinds.length) return null;
-  return (
-    <>
-      {verbs.map((v) => (
-        <PlaceRow key={v} slug={slug} a={a} verb={v} kinds={kinds.filter((k) => k.verb === v)} lists={lists} onChange={onChange} />
-      ))}
-    </>
-  );
-}
-
-function PlaceRow({ slug, a, verb, kinds, lists, onChange }: { slug: string; a: Account; verb: string; kinds: PlaceKind[]; lists: MailList[]; onChange: () => void }) {
-  const [adding, setAdding] = useState<PlaceKind | null>(null);
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [read, setRead] = useState<Record<string, { value: string; label: string }[]>>({});
-  const [list, setList] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+/** Changing one setting: its input, Use it, Cancel. */
+function SettingPick({ slug, a, account, name, f, cur, onCancel, onSaved }: { slug: string; a: Ability; account: { id: string; label: string }; name: string; f: SpecField; cur: string; onCancel?: () => void; onSaved: () => void }) {
+  const [value, setValue] = useState(cur);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const places = kinds.flatMap((k) => placesOf(a, k).map((p) => ({ p, k })));
-  const run = async (what: string, f: () => Promise<unknown>) => {
-    setBusy(what);
+  const save = async () => {
+    setBusy(true);
     setError(null);
     try {
-      await f();
-      setAdding(null);
-      setValues({});
-      setRead({});
-      setList("");
-      onChange();
+      await api.setAbilitySettings(slug, a.id, account.id, settingValues(a, { [name]: value }));
+      onSaved();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
-  const open = (k: PlaceKind) => (setAdding(k), setValues({}), setRead({}), setList(""), setError(null));
-  const free = lists.filter((l) => !(a.places ?? []).some((p) => p.fields?.list === l.id));
-  const ok = adding ? (adding.lists ? !!list : placeReady(adding.fields, values)) : false;
-  const add = (k: PlaceKind) =>
-    run("add", () => api.addPlace(slug, a.id, k.lists ? { list } : { kind: k.kind, fields: values, label: chosenLabel(k.fields, values, read) }));
-  const needs = kinds.filter((k) => k.needs && !placesOf(a, k).length);
-  const addable = kinds.filter((k) => (k.lists ? free.length > 0 || lists.length === 0 : Object.keys(k.fields ?? {}).length > 0) && !needs.includes(k));
-  const several = kinds.length > 1;
   return (
-    <div className="acx-places">
-      <span className="lb">{verb}:</span>
-      {places.length === 0 && !needs.length && <span className="muted sm">{kinds.some((k) => k.lists) ? "the people named on each send" : verb === "Publishes to" ? "the account itself" : "nothing chosen yet"}</span>}
-      {places.map(({ p, k }) => (
-        <span key={p.id} className={`acx-place ${p.default ? "def" : ""}`} title={p.default && !ownKind(k) ? "Used when nothing names another" : undefined}>
-          {placeText(p, lists)}
-          {ownKind(k) && <span className="of">({placeNoun(k)})</span>}
-          {!ownKind(k) && !p.default && placesOf(a, k).length > 1 && (
-            <button className="x" title="Make it the default" aria-label="Make it the default" disabled={!!busy} onClick={() => void run(`def-${p.id}`, () => api.updatePlace(slug, a.id, p.id, { default: true }))}>
-              <Star size={10} />
-            </button>
-          )}
-          <button className="x" title="Remove" aria-label={`Remove ${p.label}`} disabled={!!busy} onClick={() => void run(`rm-${p.id}`, () => api.removePlace(slug, a.id, p.id))}>
-            {busy === `rm-${p.id}` ? <Loader2 size={10} className="spin" /> : <X size={10} />}
-          </button>
-        </span>
-      ))}
-      {!adding &&
-        needs.map((k) => (
-          <button key={k.kind} className="acx-need" onClick={() => open(k)} title={`Nothing goes out${ownKind(k) ? ` and nothing is read for ${k.label}` : ""} until one is chosen`}>
-            <AlertCircle size={12} /> Pick a {placeNoun(k)}
-          </button>
-        ))}
-      {!adding &&
-        addable.map((k) => (
-          <button key={k.kind} className="lnk-btn" onClick={() => open(k)}>
-            <Plus size={11} /> {k.lists ? "Add a list" : several || ownKind(k) ? `Add a ${placeNoun(k)}` : "Add a place"}
-          </button>
-        ))}
-      <AnimatePresence>
-        {adding && (
-          <motion.div className="acx-add" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
-            {adding.lists ? (
-              free.length ? (
-                <label className="acc-field">
-                  <span className="nm">List</span>
-                  <FieldInput options={free.map((l) => l.id)} labels={Object.fromEntries(free.map((l) => [l.id, `${l.label} (${l.contacts - l.unsubscribed})`]))} value={list} onChange={setList} ariaLabel="List" />
-                </label>
-              ) : (
-                <p className="muted sm">
-                  No list to add yet. <Link to={`/p/${slug}/audience`}>Make one under Audience</Link>.
-                </p>
-              )
-            ) : (
-              <PlaceFieldsForm slug={slug} account={a.id} fields={adding.fields} values={values} onChange={(k, v) => setValues((cur) => ({ ...cur, [k]: v }))} onChoices={(k, c) => setRead((cur) => ({ ...cur, [k]: c }))} />
-            )}
-            <div className="acts">
-              <button className="btn p sm" disabled={!ok || !!busy} onClick={() => void add(adding)}>
-                {busy === "add" ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Add
-              </button>
-              <button className="btn t sm" onClick={() => setAdding(null)}>
-                Cancel
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+    <div className="ab-pick">
+      {!cur && <p className="sm">Pick the {f.label || name}</p>}
+      <SettingField slug={slug} account={account} name={name} f={f} value={value} onChange={setValue} />
       {error && <p className="err sm">{error}</p>}
+      <div className="acts">
+        <button className="btn p sm" disabled={busy || !value.trim() || value === cur} onClick={() => void save()}>
+          {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Use it
+        </button>
+        {onCancel && (
+          <button className="btn t sm" disabled={busy} onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
 // ---- Smaller parts
 
-/** "Used by Read posts · Reply (reads, replies)": the abilities sharing it, when more than one does. */
+/** "Used by Read posts · Reply (reads, replies)": the abilities sharing it. */
 export function UsedBy({ a, slug }: { a: Account; slug?: string }) {
   const by = a.used_by ?? [];
-  if (by.length < 2) return null;
+  if (!by.length) return null;
   return (
     <p className="acc-used" title="These abilities sign in once and share this account">
       <Users size={12} /> Used by{" "}
@@ -514,9 +510,19 @@ export function UsedBy({ a, slug }: { a: Account; slug?: string }) {
         <span key={u.id}>
           {i > 0 && " · "}
           {slug ? <Link to={`/p/${slug}/abilities#ability=${encodeURIComponent(u.id)}`}>{u.name}</Link> : u.name}
-          {a.channel && u.does.length > 0 && <span className="dim"> ({u.does.map((d) => ROLE_WORDS[d] ?? d).join(", ")})</span>}
+          {u.does.length > 0 && <span className="dim"> ({u.does.map((d) => ROLE_WORDS[d] ?? d).join(", ")})</span>}
         </span>
       ))}
+    </p>
+  );
+}
+
+/** "Kept in KIQR", or "Kept in 1Password: Acme Reddit". */
+export function SecretsLine({ a }: { a: Account }) {
+  const s = a.secrets;
+  return (
+    <p className="muted sm acx-kept">
+      <KeyRound size={12} /> {!s || s.in_kiqr ? "Kept in KIQR, on this machine" : `Kept in ${s.store_label}${s.item ? `: ${s.item}` : ""}`}
     </p>
   );
 }
@@ -562,25 +568,51 @@ export function ActivityLog({ slug, a }: { slug: string; a: Account }) {
   );
 }
 
+// The ability whose sign-in button an account of a service uses: read once per project from the abilities list.
+const signInWith = new Map<string, Promise<Map<string, string>>>();
+function useSignInAbility(slug: string, a: Account): string | undefined {
+  const [id, setId] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    if (!a.connect) return;
+    let p = signInWith.get(slug);
+    if (!p) {
+      p = api.abilities(slug).then(
+        (v) => new Map(v.abilities.filter((x) => x.installed && x.connect).map((x) => [serviceOf(x).id, x.id] as [string, string]).reverse()),
+        () => new Map<string, string>(),
+      );
+      signInWith.set(slug, p);
+      // Read again next time: installs change it.
+      window.setTimeout(() => signInWith.delete(slug), 30_000);
+    }
+    let gone = false;
+    void p.then((m) => !gone && setId(m.get(accountService(a).id) ?? a.used_by?.[0]?.id));
+    return () => {
+      gone = true;
+    };
+  }, [slug, a.id, !!a.connect]);
+  return id;
+}
+
 /**
  * The account's keys. With a sign-in button: the button, and the keys only
  * behind "Enter the keys yourself". `only` narrows them to what is still
- * missing (pasting what the service showed, or choosing the property).
+ * missing (pasting what the service showed).
  */
 export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Account; onChange: () => void; only?: "missing" }) {
-  // Signed in (a token is kept) but something is still to choose (the property): open on that.
   const signedIn = a.signed_in ?? a.auth.some((k) => k.written && k.set);
-  // Worked out on every render, not once: the sign-in finishes after this mounts, and the property picker must appear then.
+  const missing = a.state.keys ?? [];
+  const ability = useSignInAbility(slug, a);
+  // Worked out on every render: the sign-in finishes after this mounts, and what is left must appear then.
   const [opened, setOpen] = useState(false);
-  const open = opened || !a.connect || only === "missing" || (signedIn && a.missing.length > 0);
+  const open = opened || !a.connect || only === "missing" || (signedIn && missing.length > 0);
   const [more, setMore] = useState(false);
   const typed = a.auth.filter((k) => !k.written);
-  const shown = typed.filter((k) => (only === "missing" ? a.missing.includes(k.env) : more || !k.optional || k.set));
+  const shown = typed.filter((k) => (only === "missing" ? missing.includes(k.env) : more || !k.optional || k.set));
   const hidden = only !== "missing" && !more && typed.some((k) => k.optional && !k.set);
   return (
     <div className="acc-keys">
-      {a.connect && only !== "missing" && <ConnectButton slug={slug} ability={a.ability} account={a.id} connect={a.connect} auth={a.auth} label={a.ready ? "Connect again" : a.connect.label} onDone={onChange} />}
-      {open ? (
+      {a.connect && ability && only !== "missing" && <ConnectButton slug={slug} ability={ability} account={a.id} connect={a.connect} auth={a.auth} label={a.state.ready ? "Sign in again" : a.connect.label} onDone={onChange} />}
+      {open && shown.length > 0 ? (
         <div className="set-keys">
           {shown.map((k) => (
             <SecretField key={k.env} name={k.env} label={k.label || k.env} help={k.help} placeholder={k.placeholder} set={k.set} optional={k.optional} options={k.options} choices={k.choices && signedIn} grant={a.connect?.grant} slug={slug} account={a.id} onSaved={onChange} />
@@ -588,7 +620,7 @@ export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Acco
         </div>
       ) : null}
       <p className="acc-links">
-        {!open && (
+        {!open && typed.length > 0 && (
           <button className="lnk-btn" onClick={() => setOpen(true)}>
             Enter the keys yourself
           </button>
@@ -601,14 +633,6 @@ export function AccountKeys({ slug, a, onChange, only }: { slug: string; a: Acco
       </p>
     </div>
   );
-}
-
-/** Connected, not connected, or signed in with something still to do. */
-export function accountStatus(a: Account): { text: string; tone: "ok" | "warn" | "bad" } {
-  if (a.error) return { text: "Needs a hand", tone: "bad" };
-  if (a.ready) return { text: "Connected", tone: "ok" };
-  if (a.signed_in) return { text: "Needs a hand", tone: "warn" };
-  return { text: "Not connected", tone: "warn" };
 }
 
 /** Learning from it: when it last read, and Learn now. */
@@ -626,12 +650,12 @@ function Learning({ slug, a, onChange }: { slug: string; a: Account; onChange: (
         </>
       ) : a.last_learned ? (
         `Learned from ${a.learned ?? 0} document${a.learned === 1 ? "" : "s"} ${ago(a.last_learned)}; read again every week.`
-      ) : a.ready ? (
+      ) : a.state.ready ? (
         "Not read yet."
       ) : (
-        "Read once it is connected."
+        "Read once it is ready."
       )}
-      {a.ready && !learning && (
+      {a.state.ready && !learning && (
         <button className="lnk-btn" onClick={() => api.learnAccount(slug, a.id).then(() => setLearning(true), (e) => setError((e as Error).message))}>
           <RefreshCw size={11} /> Learn now
         </button>
@@ -645,133 +669,147 @@ function Learning({ slug, a, onChange }: { slug: string; a: Account; onChange: (
 
 /** The service whose site is signed in to by hand only: it has no login steps, the browser keeps the sign-in. */
 export function signsInByHand(a: Account): boolean {
-  return accountService(a).id === "browser";
+  return !!a.by_hand;
 }
 
-/** The chip for how the sign-in stands. */
-export function sessionChip(st: SessionStatus | undefined): { text: string; cls: string; spin?: boolean } {
-  switch (st?.state) {
-    case "signed_in":
-      return { text: "Signed in", cls: "acc" };
-    case "signed_out":
-      return { text: "Signed out", cls: "" };
-    case "needs_hand":
-      return { text: "Needs a hand", cls: "warn" };
-    case "checking":
-      return { text: "Checking…", cls: "", spin: true };
-    default:
-      return { text: "Not signed in yet", cls: "" };
-  }
-}
-
-/** "The site asks for a person: captcha" from the daemon's "the site asks for a person: captcha". */
-export function sentence(m: string): string {
-  const t = m.trim().replace(/[.\s]+$/, "");
-  return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}` : "";
-}
-
-/** How the sign-in stands as it changes: the account's, then each `session_changed` for it. */
-export function useSession(slug: string, a: Pick<Account, "id" | "session">): [SessionStatus | undefined, (s: SessionStatus) => void] {
-  const [live, setLive] = useState<SessionStatus | undefined>(undefined);
-  useEffect(() => setLive(undefined), [a.session?.state, a.session?.checked_at]);
-  useEvents(
-    slug,
-    (e) => {
-      if (e.type !== "session_changed" || e.connection !== a.id) return;
-      setLive((cur) => ({ ...(cur ?? a.session ?? { checked_at: null, signed_in_at: null }), state: e.state as SessionStatus["state"], message: String(e.message ?? "") }));
-    },
-    { demo: false },
-  );
-  return [live ?? a.session, setLive];
+/** Sign in on the hosted program now: the account's state goes to checking, and `account_state_changed` says how it went. */
+export async function signInNow(slug: string, a: Account): Promise<string | null> {
+  const r = await api.accountSignIn(slug, a.id);
+  return !r.started && r.note ? `${sentence(r.note)}.` : null;
 }
 
 /**
- * Sign in, sign out, and when a person is needed the line that says why with
- * "Take the controls", which opens the live view.
+ * What the card offers for its state: Sign in when signed out, the line
+ * that says why with Take the controls when a person is needed, the keys
+ * when some are missing, the program it waits for.
  */
-export function SessionBar({ slug, a, onChange }: { slug: string; a: Account; onChange: () => void }) {
-  const [st, setSt] = useSession(slug, a);
-  const [busy, setBusy] = useState<string | null>(null);
+function StateFix({ slug, a, onHands, onChange }: { slug: string; a: Account; onHands: () => void; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState(false);
-  const [hands, setHands] = useState(false);
-  const state = st?.state ?? "unknown";
+  const s = a.state.state;
   const signIn = async () => {
-    setBusy("in");
+    setBusy(true);
     setError(null);
     setNote(null);
     try {
-      const r = await api.accountSignIn(slug, a.id);
-      if (r.started) setSt({ ...(st ?? { message: "", checked_at: null, signed_in_at: null }), state: "checking", message: "" });
-      else if (r.note) setNote(sentence(r.note) + ".");
+      setNote(await signInNow(slug, a));
       onChange();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
+  const tail = (
+    <>
+      {note && <p className="muted sm">{note}</p>}
+      {error && <p className="err sm">{error}</p>}
+    </>
+  );
+  if (s === "signed_out")
+    return (
+      <div className="acx-fix">
+        <p className="muted sm">{a.state.says ? `${sentence(a.state.says)}.` : "Signed out."}</p>
+        <div className="acts">
+          {a.has_session && !signsInByHand(a) ? (
+            <button className="btn p sm" disabled={busy} onClick={() => void signIn()}>
+              {busy ? <Loader2 size={13} className="spin" /> : <LogIn size={13} />} Sign in
+            </button>
+          ) : a.has_session && a.live_view ? (
+            <button className="btn p sm" onClick={onHands}>
+              <Hand size={13} /> Sign in in the live view
+            </button>
+          ) : (
+            <AccountKeys slug={slug} a={a} onChange={onChange} />
+          )}
+        </div>
+        {tail}
+      </div>
+    );
+  if (s === "needs_hand")
+    return (
+      <div className="acx-hand">
+        <p>
+          {a.session?.message ? `${sentence(a.session.message)}. ` : ""}Finish the sign-in in the live view.
+        </p>
+        <div className="acts">
+          {a.live_view && (
+            <button className="btn p sm" onClick={onHands}>
+              <Hand size={13} /> Take the controls
+            </button>
+          )}
+          {!signsInByHand(a) && (
+            <button className="btn t sm" disabled={busy} onClick={() => void signIn()}>
+              {busy ? <Loader2 size={13} className="spin" /> : <LogIn size={13} />} Try again
+            </button>
+          )}
+        </div>
+        {tail}
+      </div>
+    );
+  if (s === "missing_keys")
+    return (
+      <div className="acx-fix">
+        <p className="muted sm">{a.signed_in ? "Signed in. One more step:" : "Sign in, or enter its keys:"}</p>
+        <AccountKeys slug={slug} a={a} only={a.signed_in ? "missing" : undefined} onChange={onChange} />
+      </div>
+    );
+  if (s === "needs_program")
+    return (
+      <div className="acx-fix">
+        <p className="muted sm">
+          {a.state.says ? `${sentence(a.state.says)}.` : "It needs a program on this computer."}{" "}
+          {a.used_by?.[0] && <Link to={`/p/${slug}/abilities#ability=${encodeURIComponent(a.used_by[0].id)}`}>Install it</Link>}
+        </p>
+      </div>
+    );
+  return null;
+}
+
+/** Signed in since when, the live view, and Sign out, for an account on a hosted program. */
+export function SessionBar({ slug, a, onHands, onChange }: { slug: string; a: Account; onHands: () => void; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  if (!a.has_session) return null;
+  const st = a.session;
   const signOut = async () => {
-    setBusy("out");
+    setBusy(true);
     setError(null);
     try {
-      const r = await api.accountSignOut(slug, a.id);
-      setSt(r.session);
+      await api.accountSignOut(slug, a.id);
       setConfirm(false);
       onChange();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
-  if (!a.has_session || !a.ready) return null;
   return (
     <>
-      {state === "needs_hand" && (
-        <div className="acx-hand">
-          <p>
-            {st?.message ? `${sentence(st.message)}. ` : ""}Finish the sign-in in the live view.
-          </p>
-          {a.live_view && (
-            <div className="acts">
-              <button className="btn p sm" onClick={() => setHands(true)}>
-                <Hand size={13} /> Take the controls
-              </button>
-            </div>
-          )}
-        </div>
-      )}
       <div className="acx-session">
-        {state !== "signed_in" && state !== "checking" && (
-          <button className={`btn ${state === "needs_hand" || signsInByHand(a) ? "t" : "g"} sm`} disabled={!!busy} onClick={() => void signIn()} title={signsInByHand(a) ? "See whether the browser is still signed in" : undefined}>
-            {busy === "in" ? <Loader2 size={13} className="spin" /> : <LogIn size={13} />} {signsInByHand(a) ? "Check the sign-in" : state === "needs_hand" ? "Try again" : "Sign in"}
-          </button>
-        )}
-        {state !== "signed_in" && state !== "needs_hand" && signsInByHand(a) && a.live_view && (
-          <button className="btn g sm" onClick={() => setHands(true)}>
-            <Hand size={13} /> Sign in in the live view
-          </button>
-        )}
-        {state === "signed_in" && st?.signed_in_at && <span className="muted sm">Signed in {ago(st.signed_in_at)}{st.checked_at ? `, checked ${ago(st.checked_at)}` : ""}.</span>}
-        {state === "checking" && (
+        {a.state.state === "ready" && st?.signed_in_at ? (
           <span className="muted sm">
-            <Loader2 size={12} className="spin" /> Checking the sign-in…
+            Signed in {ago(st.signed_in_at)}
+            {st.checked_at ? `, checked ${ago(st.checked_at)}` : ""}.
           </span>
+        ) : (
+          <span className="muted sm">{stateChip(a.state).text}.</span>
         )}
         <span className="grow" />
-        {state === "signed_in" && a.live_view && (
-          <button className="btn t sm" onClick={() => setHands(true)} title="See what the browser shows and drive it">
+        {a.live_view && (
+          <button className="btn t sm" onClick={onHands} title="See what the browser shows and drive it">
             <Hand size={13} /> Live view
           </button>
         )}
-        {state !== "unknown" && state !== "checking" && state !== "signed_out" &&
+        {a.state.state !== "signed_out" &&
           (confirm ? (
             <span className="acc-confirm">
               <span className="muted sm">Sign out and forget what the browser kept?</span>
-              <button className="btn t sm bad" disabled={!!busy} onClick={() => void signOut()}>
-                {busy === "out" ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Sign out
+              <button className="btn t sm bad" disabled={busy} onClick={() => void signOut()}>
+                {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Sign out
               </button>
               <button className="btn t sm" onClick={() => setConfirm(false)}>
                 Keep
@@ -783,9 +821,7 @@ export function SessionBar({ slug, a, onChange }: { slug: string; a: Account; on
             </button>
           ))}
       </div>
-      {note && <p className="muted sm">{note}</p>}
       {error && <p className="err sm">{error}</p>}
-      {hands && <Hands slug={slug} account={a.id} name={accountIdentity(a) || accountService(a).name} startUrl={startUrlOf(a.identity, a.destination_text)} onClose={(signedIn) => (setHands(false), signedIn && setSt({ ...(st ?? { message: "", checked_at: null, signed_in_at: null }), state: "checking", message: "" }), onChange())} />}
     </>
   );
 }
@@ -797,19 +833,19 @@ const LOGIN_FIELDS: { key: (typeof LOGIN_KEYS)[number]; label: string; help?: st
 ];
 
 /**
- * Where the account's password is. Now only "Saved in KIQR": a user name, a
- * password and an optional one-time code secret, saved to the account's own
- * keys and never shown again (dots say which are there).
+ * A login saved in KIQR: a user name, a password and an optional one-time
+ * code secret, saved to the account's own keys and never shown again (dots
+ * say which are there).
  */
-export function LoginEditor({ slug, a, onSaved, onChange, ask = true }: { slug: string; a: Account; onSaved?: () => void; onChange: () => void; /** Ask "Where's your password?" (the wizard asks it in its title). */ ask?: boolean }) {
+export function LoginEditor({ slug, a, onSaved, onChange }: { slug: string; a: Account; onSaved?: () => void; onChange: () => void }) {
   const set = new Set(a.login_set ?? []);
-  const saved = a.login?.store === "kiqr";
+  const saved = set.has("LOGIN_USERNAME") && set.has("LOGIN_PASSWORD");
   const [editing, setEditing] = useState(!saved);
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
-  useEffect(() => setEditing(a.login?.store !== "kiqr"), [a.login?.store]);
+  useEffect(() => setEditing(!saved), [saved]);
   if (signsInByHand(a)) return <p className="muted sm">This site is signed in by hand in the live view; the browser keeps it.</p>;
   const has = (k: string) => set.has(k) || !!(values[k] ?? "").trim();
   const ok = has("LOGIN_USERNAME") && has("LOGIN_PASSWORD") && LOGIN_FIELDS.some((f) => (values[f.key] ?? "").trim());
@@ -822,7 +858,6 @@ export function LoginEditor({ slug, a, onSaved, onChange, ask = true }: { slug: 
         // A password is kept as typed; the rest without stray spaces.
         if (v.trim()) await api.setAccountSecret(slug, a.id, f.key, f.key === "LOGIN_PASSWORD" ? v : v.trim());
       }
-      await api.updateAccount(slug, a.id, { login: { store: "kiqr" } });
       setValues({});
       setEditing(false);
       onChange();
@@ -838,7 +873,6 @@ export function LoginEditor({ slug, a, onSaved, onChange, ask = true }: { slug: 
     setError(null);
     try {
       for (const k of LOGIN_KEYS) await api.setAccountSecret(slug, a.id, k, "");
-      await api.updateAccount(slug, a.id, { login: { store: "" } });
       setValues({});
       setConfirm(false);
       setEditing(true);
@@ -851,16 +885,6 @@ export function LoginEditor({ slug, a, onSaved, onChange, ask = true }: { slug: 
   };
   return (
     <div className="acx-login">
-      {ask && (
-        <>
-          <p className="q">Where's your password?</p>
-          <div className="seg" role="radiogroup" aria-label="Where the password is">
-            <button role="radio" aria-checked className="on auto">
-              <KeyRound size={12} /> Saved in KIQR
-            </button>
-          </div>
-        </>
-      )}
       {saved && !editing ? (
         <>
           {LOGIN_FIELDS.map((f) => (
@@ -924,24 +948,20 @@ export function LoginEditor({ slug, a, onSaved, onChange, ask = true }: { slug: 
 // ---- The card
 
 /**
- * One account: the service and its identity, whether it works, one line for
- * what Seemo may do with one switch, its places, and Details (the full
- * permissions, how it connects, activity, rename, default, disconnect).
+ * One account: the service and who it is, its state with what fixes it, one
+ * line for what Seemo may do with one switch, where it reaches, and Details
+ * (the full permissions, used by, where its secrets are kept, keys,
+ * activity, rename, default, disconnect).
  */
-export function AccountCard({ slug, a, lists, several, highlight, onChange }: { slug: string; a: Account; lists: MailList[]; several: boolean; highlight?: boolean; onChange: () => void }) {
+export function AccountCard({ slug, a, several, highlight, onChange }: { slug: string; a: Account; several: boolean; highlight?: boolean; onChange: () => void }) {
   const svc = accountService(a);
   const Icon = serviceIcon(svc.icon, svc.group);
-  const status = accountStatus(a);
-  const [session] = useSession(slug, a);
-  const chip = a.has_session && a.ready ? sessionChip(session) : null;
-  const identity = accountIdentity(a, lists);
+  const identity = accountIdentity(a);
   const [details, setDetails] = useState(false);
-  const [keys, setKeys] = useState(!a.ready);
   const [naming, setNaming] = useState(false);
-  // The name field starts on the user's own name, empty when the daemon named it after the service.
-  const own = ownLabel(a);
-  const [name, setName] = useState(own ? a.label : "");
+  const [name, setName] = useState(a.label_set ? a.label : "");
   const [confirm, setConfirm] = useState(false);
+  const [hands, setHands] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [brokenAvatar, setBrokenAvatar] = useState(false);
@@ -962,8 +982,9 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
     }
   };
   const rename = () => name.trim() && void run(() => api.updateAccount(slug, a.id, { label: name.trim() })).then(() => setNaming(false));
+  const ready = a.state.ready;
   return (
-    <motion.div ref={ref} layout className={`pcard acx ${a.ready ? "" : "off"} ${highlight ? "hi" : ""}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+    <motion.div ref={ref} layout className={`pcard acx ${ready ? "" : "off"} ${highlight ? "hi" : ""}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
       <div className="acx-head">
         <span className="ic">{a.avatar && !brokenAvatar ? <img src={a.avatar} alt="" onError={() => setBrokenAvatar(true)} /> : <Icon size={17} />}</span>
         <div className="min0">
@@ -974,23 +995,19 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
               <button className="btn t sm" disabled={busy || !name.trim()} onClick={rename} aria-label="Save the name">
                 <Check size={13} />
               </button>
-              <button className="btn t sm" onClick={() => (setNaming(false), setName(own ? a.label : ""))} aria-label="Keep the name">
+              <button className="btn t sm" onClick={() => (setNaming(false), setName(a.label_set ? a.label : ""))} aria-label="Keep the name">
                 <X size={13} />
               </button>
             </span>
           ) : (
-            identity && <p className="who" title={identity}>{identity}</p>
+            identity && (
+              <p className="who" title={a.identity && a.identity !== identity ? `${identity} · ${a.identity}` : identity}>
+                {identity}
+              </p>
+            )
           )}
         </div>
-        {chip ? (
-          <span className={`chip sm ${chip.cls}`} title={session?.state === "needs_hand" && session.message ? sentence(session.message) : undefined}>
-            {chip.spin ? <Loader2 size={11} className="spin" /> : <b />} {chip.text}
-          </span>
-        ) : (
-          <span className={`chip sm ${status.tone}`}>
-            <b /> {status.text}
-          </span>
-        )}
+        <StateChip s={a.state} />
         {several && a.default && (
           <span className="chip sm acc-def" title="Seemo uses this one when it does not name another">
             <Star size={11} /> default
@@ -998,21 +1015,15 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
         )}
       </div>
 
+      <StateFix slug={slug} a={a} onHands={() => setHands(true)} onChange={onChange} />
+
       <div className="acx-say">
         <p>{permissionSummary(a)}.</p>
         <ActOnOwn slug={slug} a={a} onChange={onChange} />
       </div>
 
-      <Places slug={slug} a={a} lists={lists} onChange={onChange} />
-      <SessionBar slug={slug} a={a} onChange={onChange} />
+      <Reaches slug={slug} a={a} />
       <Learning slug={slug} a={a} onChange={onChange} />
-
-      {!a.ready && (
-        <div className="acx-fix">
-          <p className="muted sm">{a.error ? `It cannot be used: ${a.error}.` : a.signed_in ? "Signed in. One more step:" : "Not connected yet. Sign in, or enter its keys:"}</p>
-          {!a.error && <AccountKeys slug={slug} a={a} only={a.signed_in ? "missing" : undefined} onChange={onChange} />}
-        </div>
-      )}
 
       <button className="acx-more" onClick={() => setDetails((d) => !d)} aria-expanded={details}>
         {details ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Details
@@ -1024,40 +1035,22 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
               <p className="cap">What Seemo may do here</p>
               <PermissionMatrix slug={slug} a={a} onChange={onChange} />
             </section>
-            {(a.publishers?.length ?? 0) > 1 && (
+            {(a.used_by?.length ?? 0) > 0 && (
               <section>
-                <p className="cap">Who publishes</p>
-                <label className="acx-pub">
-                  <span className="muted sm">Several abilities can publish here; this one does:</span>
-                  <FieldInput options={a.publishers!.map((p) => p.id)} labels={Object.fromEntries(a.publishers!.map((p) => [p.id, p.name]))} value={a.publisher ?? ""} onChange={(v) => void run(() => api.updateAccount(slug, a.id, { publisher: v }))} ariaLabel="The ability that publishes here" />
-                </label>
-              </section>
-            )}
-            {a.has_session && (
-              <section>
-                <p className="cap">Login</p>
-                <LoginEditor slug={slug} a={a} onChange={onChange} />
+                <p className="cap">Used by</p>
+                <UsedBy a={a} slug={slug} />
               </section>
             )}
             <section>
-              <p className="cap">How it connects</p>
-              <UsedBy a={a} slug={slug} />
-              {a.ready && !keys ? (
-                <button className="lnk-btn" onClick={() => setKeys(true)}>
-                  Keys and sign-in
-                </button>
-              ) : a.ready ? (
-                <AccountKeys slug={slug} a={a} onChange={onChange} />
-              ) : (
-                <p className="muted sm">See above.</p>
-              )}
+              <p className="cap">Sign-in and keys</p>
+              <SecretsLine a={a} />
+              {a.has_session && <SessionBar slug={slug} a={a} onHands={() => setHands(true)} onChange={onChange} />}
+              {a.has_session && (a.secrets?.in_kiqr ?? true) && <LoginEditor slug={slug} a={a} onChange={onChange} />}
+              {a.state.state !== "missing_keys" && (a.auth.length > 0 || a.connect) && <AccountKeys slug={slug} a={a} onChange={onChange} />}
             </section>
-            {a.ready && (
+            {ready && (
               <section>
                 <p className="cap">Activity</p>
-                <p className="muted sm">
-                  {a.publications} published{a.last_published ? `, last ${ago(a.last_published)}` : ""}.
-                </p>
                 <ActivityLog slug={slug} a={a} />
               </section>
             )}
@@ -1093,6 +1086,7 @@ export function AccountCard({ slug, a, lists, several, highlight, onChange }: { 
         )}
       </AnimatePresence>
       {error && <p className="err sm">{error}</p>}
+      {hands && <Hands slug={slug} account={a.id} name={identity || svc.name} startUrl={startUrlOf(a.start_url, a.identity)} onClose={() => (setHands(false), onChange())} />}
     </motion.div>
   );
 }
@@ -1102,15 +1096,13 @@ export function ServiceAccounts({ slug, ability, onChange }: { slug: string; abi
   const svc = serviceOf(ability);
   const [adding, setAdding] = useState(false);
   const [list, setList] = useState<Account[] | null>(null);
-  const [lists, setLists] = useState<MailList[]>([]);
   const load = () =>
     api
-      .accounts(slug)
-      .then((r) => setList(r.connections.filter((c) => accountService(c).id === svc.id || c.ability === ability.id)))
+      .accounts(slug, svc.id)
+      .then((r) => setList(r.accounts.filter((c) => accountService(c).id === svc.id)))
       .catch(() => setList([]));
   useEffect(() => {
     void load();
-    api.lists(slug).then((r) => setLists(r.lists), () => setLists([]));
   }, [slug, svc.id]);
   useEvents(slug, (e) => ACCOUNT_EVENTS.includes(e.type) && void load(), { demo: false });
   return (
@@ -1119,7 +1111,7 @@ export function ServiceAccounts({ slug, ability, onChange }: { slug: string; abi
         {ability.name} works through your {svc.name} account. Every ability of {svc.name} shares it: sign in once, and choose there what Seemo may do.
       </p>
       {list === null && <Loader2 size={14} className="spin" />}
-      {list?.map((a) => <AccountCard key={a.id} slug={slug} a={a} lists={lists} several={list.length > 1} onChange={load} />)}
+      {list?.map((a) => <AccountCard key={a.id} slug={slug} a={a} several={list.length > 1} onChange={load} />)}
       {list && list.length === 0 && !adding && <p className="muted sm">No {svc.name} account in this project yet.</p>}
       {adding ? (
         <ConnectService slug={slug} ability={ability} onInstalled={onChange} onCancel={() => setAdding(false)} onDone={() => (setAdding(false), void load(), onChange())} />

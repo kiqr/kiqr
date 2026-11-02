@@ -241,7 +241,7 @@ function Row({ slug, a, onOpen, onChange }: { slug: string; a: Ability; onOpen: 
                   <KeyRound size={11} /> key
                 </button>
               ) : null}
-              {a.channels.length > 0 && (
+              {(a.publishes_to ?? []).length > 0 && (
                 <span className="part">
                   <Send size={11} /> publishes
                 </span>

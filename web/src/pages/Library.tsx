@@ -34,6 +34,9 @@ export function LibraryPage() {
   // Cards without an image take the brand's accent, so the grid still looks like the business.
   const kit = useAsync(() => api.brandKit(slug).catch(() => null), [slug]);
   const brand = useAsync(() => api.brand(slug), [slug]);
+  // The Audience entries' names, for where each asset went.
+  const audience = useAsync(() => api.audience(slug).catch(() => ({ entries: [], kinds: [] })), [slug]);
+  const placeName = (id?: string) => audience.data?.entries.find((e) => e.id === id)?.label ?? id;
   const accent = kit.data?.palette?.accent;
   const [status, setStatus] = useState<AssetStatus | null>(null);
   // Posts open in a modal over the grid; the page behind stays where it was.
@@ -97,7 +100,7 @@ export function LibraryPage() {
       ) : (
         <div className="lib-grid">
           {list.map((a, i) => (
-            <AssetCard key={`${a.type}/${a.id}`} slug={slug} a={a} t={types.find((x) => x.id === a.type)} i={i} showType={!t} accent={accent} onOpen={types.find((x) => x.id === a.type)?.preview === "post" ? () => setOpen({ type: a.type, id: a.id }) : undefined} />
+            <AssetCard key={`${a.type}/${a.id}`} slug={slug} a={a} whereTo={placeName} t={types.find((x) => x.id === a.type)} i={i} showType={!t} accent={accent} onOpen={types.find((x) => x.id === a.type)?.preview === "post" ? () => setOpen({ type: a.type, id: a.id }) : undefined} />
           ))}
         </div>
       )}
@@ -173,7 +176,7 @@ function TypeStrip({ slug, types, assets }: { slug: string; types: AssetType[]; 
   );
 }
 
-function AssetCard({ slug, a, t, i, showType, accent, onOpen }: { slug: string; a: Asset; t?: AssetType; i: number; showType: boolean; accent?: string; onOpen?: () => void }) {
+function AssetCard({ slug, a, whereTo, t, i, showType, accent, onOpen }: { slug: string; a: Asset; whereTo: (audience?: string) => string | undefined; t?: AssetType; i: number; showType: boolean; accent?: string; onOpen?: () => void }) {
   const Icon = assetIcon(t?.icon);
   const visual = a.files.find((f) => IMAGE.test(f.path));
   const src = visual ? api.assetFile(slug, a, visual.path) : "";
@@ -206,7 +209,7 @@ function AssetCard({ slug, a, t, i, showType, accent, onOpen }: { slug: string; 
             <StatusChip a={a} />
             {a.publications.map((p, k) => (
               <span key={k} className="chip ok" title={p.account}>
-                <Send size={11} /> {p.connector}
+                <Send size={11} /> {p.to ?? whereTo(p.audience) ?? p.account}
               </span>
             ))}
             <span className="when">

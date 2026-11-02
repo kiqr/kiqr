@@ -1,9 +1,9 @@
 import { useId } from "react";
 
 // One configuration field: a select when it has a fixed set of values (a
-// key's `options`, a destination's `enum`), free text otherwise. Every form
-// that sets up an ability or a channel goes through it, so a choice is never
-// typed by hand.
+// key's `options`, a target field's `enum`), free text otherwise. Every form
+// that sets up an ability, an account or the Audience goes through it, so a
+// choice is never typed by hand.
 type Props = {
   value: string;
   onChange: (v: string) => void;
@@ -20,9 +20,11 @@ type Props = {
   ariaLabel?: string;
   /** A long list read from a service (every repository): typed to search, and any value may be typed. */
   search?: boolean;
+  /** Show the labels alone, never the value beside them (an account's id). */
+  plain?: boolean;
 };
 
-export function FieldInput({ value, onChange, options, labels, placeholder, secret, mono, optional, onEnter, ariaLabel, search }: Props) {
+export function FieldInput({ value, onChange, options, labels, placeholder, secret, mono, optional, onEnter, ariaLabel, search, plain }: Props) {
   const listId = useId();
   if (search && options && options.length > 0)
     return (
@@ -56,7 +58,7 @@ export function FieldInput({ value, onChange, options, labels, placeholder, secr
         </option>
         {options.map((o) => (
           <option key={o} value={o}>
-            {labels?.[o] && labels[o] !== o ? `${labels[o]} (${o})` : o}
+            {labels?.[o] && labels[o] !== o ? (plain ? labels[o] : `${labels[o]} (${o})`) : o}
           </option>
         ))}
       </select>

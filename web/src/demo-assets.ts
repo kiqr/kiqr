@@ -1,5 +1,5 @@
 // The library the demo shows for unblockingapi.com: a few things Seemo has made from the brief.
-import type { Asset, AssetType, NewAsset } from "./api";
+import type { Asset, AssetType, NewAsset, Spot } from "./api";
 import { demoBrand } from "./demo-brief";
 
 const slot = (role: string, ...accept: string[]) => ({ role, accept });
@@ -17,6 +17,7 @@ export const demoTypes: AssetType[] = [
 ];
 
 const ago = (h: number) => new Date(Date.now() - h * 36e5).toISOString();
+const ahead = (h: number) => new Date(Date.now() + h * 36e5).toISOString();
 const file = (role: string, path: string, bytes = 2048) => ({ role, path, bytes, sha256: "" });
 const img = (i: number) => demoBrand.images[i % demoBrand.images.length].url;
 
@@ -47,6 +48,7 @@ let assets: Asset[] = [
     updated_at: ago(2),
     files: [file("body", "article.md", 9800), file("cover", "cover.png", 182000)],
     source: { gap: "Scraping property portals" },
+    target: "blog",
     publications: [],
   },
   {
@@ -59,7 +61,8 @@ let assets: Asset[] = [
     created: { at: ago(80), by: "user" },
     updated_at: ago(70),
     files: [file("body", "post.md", 380), file("media", "card.png", 120000)],
-    publications: [{ connector: "x", account: "@unblockingapi", url: "https://x.com/unblockingapi", at: ago(70) }],
+    target: "x-unblockingapi",
+    publications: [{ audience: "x-unblockingapi", account: "x-unblockingapi", ability: "x-browser", url: "https://x.com/unblockingapi", at: ago(70) }],
   },
   {
     id: "its-a-javascript-shell",
@@ -70,6 +73,8 @@ let assets: Asset[] = [
     created: { at: ago(20), by: "task:weekly-meme" },
     updated_at: ago(20),
     files: [file("image", "meme.png", 240000), file("caption", "caption.md", 80)],
+    target: "x-unblockingapi",
+    publish_at: ahead(26),
     publications: [],
   },
   {
@@ -81,7 +86,8 @@ let assets: Asset[] = [
     created: { at: ago(26), by: "task:reddit-replies" },
     updated_at: ago(25),
     files: [file("body", "reply.md", 420)],
-    publications: [{ connector: "reddit", account: "u/unblockingapi", url: "https://www.reddit.com/r/webscraping/", at: ago(25), run: "reddit-replies/2026-10-22T10-00" }],
+    target: "r-webscraping",
+    publications: [{ audience: "r-webscraping", account: "reddit-team", ability: "reddit-browser", url: "https://www.reddit.com/r/webscraping/", at: ago(25), run: "reddit-replies/2026-10-22T10-00" }],
   },
   {
     id: "residential-vs-datacenter-proxies",
@@ -105,6 +111,7 @@ let assets: Asset[] = [
     created: { at: ago(12), by: "user" },
     updated_at: ago(12),
     files: [file("body", "post.md", 120)],
+    target: "x-unblockingapi",
     publications: [],
   },
   {
@@ -127,6 +134,7 @@ let assets: Asset[] = [
     created: { at: ago(50), by: "user" },
     updated_at: ago(48),
     files: [file("image", "card.png", 140000)],
+    target: "x-unblockingapi",
     publications: [],
   },
   {
@@ -159,6 +167,14 @@ export function demoAssetFile(a: Pick<Asset, "type" | "id">, name: string) {
 
 export function demoAssetText(a: Pick<Asset, "type" | "id">, name: string) {
   return texts[`${a.type}/${a.id}/${name}`] ?? "";
+}
+
+/** Where a publish goes: an Audience entry, or a spot that joins the Audience with the yes. */
+export type DemoTarget = { target: string; label: string; account: string; ability: string; url: string | null };
+/** The demo's Audience lives with Seemo's demo (demo-chat), which hands over how to find a target and how to tell listeners. */
+let targets: { resolve: (where: { target?: string; spot?: Spot }) => DemoTarget | null; emit: (e: Record<string, unknown>) => void } = { resolve: () => null, emit: () => {} };
+export function setDemoTargets(t: typeof targets) {
+  targets = t;
 }
 
 export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -204,20 +220,38 @@ export function demoAssetRequest<T>(path: string, init?: RequestInit): Promise<T
   // Status follows the facts, as in the daemon.
   const settle = (patch: Partial<Asset>): Asset => {
     const n: Asset = { ...found, ...patch, updated_at: ago(0) };
-    n.status = n.archived ? "archived" : n.publications.length ? "published" : n.channel && n.publish_at ? "scheduled" : n.channel ? "ready" : "draft";
+    n.status = n.archived ? "archived" : n.publications.length ? "published" : n.target && n.publish_at ? "scheduled" : n.target ? "ready" : "draft";
     assets = assets.map((a) => (a.type === type && a.id === id ? n : a));
     return n;
   };
   const body = init?.body ? JSON.parse(String(init.body)) : {};
-  if (action === "approve") return ok(settle({ channel: body.channel, place: body.place || null, publish_error: null }));
-  if (action === "schedule" && init?.method === "DELETE") return ok(settle({ publish_at: null, publish_error: null }));
-  if (action === "schedule") return ok(settle({ channel: body.channel || found.channel, place: body.place || found.place || null, publish_at: body.at, publish_error: null }));
-  if (action === "unpublish") return ok(settle({ publications: [] }));
-  if (action === "publish") {
-    const channel = body.channel || found.channel || "hello-mail";
-    const place = body.place || found.place || null;
-    settle({ channel, place, publish_at: null, publish_error: null, publications: [...found.publications, { connector: channel, place, account: "hello@unblockingapi.com", at: ago(0) }] });
-    return ok({ published: true, url: null, detail: "sent", channel_label: "hello@unblockingapi.com" });
+  // Where: the entry or spot given, else the one it was approved for.
+  const where = (): DemoTarget | null => (body.target || body.spot ? targets.resolve({ target: body.target, spot: body.spot }) : found.target ? targets.resolve({ target: found.target }) : null);
+  const nowhere = () => Promise.reject(new Error("say where it goes: somewhere in the Audience, or a new spot"));
+  try {
+    if (action === "approve") {
+      const t = where();
+      if (!t) return nowhere();
+      const n = settle({ target: t.target, publish_error: null });
+      targets.emit({ type: "asset_approved", asset: { type, id }, target: t.target, label: t.label });
+      return ok(n);
+    }
+    if (action === "schedule" && init?.method === "DELETE") return ok(settle({ publish_at: null, publish_error: null }));
+    if (action === "schedule") {
+      const t = where();
+      if (!t) return nowhere();
+      return ok(settle({ target: t.target, publish_at: body.at, publish_error: null }));
+    }
+    if (action === "unpublish") return ok(settle({ publications: [] }));
+    if (action === "publish") {
+      const t = where();
+      if (!t) return nowhere();
+      settle({ target: t.target, publish_at: null, publish_error: null, publications: [...found.publications, { audience: t.target, account: t.account, ability: t.ability, url: t.url, at: ago(0) }] });
+      targets.emit({ type: "asset_published", asset: { type, id }, audience: t.target, account: t.account, url: t.url });
+      return ok({ published: true, url: t.url, detail: "sent", target: t.target, target_label: t.label });
+    }
+  } catch (e) {
+    return Promise.reject(e);
   }
   if (init?.method === "PATCH") return ok(settle(body));
   if (init?.method === "PUT") return ok(settle(JSON.parse(String(init.body))));

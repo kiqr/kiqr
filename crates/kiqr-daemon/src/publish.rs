@@ -147,7 +147,7 @@ pub(crate) async fn resolve(app: &App, slug: &str, named: &str, spot: Option<&Ne
     }
     let st = crate::accounts::state(app, slug, &account).await;
     if !st.ready() {
-        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{}; the user sees to it under Setup → Accounts", crate::accounts::state_view(&account, &st)["says"].as_str().unwrap_or("not ready"))));
+        return Err(ApiError(StatusCode::PRECONDITION_FAILED, format!("{}; the user sees to it under Setup → Accounts", crate::accounts::state_text(&account, &st))));
     }
     Ok(Target { account, entry, new })
 }

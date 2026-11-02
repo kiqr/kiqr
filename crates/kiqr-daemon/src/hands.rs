@@ -170,7 +170,7 @@ async fn start_route(State(app): State<App>, Path((slug, id)): Path<(String, Str
     }
     .ok_or_else(|| bad(format!("{} has no live view", c.label)))?;
     if let st @ (kiqr_core::accounts::State::MissingKeys { .. } | kiqr_core::accounts::State::NeedsProgram { .. }) = crate::accounts::state(&app, &slug, &c).await {
-        return Err(bad(crate::accounts::state_view(&c, &st)["says"].as_str().unwrap_or("not ready").to_string()));
+        return Err(bad(crate::accounts::state_text(&c, &st)));
     }
     // One session per account.
     let already: Option<String> = OPEN.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(_, h)| h.slug == slug && h.connection == c.id).map(|(k, _)| k.clone());

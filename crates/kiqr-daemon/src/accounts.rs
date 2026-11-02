@@ -88,7 +88,8 @@ pub fn state_with(app: &App, slug: &str, c: &Account, ms: &[Manifest]) -> accoun
             }
         }
         if m.transport == Transport::Mcp && !crate::ext::program_found(app, Some(slug), m) {
-            let p = if m.program.is_empty() { m.command.clone() } else { m.program.clone() };
+            // The program by the name the user knows it by: the ability it belongs to ("Browse with a real browser").
+            let p = crate::ext::program_of_sync(app, Some(slug), m).filter(|_| !m.program.is_empty()).map(|p| p.name).unwrap_or_else(|| if m.program.is_empty() { m.command.clone() } else { m.program.clone() });
             if !facts.missing_programs.contains(&p) {
                 facts.missing_programs.push(p);
             }
@@ -101,20 +102,29 @@ pub fn state_with(app: &App, slug: &str, c: &Account, ms: &[Manifest]) -> accoun
     facts.state()
 }
 
-/// The account's state as the UI and Seemo read it: the word, the details, and a sentence.
-pub fn state_view(c: &Account, s: &accounts::State) -> Value {
+/// The account's state as the UI reads it: the word, the details, and a
+/// sentence that stands under the account's name ("Signed out").
+pub fn state_view(_c: &Account, s: &accounts::State) -> Value {
     let say = match s {
-        accounts::State::MissingKeys { keys } => format!("{} needs {}", c.label, keys.join(", ")),
-        accounts::State::NeedsProgram { programs } => format!("{} needs {} installed", c.label, programs.join(", ")),
-        accounts::State::SignedOut => format!("{} is signed out", c.label),
-        accounts::State::NeedsHand => format!("{} needs a hand to sign in", c.label),
-        accounts::State::Checking => format!("{} is signing in", c.label),
-        accounts::State::Ready => format!("{} is ready", c.label),
+        accounts::State::MissingKeys { keys } => format!("Missing {}", keys.join(", ")),
+        accounts::State::NeedsProgram { programs } => format!("Needs a program installed first: {}", programs.join(", ")),
+        accounts::State::SignedOut => "Signed out".to_string(),
+        accounts::State::NeedsHand => "Needs a hand to sign in".to_string(),
+        accounts::State::Checking => "Signing in".to_string(),
+        accounts::State::Ready => "Ready".to_string(),
     };
     let mut v = serde_json::to_value(s).unwrap_or(Value::Null);
     v["ready"] = json!(s.ready());
     v["says"] = json!(say);
     v
+}
+
+/// The state in a sentence that names the account, for errors and Seemo: "u/acme_dev: signed out".
+pub fn state_text(c: &Account, s: &accounts::State) -> String {
+    let says = state_view(c, s)["says"].as_str().unwrap_or("not ready").to_string();
+    let mut ch = says.chars();
+    let lower = ch.next().map(|f| f.to_lowercase().collect::<String>() + ch.as_str()).unwrap_or_default();
+    format!("{}: {lower}", c.label)
 }
 
 /// One account for the UI and for Seemo: never its values, only which are set.

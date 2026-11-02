@@ -14,7 +14,7 @@ export function iconFor(a: Ability): LucideIcon {
   if (a.icon) return assetIcon(a.icon);
   const first = a.provides[0]?.ability;
   if (first && ABILITY_ICON[first]) return ABILITY_ICON[first];
-  if (a.channels.length) return Send;
+  if ((a.publishes_to ?? []).length) return Send;
   if (a.runs_program) return Terminal;
   if (a.transport === "instructions") return BookOpen;
   return Sparkles;
@@ -35,10 +35,10 @@ export function serviceIcon(icon?: string, group?: string): LucideIcon {
   return (group && GROUP_ICON[group]) || Plug;
 }
 
-/** An ability that works through an account of a service: one in a group of the connect grid (the shipped browser is core and still one), or anything not core that takes keys, a sign-in, a kind, a source or places. */
+/** An ability that works through an account of a service: one in a group of the connect grid (the shipped browser is core and still one), or anything not core that takes keys, a sign-in, a kind, a source or settings. */
 export function isService(a: Ability): boolean {
-  if (a.service_card?.group) return true;
-  return !a.core && (a.auth.length > 0 || !!a.connect || a.channels.length > 0 || a.sources.length > 0 || Object.keys(a.places ?? {}).length > 0);
+  if (a.service_card?.group || a.service) return true;
+  return !a.core && (a.auth.length > 0 || !!a.connect || (a.publishes_to ?? []).length > 0 || (a.kinds?.length ?? 0) > 0 || a.sources.length > 0 || Object.keys(a.settings ?? {}).length > 0);
 }
 
 /** The ability's mark: its avatar when it has one, else its icon. */
@@ -69,17 +69,20 @@ export function serviceName(a: Ability): string {
   return a.service_card?.name || a.name;
 }
 
-/** The accounts an ability can work through right now: keys complete, and signed in where it signs in. */
+/** The accounts an ability can work through right now, by the one readiness rule. */
 export function workingAccounts(a: Ability): AccountSummary[] {
-  return (a.accounts ?? []).filter((x) => x.works !== false && x.missing.length === 0);
+  return (a.accounts ?? []).filter((x) => (x.works ?? x.state === "ready") && x.missing.length === 0);
 }
 
 /** Why an ability's accounts do not work, in the user's words: "signed out", "needs a hand", "not connected". */
 export function accountTrouble(a: Ability): string {
   const all = a.accounts ?? [];
-  if (all.some((x) => x.session === "needs_hand")) return all.length === 1 ? "needs a hand" : "accounts need a hand";
-  if (all.some((x) => x.session === "signed_out")) return all.length === 1 ? "signed out" : "accounts signed out";
-  return all.length === 1 ? "not connected" : "accounts not connected";
+  const one = all.length === 1;
+  if (all.some((x) => x.state === "needs_hand")) return one ? "needs a hand" : "accounts need a hand";
+  if (all.some((x) => x.state === "signed_out")) return one ? "signed out" : "accounts signed out";
+  if (all.some((x) => x.state === "checking")) return one ? "signing in" : "accounts signing in";
+  if (all.some((x) => x.state === "needs_program")) return one ? "needs a program" : "accounts need a program";
+  return one ? "missing keys" : "accounts missing keys";
 }
 
 /** One phrase for where an ability stands in this project. A service ability stands with its account. */
@@ -112,7 +115,7 @@ export function partsOf(a: Ability, full = false): Part[] {
   const out: Part[] = [];
   if (a.instructions.length) out.push({ icon: BookOpen, label: a.instructions.length === 1 ? "Instructions" : `Instructions, ${a.instructions.length} files`, detail: full ? a.instructions.map((f) => f.label).join(" · ") : undefined });
   if (a.tools > 0) out.push({ icon: Wrench, label: `${a.tools} ${a.tools === 1 ? "thing" : "things"} Seemo can do with it` });
-  if (a.channels.length) out.push({ icon: Send, label: `Publishes to ${a.channels.join(", ")}` });
+  if ((a.publishes_to ?? []).length) out.push({ icon: Send, label: `Publishes to ${(a.publishes_to ?? []).join(", ")}` });
   if (a.sources?.length) out.push({ icon: BarChart3, label: `Reads ${a.sources.join(", ")} into Performance` });
   if (a.provides.length) out.push({ icon: Sparkles, label: a.provides.map((p) => p.label).join(", "), detail: full && a.active_for.length ? `preferred for ${a.active_for.join(", ")}` : undefined });
   if (a.core && !out.length) out.push({ icon: Sparkles, label: "Part of KIQR" });
@@ -159,7 +162,7 @@ export function advancedOf(a: Ability): Part[] {
   return out;
 }
 
-export const RELOAD_ON = ["secret_set", "connect_finished", "sign_in_changed", "connection_saved", "connection_deleted", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];
+export const RELOAD_ON = ["secret_set", "connect_finished", "sign_in_changed", "account_saved", "account_deleted", "account_state_changed", "ability_settings_saved", "extension_installed", "extension_removed", "extension_paused", "ability_saved", "config_changed", "marketplace_refreshed"];
 
 /** Connects with a button instead of keys: its manifest has a sign-in, or KIQR signs in to it. */
 export function oneClick(a: Ability): boolean {

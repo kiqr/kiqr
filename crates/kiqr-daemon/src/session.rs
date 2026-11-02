@@ -629,7 +629,7 @@ async fn signin_route(State(app): State<App>, Path((slug, id)): Path<(String, St
     session_manifest(&app, &slug, &c).await.ok_or_else(|| bad(format!("{} has nothing that signs in", c.label)))?;
     if !can_sign_in(&app, &slug, &c).await {
         let st = crate::accounts::state(&app, &slug, &c).await;
-        return Err(bad(crate::accounts::state_view(&c, &st)["says"].as_str().unwrap_or("not ready").to_string()));
+        return Err(bad(crate::accounts::state_text(&c, &st)));
     }
     let key = format!("session:{slug}/{}", c.id);
     if !app.jobs.write().await.insert(key.clone()) {

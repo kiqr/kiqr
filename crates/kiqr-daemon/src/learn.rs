@@ -75,7 +75,7 @@ pub async fn read_source(app: &App, slug: &str, c: &Account, ex: &Extractor) -> 
     let m = learnable(app, slug, c).await.ok_or_else(|| anyhow::anyhow!("{} has nothing to learn from", c.label))?;
     let st = crate::accounts::state(app, slug, c).await;
     if !st.ready() {
-        anyhow::bail!("{}", crate::accounts::state_view(c, &st)["says"].as_str().unwrap_or("not ready"));
+        anyhow::bail!("{}", crate::accounts::state_text(c, &st));
     }
     let spec = m.learn.clone().unwrap_or_default();
     // Titles and links may name the account's keys (`${GITHUB_REPO}`), never a secret: they are kept in the facts.

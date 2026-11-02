@@ -16,7 +16,7 @@ import "../profile.css";
 import "../chat.css";
 import "../library.css";
 
-export const TODO_EVENTS = ["suggestions_changed", "brand_updated", "extension_installed", "extension_removed", "asset_saved", "asset_deleted", "asset_published", "asset_approved", "asset_unpublished", "approval_requested", "approval_resolved", "chat_deleted", "session_changed", "connection_deleted"];
+export const TODO_EVENTS = ["suggestions_changed", "brand_updated", "extension_installed", "extension_removed", "asset_saved", "asset_deleted", "asset_published", "asset_approved", "asset_unpublished", "approval_requested", "approval_resolved", "chat_deleted", "session_changed", "account_state_changed", "account_deleted", "audience_saved", "audience_deleted"];
 
 export function TodoPage() {
   const { slug = "" } = useParams();
@@ -27,7 +27,7 @@ export function TodoPage() {
   useDemoSeemo(onEvent);
   const d = todo.data;
   // Accounts whose sign-in waits for a person; the field may be missing on an older daemon.
-  const hands: NeedsHand[] = (d?.accounts_needing_hand ?? d?.needs_hand ?? []).filter((x) => x && x.connection);
+  const hands: NeedsHand[] = (d?.accounts_needing_hand ?? d?.needs_hand ?? []).filter((x) => x && x.account);
   // The getting-started steps sit here until every one is done or skipped; the page is "Getting started" until then.
   const [guideDone, setGuideDone] = useState<boolean | undefined>(undefined);
   const starting = guideDone === false;
@@ -88,17 +88,17 @@ export function TodoPage() {
           </h2>
           <ul className="todo-rows">
             {hands.map((h) => (
-              <li key={h.connection} className="todo-row">
-                <Link className="what" to={`/p/${slug}/accounts#account=${encodeURIComponent(h.connection)}`}>
+              <li key={h.account} className="todo-row">
+                <Link className="what" to={`/p/${slug}/accounts#account=${encodeURIComponent(h.account)}`}>
                   <span className="ic">
                     <Hand size={15} />
                   </span>
                   <span className="min0">
-                    <b>{h.label || h.connection} needs a hand to sign in</b>
+                    <b>{h.label || h.account} needs a hand to sign in</b>
                     <small>{h.message ? `${sentence(h.message)}. ` : ""}Finish the sign-in in the live view.</small>
                   </span>
                 </Link>
-                <Link className="btn p sm" to={`/p/${slug}/accounts#hands=${encodeURIComponent(h.connection)}`}>
+                <Link className="btn p sm" to={`/p/${slug}/accounts#hands=${encodeURIComponent(h.account)}`}>
                   <Hand size={13} /> Take the controls
                 </Link>
               </li>

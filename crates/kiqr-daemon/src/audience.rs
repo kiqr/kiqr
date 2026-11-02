@@ -196,7 +196,7 @@ async fn addable(app: &App, slug: &str) -> Vec<Value> {
         }
         seen.push(k.kind.clone());
         let via: Vec<Value> = accounts.iter().filter(|c| c.service == m.service()).map(|c| json!({ "id": c.id, "label": c.label })).collect();
-        out.push(json!({ "kind": k.kind, "label": k.label, "name": k.display_name(), "icon": k.icon, "section": k.section(), "target": k.target, "account_is_target": k.account_is_target, "service": m.service(), "service_name": m.service_card().name, "accounts": via }));
+        out.push(json!({ "kind": k.kind, "label": k.label, "name": k.display_name(), "icon": k.icon, "section": k.section(), "target": k.target, "account_is_target": k.account_is_target, "publishes": k.publishes(), "service": m.service(), "service_name": m.service_card().name, "accounts": via }));
     }
     let mut senders: Vec<Value> = Vec::new();
     for c in &accounts {
