@@ -18,6 +18,7 @@ import { ChatsPage } from "./pages/Chats";
 import { CalendarPage, TasksPage } from "./pages/Tasks";
 import { TodoPage } from "./pages/Todo";
 import { AccountsPage } from "./pages/AccountsPage";
+import { VaultPage } from "./pages/Vault";
 import { ConnectPage } from "./pages/Connect";
 import { AudiencePage } from "./pages/Audience";
 import { PlanPage } from "./pages/Plan";
@@ -60,6 +61,7 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/p/:slug/todo" element={<TodoPage />} />
           <Route path="/p/:slug/skills" element={<Redirect to="abilities" />} />
           <Route path="/p/:slug/abilities" element={<AbilitiesPage />} />
+          <Route path="/p/:slug/vault" element={<VaultPage />} />
           <Route path="/p/:slug/accounts" element={<AccountsPage />} />
           <Route path="/p/:slug/accounts/connect" element={<ConnectPage />} />
           <Route path="/p/:slug/audience" element={<AudiencePage />} />

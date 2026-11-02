@@ -2,6 +2,7 @@
 //! The KIQR daemon: one process that owns `~/.kiqr`, runs crawls and profile
 //! synthesis, serves the HTTP API and SSE events, and serves the web UI.
 
+mod access;
 mod accounts;
 mod agent;
 mod audience;
@@ -31,6 +32,7 @@ mod signins;
 mod smtp;
 mod telemetry;
 mod update;
+mod vault;
 mod web;
 
 use anyhow::Result;
@@ -79,6 +81,8 @@ pub struct App {
     pub updates: Arc<update::Updates>,
     /// Each project's first build, folded from its crawl events.
     pub builds: build::Builds,
+    /// The machine's credentials, encrypted (`kiqr_core::vault`).
+    pub vault: Arc<kiqr_core::vault::Vault>,
 }
 
 impl App {
@@ -151,6 +155,8 @@ pub async fn run(home: Home) -> Result<()> {
         signins: Default::default(),
         updates: Arc::new(update::Updates::new(&exe)),
         builds: Default::default(),
+        // After `.env` is loaded, so a `KIQR_VAULT_KEY` there is read (and dropped) here.
+        vault: Arc::new(kiqr_core::vault::Vault::open(&home)),
     };
     match app.renderer.chrome() {
         Some(c) => tracing::info!("images: SVG via resvg, HTML via {}", c.display()),

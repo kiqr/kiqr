@@ -38,6 +38,28 @@ pub struct Pending {
     callback: String,
     verifier: String,
     created: Instant,
+    /// A sign-in from the Vault ("Sign in with …"): the values become a credential, not an account's.
+    vault: Option<VaultSignIn>,
+}
+
+/// A "Sign in with …" started from the Vault, through kiqr.cloud.
+#[derive(Clone, Debug)]
+pub struct VaultSignIn {
+    pub provider: String,
+    pub name: String,
+    pub domains: Vec<String>,
+    pub scopes: Vec<String>,
+    /// The credential signed in again; none makes a new one.
+    pub credential: Option<String>,
+    pub label: String,
+    pub grant: Vec<GrantTo>,
+}
+
+/// A grant to make once the credential exists: this ability, in this project, may use it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct GrantTo {
+    pub project: String,
+    pub ability: String,
 }
 
 /// Flows waiting, by state; tokens minted for service accounts, by key.
@@ -112,7 +134,7 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
         };
         let mut p = app.connects.pending.lock().await;
         p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
-        p.insert(state.to_string(), Pending { ability: m.id.clone(), account: conn.as_ref().map(|c| c.id.clone()), draft, project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
+        p.insert(state.to_string(), Pending { ability: m.id.clone(), account: conn.as_ref().map(|c| c.id.clone()), draft, project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now(), vault: None });
         return Ok(Json(json!({ "url": url, "callback": true, "relayed": true, "account": conn.as_ref().map(|c| c.id.clone()), "fields": [] })));
     }
     // A service that only calls back over https, and KIQR on plain http: when
@@ -146,7 +168,7 @@ async fn start(State(app): State<App>, Path((slug, ability)): Path<(String, Stri
         let mut p = app.connects.pending.lock().await;
         p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
         if with_callback {
-            p.insert(state, Pending { ability: m.id.clone(), account: conn.as_ref().map(|c| c.id.clone()), draft, project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now() });
+            p.insert(state, Pending { ability: m.id.clone(), account: conn.as_ref().map(|c| c.id.clone()), draft, project: slug.clone(), connect: c.clone(), callback: callback_url, verifier, created: Instant::now(), vault: None });
         }
     }
     Ok(Json(json!({ "url": url, "callback": with_callback, "relayed": relayed.is_some(), "account": conn.as_ref().map(|c| c.id.clone()), "fields": c.returns.keys().filter(|k| !c.needs.contains(k)).collect::<Vec<_>>() })))
@@ -159,6 +181,18 @@ async fn callback(State(app): State<App>, Query(q): Query<BTreeMap<String, Strin
     let Some(f) = app.connects.pending.lock().await.remove(&state).filter(|f| f.created.elapsed() < PENDING_FOR) else {
         return page(StatusCode::BAD_REQUEST, "This sign-in has expired. Start it again from Connect.");
     };
+    if let Some(v) = f.vault.clone() {
+        return match finish_vault(&app, &f, &v, &q).await {
+            Ok(id) => {
+                app.bus.emit(None, EventKind::CredentialConnected { provider: v.provider.clone(), ok: true, error: None, credential: Some(id) });
+                page(StatusCode::OK, &format!("You are signed in with {}. You can close this tab.", v.name))
+            }
+            Err(e) => {
+                app.bus.emit(None, EventKind::CredentialConnected { provider: v.provider.clone(), ok: false, error: Some(format!("{e:#}")), credential: v.credential.clone() });
+                page(StatusCode::BAD_REQUEST, &format!("The sign-in with {} did not finish: {e}", v.name))
+            }
+        };
+    }
     let name = manifest(&app, &f.project, &f.ability).await.map(|m| m.name).unwrap_or_else(|| f.ability.clone());
     match finish(&app, &f, &q).await {
         Ok(id) => {
@@ -208,6 +242,70 @@ async fn finish(app: &App, f: &Pending, q: &BTreeMap<String, String>) -> Result<
             Ok(c.id)
         }
     }
+}
+
+/// Start a "Sign in with …" from the Vault: kiqr.cloud builds the consent
+/// page, the provider comes back through its relay to this KIQR's callback.
+pub async fn start_vault(app: &App, origin: &str, v: VaultSignIn) -> Result<Value> {
+    let origin = url::Url::parse(origin.trim()).map_err(|_| anyhow!("origin is not a URL"))?;
+    if !matches!(origin.scheme(), "http" | "https") {
+        bail!("origin must be http or https");
+    }
+    for g in &v.grant {
+        kiqr_core::project::Project::load(&app.store, &g.project).map_err(|_| anyhow!("no project {}", g.project))?;
+    }
+    let callback_url = format!("{}/api/connect/callback", origin.origin().ascii_serialization());
+    let verifier = connect::random_token();
+    let started = crate::signins::cloud_connect(app, &v.provider, "start", json!({ "return_to": callback_url, "scopes": v.scopes, "code_challenge": connect::pkce_challenge(&verifier) })).await?;
+    let (Some(url), Some(state)) = (started["url"].as_str(), started["state"].as_str()) else { bail!("kiqr.cloud did not say where to sign in") };
+    let mut p = app.connects.pending.lock().await;
+    p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
+    let c = Connect { flow: Flow::Cloud, provider: v.provider.clone(), scopes: v.scopes.clone(), ..Default::default() };
+    p.insert(state.to_string(), Pending { ability: String::new(), account: None, draft: None, project: String::new(), connect: c, callback: callback_url, verifier, created: Instant::now(), vault: Some(v) });
+    Ok(json!({ "url": url, "callback": true, "relayed": true }))
+}
+
+/// The tokens the provider gave become a credential (new, or the one signed
+/// in again), then the grants asked for are made. Returns the credential's id.
+async fn finish_vault(app: &App, f: &Pending, v: &VaultSignIn, q: &BTreeMap<String, String>) -> Result<String> {
+    let code = connect::read_code(&f.connect, q)?;
+    let body = crate::signins::cloud_connect(app, &v.provider, "token", json!({ "code": code, "code_verifier": f.verifier })).await?;
+    let token = body["access_token"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| anyhow!("{} gave no token", v.name))?;
+    let mut values: Vec<(String, String)> = vec![("token".into(), token.to_string())];
+    if let Some(r) = body["refresh_token"].as_str().filter(|r| !r.is_empty()) {
+        values.push(("refresh".into(), r.to_string()));
+    }
+    if let Some(e) = body["expires_in"].as_i64() {
+        values.push(("expires_at".into(), (chrono::Utc::now().timestamp() + e).to_string()));
+    }
+    // What the provider says it granted, else what was asked for.
+    let granted = body["scope"].as_str().map(|s| s.split(' ').filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.scopes.clone());
+    values.push(("scopes".into(), granted.join(" ")));
+    let id = match v.credential.as_deref() {
+        Some(id) => {
+            let pairs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            app.vault.set_values(id, &pairs)?;
+            let view = app.vault.view(id)?.ok_or_else(|| anyhow!("the credential is gone"))?;
+            crate::vault::saved(app, &view);
+            id.to_string()
+        }
+        None => {
+            let view = app.vault.create(kiqr_core::vault::Draft {
+                label: Some(if v.label.trim().is_empty() { v.name.clone() } else { v.label.clone() }),
+                template: Some("oauth".into()),
+                domains: Some(v.domains.clone()),
+                values: values.into_iter().collect(),
+                provider: Some(v.provider.clone()),
+                ..Default::default()
+            })?;
+            crate::vault::saved(app, &view);
+            view.id
+        }
+    };
+    for g in &v.grant {
+        crate::access::grant(app, &g.project, &g.ability, &id, "connect").await?;
+    }
+    Ok(id)
 }
 
 /// The keys a sign-in asks for before it starts (a site's address), across its ways.

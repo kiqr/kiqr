@@ -14,6 +14,7 @@ import {
   MessagesSquare,
   Network,
   Plug,
+  KeyRound,
   Plus,
   Sparkles,
   Settings,
@@ -88,6 +89,7 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
       label: "Setup",
       items: [
         { sub: "abilities", label: "Abilities", icon: Sparkles },
+        { sub: "vault", label: "Vault", icon: KeyRound },
         { sub: "accounts", label: "Accounts", icon: Plug },
         { sub: "settings", label: "Project settings", icon: SlidersHorizontal },
       ],

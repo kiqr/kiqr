@@ -171,6 +171,8 @@ export type ProgramInstalledEvent = { type: "program_installed"; program: string
 export type ProgramFailedEvent = { type: "program_failed"; program: string; version: string; message: string };
 export const SESSION_EVENTS = ["account_state_changed"];
 /** Everything that changes an account or the Audience: pages listing them reload on these. */
+/** What the Vault page and the credential pickers reload on. */
+export const VAULT_EVENTS = ["credential_saved", "credential_deleted", "credential_connected", "credential_state_changed", "grant_changed"];
 export const ACCOUNT_EVENTS = ["account_saved", "account_deleted", "account_state_changed", "ability_settings_saved", "connect_finished", "secret_set", "extension_installed", "extension_removed", "extension_paused"];
 export const AUDIENCE_EVENTS = ["audience_saved", "audience_deleted", "account_saved", "account_deleted", "account_state_changed"];
 export const HANDS_EVENTS = ["hands_frame", "hands_started", "hands_ended"];
@@ -590,6 +592,33 @@ export type Contact = { email: string; name?: string; consent?: string; added?: 
 /** One send to a list: so many sent, so many failed, still running or not. */
 export type ListSend = { key: string; sent: number; failed: number; at: string | null; running: boolean };
 
+/** One field of a credential as the UI sees it: whether it is set, and the value only for what may be shown (a username, a host). */
+export type CredentialField = { name: string; label: string; kind: "text" | "secret" | "totp" | "url" | "number"; set: boolean; value?: string; optional: boolean };
+/** A credential in the Vault. Secrets never come back from the daemon. */
+export type Credential = {
+  id: string;
+  label: string;
+  template: string;
+  domains: string[];
+  identity: string | null;
+  provider: string | null;
+  scopes: string[];
+  login_url: string | null;
+  notes: string;
+  missing: string[];
+  fields: CredentialField[];
+  created_at: string;
+  updated_at: string;
+};
+export type CredentialTemplate = { id: string; label: string; fields: { name: string; label: string; kind: CredentialField["kind"]; optional: boolean }[] };
+export type VaultStatus = { unlocked: boolean; key: string | null; key_text: string; problem: string | null; count: number };
+export type VaultView = { status: VaultStatus; credentials: Credential[]; templates: CredentialTemplate[] };
+/** A provider kiqr.cloud signs in to, with where its tokens may go and the access it can ask for. */
+export type SignInProvider = { id: string; name: string; domains: string[]; scopes: { scope: string; label: string }[] };
+/** A new credential, or changes to one: values by field name (an empty value clears it). */
+export type CredentialDraft = { label?: string; template?: string; domains?: string[]; values?: Record<string, string>; fields?: { name: string; label: string; kind: CredentialField["kind"]; optional?: boolean }[]; login_url?: string; notes?: string };
+export type Access = { grants: Record<string, string[]> };
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...init });
@@ -724,6 +753,19 @@ export const api = {
   setProjectSecret: (slug: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
 
   /** Start signing in: `account` to sign one in again, else a new one is made when the sign-in comes back (with the name and permissions chosen). Saves what was asked first and returns the page to open; `callback: false` means the user pastes what it shows into the account. */
+  vault: () => req<VaultView>("/api/vault"),
+  credential: (id: string) => req<Credential>(`/api/vault/${encodeURIComponent(id)}`),
+  createCredential: (d: CredentialDraft) => req<Credential>("/api/vault", { method: "POST", body: JSON.stringify(d) }),
+  updateCredential: (id: string, d: CredentialDraft) => req<Credential>(`/api/vault/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(d) }),
+  deleteCredential: (id: string) => req<{ ok: boolean }>(`/api/vault/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** The providers kiqr.cloud offers for "Sign in with …", and whether this KIQR is signed in to kiqr.cloud. */
+  signInProviders: () => req<{ providers: SignInProvider[]; cloud_signed_in: boolean }>("/api/connect/providers"),
+  /** Start a "Sign in with …": opens the provider; `credential_connected` says how it ended. */
+  vaultConnect: (provider: string, b: { origin: string; scopes?: string[]; credential?: string; label?: string; grant?: { project: string; ability: string }[] }) =>
+    req<{ url: string; callback: boolean }>(`/api/vault/connect/${encodeURIComponent(provider)}`, { method: "POST", body: JSON.stringify(b) }),
+  access: (slug: string) => req<Access>(`/api/projects/${slug}/access`),
+  grant: (slug: string, ability: string, credential: string) => req<Access>(`/api/projects/${slug}/access/grant`, { method: "POST", body: JSON.stringify({ ability, credential }) }),
+  revoke: (slug: string, ability: string, credential: string) => req<Access>(`/api/projects/${slug}/access/grant`, { method: "DELETE", body: JSON.stringify({ ability, credential }) }),
   startConnect: (slug: string, id: string, b: { account?: string; label?: string; allow?: Record<string, Allow>; origin: string; values: Record<string, string> }) =>
     req<{ url: string; callback: boolean; relayed?: boolean; account: string | null; fields: string[] }>(`/api/projects/${slug}/connect/${id}`, { method: "POST", body: JSON.stringify(b) }),
   signIns: (slug?: string) => req<{ signins: SignIn[]; cloud_url: string }>(`/api/signins${slug ? `?project=${encodeURIComponent(slug)}` : ""}`),
@@ -807,7 +849,7 @@ let demoIntake: Intake = { goal: "", goal_note: "", customers: "", time: "", net
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith("/api/signins")) return Promise.resolve({ signins: [{ id: "kiqr-cloud", name: "kiqr.cloud", signed_in: false, account: null, waiting: null }, { id: "unblockingapi", name: "UnblockingAPI", signed_in: false, account: null, waiting: null }], cloud_url: "https://kiqr.cloud" } as T);
-  if (/\/(chats|approvals|tasks|calendar|accounts|audience|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|lists|hands)(\/|\?|$)/.test(path) || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
+  if (/\/(chats|approvals|tasks|calendar|accounts|audience|email|secrets|abilities|connect|networks|suggestions|todo|plan|campaigns|performance|lists|hands|access)(\/|\?|$)/.test(path) || path.startsWith("/api/vault") || path === "/api/connect/providers" || path === "/api/tools" || path.startsWith("/api/abilities") || path.startsWith("/api/secrets")) return demoSeemoRequest<T>(path, init);
   if (path === "/api/projects" && init?.method === "POST") {
     demoState.created = true;
     return Promise.resolve(demoProject as T);

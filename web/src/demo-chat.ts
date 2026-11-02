@@ -1,6 +1,6 @@
 // Demo mode for Seemo: a saved conversation, a task, and a scripted reply
 // when you send something, so the chat screens work without a daemon.
-import type { Ability, AbilitiesView, AbilitySetting, Account, AccountKey, AccountState, AccountSummary, Allow, AudienceEntry, AudienceKind, CalendarItem, Campaign, Chat, ChatView, Contact, KiqrEvent, KindInfo, ListSend, MailList, Message, Performance, Permission, Plan, PlanView, Run, SessionStatus, SpecField, Spot, Task, Todo } from "./api";
+import type { Ability, AbilitiesView, AbilitySetting, Account, AccountKey, AccountState, AccountSummary, Allow, AudienceEntry, AudienceKind, CalendarItem, Campaign, Chat, ChatView, Contact, Credential, CredentialTemplate, KiqrEvent, KindInfo, ListSend, MailList, Message, Performance, Permission, Plan, PlanView, Run, SessionStatus, SpecField, Spot, Task, Todo } from "./api";
 import { demoAssetList, setDemoTargets, type DemoTarget } from "./demo-assets";
 
 const slug = "unblockingapi-com";
@@ -582,9 +582,75 @@ function reply(chatId: string, text: string) {
   }, t);
 }
 
+// The Vault in the demo: credentials (no secret ever leaves, as with the daemon), the providers kiqr.cloud offers, the grants.
+const credField = (name: string, label: string, kind: Credential["fields"][number]["kind"], set: boolean, value?: string, optional = false) => ({ name, label, kind, set, value, optional });
+const demoNow = new Date().toISOString();
+let demoCredentials: Credential[] = [
+  { id: "cred_x01", label: "Our X", template: "login", domains: ["x.com", "twitter.com"], identity: "unblockingapi", provider: null, scopes: [], login_url: null, notes: "", missing: [], fields: [credField("username", "Username or email", "text", true, "unblockingapi"), credField("password", "Password", "secret", true, undefined, true), credField("totp", "Two-factor key", "totp", true, undefined, true)], created_at: demoNow, updated_at: demoNow },
+  { id: "cred_g01", label: "Google", template: "oauth", domains: ["google.com", "googleapis.com"], identity: null, provider: "google", scopes: ["https://www.googleapis.com/auth/analytics.readonly"], login_url: null, notes: "", missing: [], fields: [credField("account", "Account", "text", false, undefined, true), credField("token", "Access token", "secret", true), credField("refresh", "Refresh token", "secret", true, undefined, true), credField("expires_at", "Expires", "number", true, "0", true), credField("scopes", "Access", "text", true, "https://www.googleapis.com/auth/analytics.readonly", true)], created_at: demoNow, updated_at: demoNow },
+  { id: "cred_r01", label: "u/acme_dev", template: "login", domains: ["reddit.com"], identity: "acme_dev", provider: null, scopes: [], login_url: null, notes: "", missing: [], fields: [credField("username", "Username or email", "text", true, "acme_dev"), credField("password", "Password", "secret", false, undefined, true), credField("totp", "Two-factor key", "totp", false, undefined, true)], created_at: demoNow, updated_at: demoNow },
+  { id: "cred_m01", label: "hello@unblockingapi.com", template: "smtp", domains: ["unblockingapi.com"], identity: "hello@unblockingapi.com", provider: null, scopes: [], login_url: null, notes: "", missing: ["host"], fields: [credField("host", "Server", "text", false), credField("port", "Port", "number", true, "587", true), credField("security", "Security", "text", true, "starttls", true), credField("username", "Username", "text", true, "hello@unblockingapi.com", true), credField("password", "Password", "secret", true, undefined, true), credField("from", "Send as", "text", true, "hello@unblockingapi.com")], created_at: demoNow, updated_at: demoNow },
+];
+const demoTemplates: CredentialTemplate[] = [
+  { id: "login", label: "Login", fields: [{ name: "username", label: "Username or email", kind: "text", optional: false }, { name: "password", label: "Password", kind: "secret", optional: true }, { name: "totp", label: "Two-factor key", kind: "totp", optional: true }] },
+  { id: "api_key", label: "API key", fields: [{ name: "key", label: "API key", kind: "secret", optional: false }] },
+  { id: "oauth", label: "Signed-in app", fields: [] },
+  { id: "smtp", label: "Mail server", fields: [{ name: "host", label: "Server", kind: "text", optional: false }, { name: "port", label: "Port", kind: "number", optional: true }, { name: "security", label: "Security", kind: "text", optional: true }, { name: "username", label: "Username", kind: "text", optional: true }, { name: "password", label: "Password", kind: "secret", optional: true }, { name: "from", label: "Send as", kind: "text", optional: false }] },
+  { id: "custom", label: "Something else", fields: [] },
+];
+const demoProviders = [
+  { id: "google", name: "Google", domains: ["google.com", "googleapis.com"], scopes: [{ scope: "https://www.googleapis.com/auth/analytics.readonly", label: "Read Google Analytics" }, { scope: "https://www.googleapis.com/auth/webmasters.readonly", label: "Read Search Console" }] },
+  { id: "github", name: "GitHub", domains: ["github.com", "api.github.com"], scopes: [{ scope: "public_repo", label: "Public repositories" }, { scope: "read:user", label: "Your profile" }] },
+  { id: "rankzon", name: "Rankzon", domains: ["rankzon.com", "mcp.rankzon.com"], scopes: [{ scope: "rankzon:read", label: "Read rankings" }] },
+];
+let demoGrants: Record<string, string[]> = { "x-browser": ["cred_x01"], "google-analytics": ["cred_g01"] };
+
+function demoVault<T>(path: string, method: string, body: Record<string, unknown>): Promise<T> | null {
+  if (path === "/api/connect/providers") return Promise.resolve({ providers: demoProviders, cloud_signed_in: true } as T);
+  if (path.startsWith("/api/vault/connect/")) return Promise.reject(new Error("The demo cannot sign in anywhere."));
+  if (path === "/api/vault" && method === "GET") return Promise.resolve({ status: { unlocked: true, key: "local_file", key_text: "a file on this machine, next to the vault", problem: null, count: demoCredentials.length }, credentials: demoCredentials, templates: demoTemplates } as T);
+  if (path === "/api/vault" && method === "POST") {
+    const t = demoTemplates.find((x) => x.id === body.template) ?? demoTemplates[4];
+    const values = (body.values ?? {}) as Record<string, string>;
+    const fields = [...t.fields, ...((body.fields ?? []) as { name: string; label: string; kind: Credential["fields"][number]["kind"] }[])].map((f) => credField(f.name, f.label, f.kind, !!values[f.name], f.kind === "text" || f.kind === "number" ? values[f.name] : undefined, "optional" in f ? !!f.optional : false));
+    const c: Credential = { id: `cred_${Math.random().toString(16).slice(2, 8)}`, label: String(body.label ?? values.username ?? (body.domains as string[])[0]), template: t.id, domains: (body.domains as string[]) ?? [], identity: values.username ?? values.from ?? null, provider: null, scopes: [], login_url: null, notes: "", missing: fields.filter((f) => !f.optional && !f.set).map((f) => f.name), fields, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    demoCredentials = [...demoCredentials, c];
+    return Promise.resolve(c as T);
+  }
+  const one = /^\/api\/vault\/([^/?]+)$/.exec(path);
+  if (one) {
+    const id = decodeURIComponent(one[1]);
+    const c = demoCredentials.find((x) => x.id === id);
+    if (!c) return Promise.reject(new Error(`no credential ${id}`));
+    if (method === "DELETE") {
+      demoCredentials = demoCredentials.filter((x) => x.id !== id);
+      demoGrants = Object.fromEntries(Object.entries(demoGrants).map(([a, cs]) => [a, cs.filter((x) => x !== id)]).filter(([, cs]) => cs.length));
+      return Promise.resolve({ ok: true } as T);
+    }
+    if (method === "PUT") {
+      const values = (body.values ?? {}) as Record<string, string>;
+      const fields = c.fields.map((f) => (f.name in values ? { ...f, set: !!values[f.name], value: f.kind === "text" || f.kind === "number" ? values[f.name] || undefined : undefined } : f));
+      const next: Credential = { ...c, label: (body.label as string) ?? c.label, domains: (body.domains as string[]) ?? c.domains, fields, missing: fields.filter((f) => !f.optional && !f.set).map((f) => f.name) };
+      demoCredentials = demoCredentials.map((x) => (x.id === id ? next : x));
+      return Promise.resolve(next as T);
+    }
+    return Promise.resolve(c as T);
+  }
+  if (/\/access(\/grant)?$/.test(path)) {
+    const ability = String(body.ability ?? "");
+    const cred = String(body.credential ?? "");
+    if (method === "POST") demoGrants = { ...demoGrants, [ability]: [...(demoGrants[ability] ?? []).filter((x) => x !== cred), cred] };
+    if (method === "DELETE") demoGrants = Object.fromEntries(Object.entries({ ...demoGrants, [ability]: (demoGrants[ability] ?? []).filter((x) => x !== cred) }).filter(([, cs]) => cs.length));
+    return Promise.resolve({ grants: demoGrants } as T);
+  }
+  return null;
+}
+
 export function demoSeemoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? "GET";
   const body = init?.body ? JSON.parse(String(init.body)) : {};
+  const vault = demoVault<T>(path, method, body);
+  if (vault) return vault;
   if (path === "/api/tools")
     return Promise.resolve({
       groups: [

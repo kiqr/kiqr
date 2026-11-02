@@ -117,6 +117,11 @@ enum Command {
         #[command(subcommand)]
         cmd: AccountsCmd,
     },
+    /// The Vault: credentials for the whole machine (logins, API keys, mail servers), values typed, never shown
+    Vault {
+        #[command(subcommand)]
+        cmd: VaultCmd,
+    },
     /// Secrets in .env, by name; values are typed, never shown
     Secrets {
         #[command(subcommand)]
@@ -300,6 +305,26 @@ enum SecretsCmd {
         #[arg(long)]
         project: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum VaultCmd {
+    /// Every credential: its kind, domains, who it is, and what is missing
+    Ls,
+    /// Add one: `kiqr vault add login x.com twitter.com --label "Our X"`; each field is asked for, typed and never shown (empty skips an optional one)
+    Add {
+        /// login, api_key, smtp or custom
+        template: String,
+        /// Where it is used; the first is its default
+        #[arg(required = true)]
+        domains: Vec<String>,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Set one field again: `kiqr vault set <id> password`
+    Set { id: String, field: String },
+    /// Delete a credential; abilities lose access to it everywhere
+    Rm { id: String },
 }
 
 #[derive(Subcommand)]
@@ -859,6 +884,59 @@ impl Client {
                 AccountsCmd::Rm { slug, account } => {
                     self.delete(&format!("/api/projects/{slug}/accounts/{account}")).await?;
                     println!("Removed {account}.");
+                }
+            },
+            Command::Vault { cmd } => match cmd {
+                VaultCmd::Ls => {
+                    let v: serde_json::Value = self.get("/api/vault").await?;
+                    if v["status"]["unlocked"] != true {
+                        println!("The vault is locked: {}", v["status"]["problem"].as_str().unwrap_or("no key"));
+                        return Ok(());
+                    }
+                    let list = v["credentials"].as_array().cloned().unwrap_or_default();
+                    if list.is_empty() {
+                        println!("The vault is empty. Add a credential: kiqr vault add login x.com");
+                    }
+                    for c in list {
+                        let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+                        let domains: Vec<&str> = c["domains"].as_array().into_iter().flatten().filter_map(|d| d.as_str()).collect();
+                        let missing: Vec<&str> = c["missing"].as_array().into_iter().flatten().filter_map(|d| d.as_str()).collect();
+                        println!(
+                            "{:<18} {:<8} {:<28} {}{}",
+                            s("id"),
+                            s("template"),
+                            s("label"),
+                            domains.join(", "),
+                            if missing.is_empty() { String::new() } else { format!("  (missing: {})", missing.join(", ")) }
+                        );
+                    }
+                    println!("Key: {}", v["status"]["key_text"].as_str().unwrap_or(""));
+                }
+                VaultCmd::Add { template, domains, label } => {
+                    let v: serde_json::Value = self.get("/api/vault").await?;
+                    let t = v["templates"].as_array().into_iter().flatten().find(|t| t["id"] == template.as_str()).cloned().ok_or_else(|| anyhow::anyhow!("no kind {template}: login, api_key, smtp or custom"))?;
+                    let mut values = serde_json::Map::new();
+                    for f in t["fields"].as_array().into_iter().flatten() {
+                        let name = f["name"].as_str().unwrap_or("");
+                        let optional = f["optional"].as_bool().unwrap_or(false);
+                        eprint!("{}{}: ", f["label"].as_str().unwrap_or(name), if optional { " (optional)" } else { "" });
+                        let value = read_secret()?;
+                        if !value.is_empty() {
+                            values.insert(name.to_string(), value.into());
+                        }
+                    }
+                    let c: serde_json::Value = self.post("/api/vault", &serde_json::json!({ "template": template, "domains": domains, "label": label, "values": values })).await?;
+                    println!("Saved {} ({})", c["label"].as_str().unwrap_or(""), c["id"].as_str().unwrap_or(""));
+                }
+                VaultCmd::Set { id, field } => {
+                    eprint!("{field}: ");
+                    let value = read_secret()?;
+                    let c: serde_json::Value = self.put(&format!("/api/vault/{id}"), &serde_json::json!({ "values": { field.clone(): value } })).await?;
+                    println!("Saved {field} of {}", c["label"].as_str().unwrap_or(&id));
+                }
+                VaultCmd::Rm { id } => {
+                    self.delete(&format!("/api/vault/{id}")).await?;
+                    println!("Removed {id}");
                 }
             },
             Command::Secrets { cmd } => match cmd {
@@ -1631,6 +1709,13 @@ fn print_event(ev: &Event) {
             (false, e) => format!("connect  {ability} failed: {}", e.clone().unwrap_or_default()),
         },
         EventKind::MediaCreated { ability, asset_type, id, file, provider } => format!("{ability:<8} {asset_type}/{id}/{file} via {provider}"),
+        EventKind::CredentialSaved { id, label, .. } => format!("vault    {id} \"{label}\" saved"),
+        EventKind::CredentialDeleted { id } => format!("vault    {id} removed"),
+        EventKind::CredentialConnected { provider, ok, error, credential } => match (ok, error) {
+            (true, _) => format!("vault    signed in with {provider}{}", credential.as_ref().map(|c| format!(" ({c})")).unwrap_or_default()),
+            (false, e) => format!("vault    sign-in with {provider} failed: {}", e.as_deref().unwrap_or("")),
+        },
+        EventKind::GrantChanged { ability, credential, granted, by } => format!("access   {ability} {} {credential} ({by})", if *granted { "may use" } else { "may no longer use" }),
         EventKind::AccountSaved { account, label, service } => format!("account  {account} \"{label}\" ({service})"),
         EventKind::AccountDeleted { account, .. } => format!("account  {account} removed"),
         EventKind::AbilitySettingsSaved { ability, account } => format!("ability  {ability} settings, through {account}"),

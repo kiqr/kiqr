@@ -90,6 +90,28 @@ impl Home {
     pub fn audience_dir(&self, slug: &str) -> PathBuf {
         self.project_dir(slug).join("audience")
     }
+    /// The Vault: `vault/vault.enc` (the credentials, encrypted), maybe `vault/key`,
+    /// `vault/sessions/<credential>/` (a login's browser profile and status) and
+    /// `vault/activity/<credential>.jsonl`. Never committed.
+    pub fn vault_dir(&self) -> PathBuf {
+        self.root.join("vault")
+    }
+    pub fn vault_file(&self) -> PathBuf {
+        self.vault_dir().join("vault.enc")
+    }
+    pub fn vault_key_file(&self) -> PathBuf {
+        self.vault_dir().join("key")
+    }
+    pub fn credential_session_dir(&self, id: &str) -> PathBuf {
+        self.vault_dir().join("sessions").join(id)
+    }
+    pub fn credential_activity_file(&self, id: &str) -> PathBuf {
+        self.vault_dir().join("activity").join(format!("{id}.jsonl"))
+    }
+    /// Favicons of credentials' domains, fetched once. Ignored.
+    pub fn favicons_dir(&self) -> PathBuf {
+        self.root.join("tmp").join("favicons")
+    }
     /// Brand files fetched for rendering (logo, icon). Ignored by git, like the cache.
     pub fn brand_files_dir(&self, slug: &str) -> PathBuf {
         self.cache_dir(slug).join("brand")

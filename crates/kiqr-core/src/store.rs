@@ -23,6 +23,8 @@ projects/*/cache/
 # Generated assets and project secrets stay on this machine.
 projects/*/assets/
 projects/*/.env
+# The Vault: credentials (encrypted), its key when kept in a file, login sessions.
+vault/
 projects/*/accounts/*/.env
 # An account's working folder (a browser profile) and its activity log stay here too.
 projects/*/accounts/*/data/

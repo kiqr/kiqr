@@ -36,6 +36,10 @@ iana-time-zone = "0.1"
 resvg = "0.48"
 regex = "1"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+chacha20poly1305 = "0.11"
+psl = "2"
+keyring = "4"
+getrandom = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,0 +1,74 @@
+/* The Vault: credentials, their details and the one Add panel (also opened from channels and abilities). See DESIGN.md. */
+
+/* A domain's icon: its favicon, else its letter. */
+.fav { display: inline-grid; place-items: center; flex: none; border-radius: 28%; overflow: hidden; background: var(--panel-2); border: 1px solid var(--line-2); }
+.fav img { width: 100%; height: 100%; object-fit: contain; padding: 14%; display: block; }
+.fav.letter { font: 600 1em/1 var(--sans); color: var(--accent-2); background: rgba(129,140,248,.12); border-color: rgba(129,140,248,.25); }
+
+.vt-list { display: flex; flex-direction: column; gap: 6px; }
+.vt-row { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 10px 14px; border-radius: var(--r-md, 12px); border: 1px solid var(--line); background: color-mix(in oklab, var(--panel) 80%, transparent); color: inherit; cursor: pointer; transition: border-color .15s, background .15s; }
+.vt-row:hover { border-color: var(--line-2); background: var(--panel-2); }
+.vt-row .nm { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vt-row .nm b { font: 500 14px/1.35 var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vt-row .nm small { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vt-doms { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 40%; }
+.vt-doms span { font-size: 11.5px; color: var(--muted); padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); }
+@media (max-width: 640px) { .vt-doms { display: none; } }
+
+.vt-locked { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: var(--r); background: var(--warn-soft); border: 1px solid color-mix(in oklab, var(--warn) 30%, transparent); color: var(--warn); margin-bottom: 18px; }
+.vt-locked b { color: var(--fg); font-weight: 600; }
+.vt-key { display: flex; align-items: center; gap: 6px; margin-top: 22px; }
+
+.vt-modal .ab-head .fav { margin-top: 0; }
+.vt-detail { display: flex; flex-direction: column; gap: 16px; }
+.vt-detail section { display: flex; flex-direction: column; gap: 8px; }
+.vt-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vt-inline .input { flex: 1; min-width: 180px; }
+.vt-domlist { display: flex; flex-direction: column; gap: 6px; }
+.vt-dom { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--r); background: var(--panel-2); border: 1px solid var(--line); }
+.vt-dom .grow { flex: 1; min-width: 0; font-size: 13px; }
+.vt-fields { display: flex; flex-direction: column; gap: 6px; }
+.vt-field { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r); background: color-mix(in oklab, var(--bg) 40%, transparent); border: 1px solid var(--line); }
+.vt-field .lb { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: baseline; }
+.vt-field .lb small { color: var(--dim); }
+.vt-field .val { flex: 1; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; }
+.vt-field .val.dim { color: var(--dim); }
+
+/* The Add panel */
+.vf { display: flex; flex-direction: column; gap: 18px; }
+.vf-sec { display: flex; flex-direction: column; gap: 10px; }
+.vf-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.vf-tile { display: flex; align-items: center; gap: 12px; text-align: left; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); color: inherit; cursor: pointer; transition: border-color .15s, transform .15s; }
+.vf-tile:hover { border-color: color-mix(in oklab, var(--accent) 45%, var(--line-2)); }
+.vf-tile.prov { background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 7%, var(--panel-2)), color-mix(in oklab, var(--accent-2) 7%, var(--panel-2))); }
+.vf-tile .min0 { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vf-tile b { font: 500 14px/1.3 var(--sans); }
+.vf-tile small { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.vf-ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(94,234,212,.22); }
+.vf-sign, .vf-own { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 12px; border: 1px solid var(--line-2); background: color-mix(in oklab, var(--bg) 35%, transparent); }
+.vf-sign-hd { display: flex; align-items: center; gap: 12px; }
+.vf-sign-hd .min0 { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vf-sign-hd b { font: 600 15px/1.3 var(--sans); }
+.vf-sign-hd small { font-size: 12px; color: var(--muted); }
+.vf-sign-hd .x { border: 0; background: none; color: var(--dim); cursor: pointer; padding: 5px; border-radius: 7px; display: grid; }
+.vf-sign-hd .x:hover { color: var(--fg); background: var(--panel-2); }
+.vf-note { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r); background: rgba(129,140,248,.08); border: 1px solid rgba(129,140,248,.22); font-size: 13px; }
+.vf-scopes { display: flex; flex-direction: column; gap: 6px; }
+.vf-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; cursor: pointer; }
+.vf-check.sm { font-size: 12px; color: var(--muted); }
+.vf-check input { accent-color: var(--accent); }
+.vf-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vf-domains { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 6px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel); }
+.vf-domains:focus-within { border-color: rgba(94,234,212,.6); }
+.vf-dom { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 6px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line-2); font-size: 12.5px; }
+.vf-dom.first { border-color: rgba(94,234,212,.35); }
+.vf-dom button { border: 0; background: none; color: var(--dim); cursor: pointer; display: grid; padding: 2px; border-radius: 50%; }
+.vf-dom button:hover { color: var(--fg); }
+.vf-dom-in { flex: 1; min-width: 120px; border: 0; background: none; outline: 0; color: var(--fg); font-size: 13px; padding: 4px; }
+.vf-extra { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 8px; align-items: center; }
+@media (max-width: 600px) { .vf-extra { grid-template-columns: 1fr; } }
+.vf-addf { align-self: flex-start; }
+.set-key small.muted { font-size: 11.5px; line-height: 1.45; }
+.vt-modal .ab-head .min0 { flex: 1; min-width: 0; }
+.vt-modal .ab-head .x { margin-left: auto; }
+.vt-dom .chip, .vt-row .chip { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; flex: none; }

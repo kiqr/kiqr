@@ -52,6 +52,8 @@ pub fn router(app: App) -> Router {
         .merge(crate::ext::routes())
         .merge(crate::connect::routes())
         .merge(crate::signins::routes())
+        .merge(crate::vault::routes())
+        .merge(crate::access::routes())
         .merge(crate::accounts::routes())
         .merge(crate::audience::routes())
         .merge(crate::networks::routes())

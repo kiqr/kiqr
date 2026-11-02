@@ -38,6 +38,11 @@ pub fn valid_name(n: &str) -> bool {
     !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') && !n.starts_with(|c: char| c.is_ascii_digit())
 }
 
+/// A credential field's name: lower-case letters, digits and `_`.
+pub fn valid_field(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 48 && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') && !n.starts_with(|c: char| c.is_ascii_digit())
+}
+
 /// The value of one secret for a project: the project's `.env`, else the
 /// process environment (the global `.env` is loaded into it at start).
 pub fn lookup(home: &Home, slug: Option<&str>, name: &str) -> Option<String> {

@@ -5,6 +5,7 @@
 //! every change. There is no database.
 
 pub mod abilities;
+pub mod access;
 pub mod agent;
 pub mod assets;
 pub mod brand;
@@ -37,6 +38,7 @@ pub mod store;
 pub mod tasks;
 pub mod tools;
 pub mod totp;
+pub mod vault;
 
 pub use config::Config;
 pub use events::{Event, EventBus};

@@ -116,6 +116,15 @@ pub enum EventKind {
     SignInChanged { id: String, signed_in: bool, #[serde(default)] error: Option<String> },
     ConnectFinished { ability: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] account: Option<String> },
 
+    // The Vault and who may use what in it.
+    /// A credential was added or changed. Field names only, never values.
+    CredentialSaved { id: String, label: String, #[serde(default)] fields: Vec<String> },
+    CredentialDeleted { id: String },
+    /// A "Sign in with …" from the Vault ended: `credential` is the one made or signed in again.
+    CredentialConnected { provider: String, ok: bool, #[serde(default)] error: Option<String>, #[serde(default)] credential: Option<String> },
+    /// An ability of a project was allowed to use a credential, or no longer. `by` is `user`, `publisher` or `connect`.
+    GrantChanged { ability: String, credential: String, granted: bool, by: String },
+
     // Abilities, accounts and the Audience.
     /// An ability made a file into an asset: `ability` is image, video or music.
     MediaCreated { ability: String, asset_type: String, id: String, file: String, provider: String },
