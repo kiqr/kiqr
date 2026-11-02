@@ -46,8 +46,18 @@ fn bad(msg: impl Into<String>) -> ApiError {
 
 /// Every (ability, kind) pair on in this project: what its accounts can publish as.
 pub(crate) async fn kinds(app: &App, slug: &str) -> Vec<(Manifest, ChannelKind)> {
+    kinds_where(app, slug, true).await
+}
+
+/// Every kind the installed abilities publish to, the ones switched off for the project included:
+/// what an account may be created as (connecting switches the ability back on).
+pub(crate) async fn all_kinds(app: &App, slug: &str) -> Vec<(Manifest, ChannelKind)> {
+    kinds_where(app, slug, false).await
+}
+
+async fn kinds_where(app: &App, slug: &str, only_on: bool) -> Vec<(Manifest, ChannelKind)> {
     let reg = app.registry.read().await;
-    let off = crate::ext::project_off(app, slug);
+    let off = if only_on { crate::ext::project_off(app, slug) } else { vec![] };
     let mut out = Vec::new();
     for (_, m) in reg.connections(slug) {
         if off.contains(&m.id) {

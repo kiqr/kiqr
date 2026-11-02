@@ -253,8 +253,10 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
     let m = manifest(app, slug, &b.ability).await.ok_or_else(|| bad(format!("'{}' is not installed", b.ability)))?;
     let kind = b.kind.trim().to_ascii_lowercase();
     // An account of a service that publishes is publishable from the start (its kind), unless told otherwise.
-    let kind = if kind.is_empty() { crate::publish::kinds(app, slug).await.into_iter().find(|(o, k)| o.service() == m.service() && k.publishes()).map(|(_, k)| k.kind).unwrap_or_default() } else { kind };
-    if !kind.is_empty() && !crate::publish::kinds(app, slug).await.iter().any(|(o, k)| o.service() == m.service() && k.kind == kind) {
+    // The ability may be switched off for the project right now: connecting an account is the wish to use it, and switches it back on below.
+    let all = crate::publish::all_kinds(app, slug).await;
+    let kind = if kind.is_empty() { all.iter().find(|(o, k)| o.service() == m.service() && k.publishes()).map(|(_, k)| k.kind.clone()).unwrap_or_default() } else { kind };
+    if !kind.is_empty() && !all.iter().any(|(o, k)| o.service() == m.service() && k.kind == kind) {
         return Err(bad(format!("{} does not publish '{kind}'", m.name)));
     }
     let mut allow = default_allow(app, slug, m.service()).await;
@@ -310,6 +312,14 @@ pub async fn create(app: &App, slug: &str, b: NewConnection, by: &str) -> Result
     // Learn from it now when it is ready; otherwise the scheduler does once it is signed in.
     if c.learns() && m.learn.is_some() && ready(app, slug, &c, &m) {
         let _ = crate::learn::start(app, slug, Some(c.id.clone())).await;
+    }
+    // Connecting is wanting it: the service's abilities switched off for this project come back on.
+    let off = crate::ext::project_off(app, slug);
+    let ids: Vec<String> = { let reg = app.registry.read().await; reg.of_service(slug, m.service()).into_iter().map(|o| o.id.clone()).collect() };
+    for id in ids.into_iter().filter(|id| off.contains(id)) {
+        if let Err(e) = crate::market::set_project_paused(app, slug, &id, false).await {
+            tracing::warn!(slug, %id, "could not switch the ability back on: {}", e.1);
+        }
     }
     Ok(c)
 }

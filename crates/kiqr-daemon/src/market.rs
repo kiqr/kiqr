@@ -44,7 +44,7 @@ pub fn routes() -> Router<App> {
 }
 
 /// A project switches an ability off, or on again, for itself.
-async fn set_project_paused(app: &App, slug: &str, id: &str, paused: bool) -> ApiResult<Value> {
+pub(crate) async fn set_project_paused(app: &App, slug: &str, id: &str, paused: bool) -> ApiResult<Value> {
     let mut p = Project::load(&app.store, slug)?;
     let known = extensions::is_core_id(id) || !app.registry.read().await.installed(id).is_empty();
     if !known {
