@@ -184,7 +184,7 @@ pub async fn signin(app: &App, slug: &str, id: &str) -> Result<SessionStatus> {
         Ok(Some(b)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &format!("the site asks for a person: {b}"))).await,
         Ok(None) => match run_check(app, slug, &c, &m).await {
             Ok((true, _)) => set_state(app, slug, &c, SessionStatus::SIGNED_IN, "").await,
-            Ok((false, t)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, blocked(&sess, &t).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| "the sign-in did not go through; finish it in the live view".into())).await,
+            Ok((false, t)) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, blocked(&sess, &t).map(|b| format!("the site asks for a person: {b}")).unwrap_or_else(|| if sess.login_url.trim().is_empty() { "the sign-in did not go through; finish it in the live view".into() } else { "the sign-in seemed to go through, but the check afterwards did not find you signed in; finish it in the live view, or look at the check in the ability's manifest".into() })).await,
             Err(e) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, format!("could not check the sign-in: {e:#}")).await,
         },
         Err(e) => set_state(app, slug, &c, SessionStatus::NEEDS_HAND, crate::redact(app, &format!("the sign-in failed: {e:#}"))).await,
