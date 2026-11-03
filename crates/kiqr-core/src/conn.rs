@@ -15,10 +15,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// The credentials a call goes through: each need that was given one.
-#[derive(Clone, Debug)]
+/// The address of the website a call is made for: a call in a website
+/// channel gets the channel's (`https://myblog.com`), so an ability that
+/// publishes a site (`hosts: ["${SITE_URL}"]`) never keeps one of its own.
+pub const SITE_URL: &str = "SITE_URL";
+
+/// The credentials a call goes through: each need that was given one, and the
+/// website channel it is made in, when it is.
+#[derive(Clone, Debug, Default)]
 pub struct Conn {
     pub given: Vec<(CredentialNeed, Credential)>,
+    pub site: Option<String>,
 }
 
 impl Conn {
@@ -93,6 +100,30 @@ impl Conn {
 /// How a credential's sign-in on a hosted program stands (`status.json` in its session folder).
 pub fn session_of(home: &Home, id: &str) -> SessionStatus {
     std::fs::read_to_string(home.credential_session_dir(id).join("status.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// A sign-in the daemon was in the middle of when it stopped never finishes:
+/// at start, each one still "checking" says so, keeping a sign-in that held.
+/// Returns how many there were.
+pub fn interrupted_sessions(home: &Home) -> usize {
+    let Some(root) = home.credential_session_dir("x").parent().map(|p| p.to_path_buf()) else { return 0 };
+    let mut n = 0;
+    for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let id = e.file_name().to_string_lossy().to_string();
+        let mut st = session_of(home, &id);
+        if st.state != "checking" {
+            continue;
+        }
+        // Signed in before: it stays so until a check says otherwise.
+        (st.state, st.message) = match st.signed_in_at {
+            Some(_) => ("signed_in".into(), String::new()),
+            None => ("needs_hand".into(), "the sign-in was cut off when KIQR stopped; sign in again".into()),
+        };
+        if set_session(home, &id, &st).is_ok() {
+            n += 1;
+        }
+    }
+    n
 }
 
 pub fn set_session(home: &Home, id: &str, st: &SessionStatus) -> Result<()> {
@@ -228,9 +259,15 @@ impl Facts {
 pub fn env_for(home: &Home, slug: &str, conn: Option<&Conn>, m: &Manifest, settings: &BTreeMap<String, String>) -> impl Fn(&str) -> Option<String> + Clone {
     let own = m.credential_env();
     let given: BTreeMap<String, String> = conn.map(|c| c.env().into_iter().map(|(k, (v, _))| (k, v)).collect()).unwrap_or_default();
+    let site = conn.and_then(|c| c.site.clone());
     let set: BTreeMap<String, String> = settings.iter().map(|(k, v)| (k.to_ascii_uppercase(), v.clone())).collect();
     let rest = crate::secrets::env_fn(home, Some(slug));
     move |k: &str| {
+        if k == SITE_URL {
+            if let Some(s) = &site {
+                return Some(s.clone());
+            }
+        }
         if let Some(v) = given.get(k) {
             return Some(v.clone());
         }
@@ -268,11 +305,15 @@ mod tests {
     fn a_call_gets_only_mapped_fields_and_never_a_password() {
         let m = crate::extensions::parse_manifest("id: t\nname: T\ntransport: http\nhosts: [api.x.com]\ncredentials:\n  - template: [oauth, api_key]\n    env: { X_TOKEN: \"token|key\" }\n").unwrap();
         let need = m.needs()[0].clone();
-        let c = Conn { given: vec![(need, cred("api_key", &[("key", "k1", false)]))] };
+        let mut c = Conn { given: vec![(need, cred("api_key", &[("key", "k1", false)]))], site: None };
         let home = Home::at(std::env::temp_dir().join("kiqr-conn-test"));
         let env = env_for(&home, "p", Some(&c), &m, &BTreeMap::from([("site_url".to_string(), "https://a.b".to_string())]));
         assert_eq!(env("X_TOKEN").as_deref(), Some("k1"));
         assert_eq!(env("SITE_URL").as_deref(), Some("https://a.b"));
+        // In a website channel, the channel's address wins.
+        c.site = Some("https://blog.example".into());
+        let env = env_for(&home, "p", Some(&c), &m, &BTreeMap::from([("site_url".to_string(), "https://a.b".to_string())]));
+        assert_eq!(env("SITE_URL").as_deref(), Some("https://blog.example"));
         assert_eq!(env("HOME"), None, "nothing from the machine but KIQR's own keys");
         // A login's password never reaches a call, whatever a credential claims.
         let login = cred("login", &[("username", "u", false), ("password", "p", true)]);

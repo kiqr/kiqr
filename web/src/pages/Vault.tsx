@@ -23,7 +23,8 @@ export function VaultPage() {
   const { slug = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const vault = useAsync(() => api.vault(), []);
+  const vault = useAsync(() => api.vault(slug), [slug]);
+  useEvents(slug, (e) => SESSION_EVENTS.includes(e.type) && vault.reload(), { demo: false });
   const access = useAsync(() => api.access(slug), [slug]);
   useEvents(null, (e) => VAULT_EVENTS.includes(e.type) && (vault.reload(), access.reload()), { demo: false });
   const open = decodeURIComponent(/#credential=([^&]+)/.exec(location.hash)?.[1] ?? "");
@@ -145,6 +146,15 @@ function templateWord(t: string): string {
 
 /** Whether the credential is complete. Sessions and expiry join this once abilities use credentials. */
 export function CredentialChip({ c }: { c: Credential }) {
+  // Not working here (signed out, needs a hand, a program missing, a token to renew): as the modal says it.
+  if (c.state && c.state !== "ready" && c.state !== "missing_fields") {
+    const chip = credStateChip(c.state);
+    return (
+      <span className={`chip ${chip.cls} sm`} title={c.state_text}>
+        {chip.spin ? <Loader2 size={11} className="spin" /> : <b />} {chip.text}
+      </span>
+    );
+  }
   if (c.missing.length)
     return (
       <span className="chip warn sm">
@@ -220,7 +230,8 @@ function CredentialDetails({ slug, c, templates, handsFirst, onChange, onDeleted
     if (d && !c.domains.includes(d)) void setDomains([...c.domains, d]).then((ok) => ok && setDomainText(""));
   };
   const saveField = (name: string) => run(name, () => api.updateCredential(c.id, { values: { [name]: value } })).then((ok) => ok && (setEditing(null), setValue("")));
-  const visible = c.fields.filter((f) => !(c.template === "oauth" && ["token", "refresh", "expires_at"].includes(f.name)));
+  // A signed-in app's fields are the sign-in's own: shown as what it may do, renewed by signing in again, never typed.
+  const visible = c.template === "oauth" ? [] : c.fields;
 
   return (
     <div className="vt-detail">
@@ -273,11 +284,7 @@ function CredentialDetails({ slug, c, templates, handsFirst, onChange, onDeleted
 
       <section>
         <p className="cap">{kindName(c, templates)}</p>
-        {c.template === "oauth" && (
-          <p className="muted sm">
-            Signed in through kiqr.cloud{c.scopes.length ? ` with access to ${c.scopes.length} ${c.scopes.length === 1 ? "thing" : "things"}` : ""}. Sign in again from Add a credential to give it more.
-          </p>
-        )}
+        {c.template === "oauth" && <SignedInApp c={c} />}
         <div className="vt-fields">
           {visible.map((f) => (
             <div key={f.name} className="vt-field">
@@ -439,5 +446,69 @@ function CredentialLog({ id }: { id: string }) {
         ))}
       </ul>
     </section>
+  );
+}
+
+/** Scopes that only keep a sign-in alive or say who it is: not something to list as access. */
+const PLUMBING_SCOPES = ["offline_access", "openid", "profile", "email"];
+
+/** A signed-in app: who it is (when the provider said), what it may do in words, and Sign in again to renew it or give it more. */
+function SignedInApp({ c }: { c: Credential }) {
+  const providers = useAsync(() => api.signInProviders().catch(() => null), []);
+  const p = providers.data?.providers.find((x) => x.id === c.provider);
+  const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEvents(null, (e) => {
+    if (e.type !== "credential_connected" || e.credential !== c.id || !waiting) return;
+    setWaiting(false);
+    if (!e.ok) setError(String(e.error ?? "the sign-in did not finish"));
+  }, { demo: false });
+  const shown = c.scopes.filter((s) => !PLUMBING_SCOPES.includes(s));
+  const label = (s: string) => p?.scopes.find((x) => x.scope === s)?.label ?? s.replace(/^https:\/\/www\.googleapis\.com\/auth\//, "");
+  const more = (p?.scopes ?? []).filter((x) => !c.scopes.includes(x.scope));
+  const again = async () => {
+    if (!c.provider) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Everything it has, and everything the provider offers: signing in again only ever adds.
+      const scopes = [...new Set([...c.scopes, ...(p?.scopes ?? []).map((x) => x.scope)])];
+      const r = await api.vaultConnect(c.provider, { origin: window.location.origin, scopes, credential: c.id });
+      window.open(r.url, "_blank", "noopener");
+      setWaiting(true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="vt-app">
+      <p className="sm">
+        Signed in with {p?.name ?? c.provider ?? "an app"} through kiqr.cloud{c.identity ? <> as <b>{c.identity}</b></> : ""}.
+      </p>
+      {shown.length > 0 ? (
+        <ul className="vt-scopes">
+          {shown.map((s) => (
+            <li key={s}>
+              <Check size={12} /> {label(s)}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted sm">It was given no access beyond signing in.</p>
+      )}
+      {more.length > 0 && <p className="muted sm">It could also: {more.map((x) => x.label).join(", ")}.</p>}
+      <div className="vt-inline">
+        {c.provider && (
+          <button className="btn g sm" disabled={busy || waiting} onClick={() => void again()}>
+            {busy || waiting ? <Loader2 size={13} className="spin" /> : <LogIn size={13} />} {more.length ? "Sign in again to give it more" : "Sign in again"}
+          </button>
+        )}
+        {waiting && <span className="muted sm">Waiting for you to approve it in the new tab…</span>}
+      </div>
+      {error && <p className="err sm">{error}</p>}
+    </div>
   );
 }

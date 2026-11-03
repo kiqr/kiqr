@@ -36,6 +36,8 @@ export function CredentialForm({ templates, domains: startDomains, template: sta
   const [picked, setPicked] = useState<SignInProvider | null>(null);
   const own = templates.filter((t) => t.id !== "oauth");
   const [template, setTemplate] = useState<string | null>(startTemplate && startTemplate !== "oauth" ? startTemplate : null);
+  // The templates may still be on their way; nothing is drawn for one not here yet.
+  const chosen = template ? templates.find((x) => x.id === template) : undefined;
 
   return (
     <div className="vf">
@@ -85,7 +87,7 @@ export function CredentialForm({ templates, domains: startDomains, template: sta
               })}
             </div>
           )}
-          {template && <OwnForm t={templates.find((x) => x.id === template)!} startDomains={startDomains ?? []} onBack={() => setTemplate(null)} onSaved={onSaved} />}
+          {chosen && <OwnForm t={chosen} startDomains={startDomains ?? []} onBack={() => setTemplate(null)} onSaved={onSaved} />}
         </section>
       )}
 

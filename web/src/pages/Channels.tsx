@@ -8,8 +8,8 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence } from "motion/react";
-import { AlertTriangle, Check, ChevronDown, ChevronUp, ExternalLink, KeyRound, Loader2, Mail, Plus, Radio, Sparkles, Trash2, Users, X } from "lucide-react";
-import { api, CHANNEL_EVENTS, useAsync, useEvents, type Channel, type ChannelKind, type ChannelMode, type ChannelPatch, type ChannelsView, type Ownership, type SpecField } from "../api";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, ExternalLink, Globe, KeyRound, Loader2, Mail, Plus, Radio, Sparkles, Trash2, Users, X } from "lucide-react";
+import { api, CHANNEL_EVENTS, useAsync, useEvents, type Channel, type ChannelKind, type ChannelMode, type ChannelPatch, type ChannelsView, type Ownership, type SiteWay, type SpecField } from "../api";
 import { FieldInput, enumOf } from "./FieldInput";
 import { CredentialForm } from "./CredentialForm";
 import { Favicon } from "./Favicon";
@@ -128,6 +128,7 @@ const SHORT: Partial<Record<Channel["readiness"]["state"], string>> = {
   publisher_gone: "Publisher gone",
   publisher_not_ready: "Publisher needs a look",
   no_ability: "Nothing publishes here",
+  pick_ability: "How is it published?",
 };
 
 // ------------------------------------------------------------------ page
@@ -314,6 +315,7 @@ function ChannelDetails({ slug, c, onChange, onRemoved }: { slug: string; c: Cha
   const [confirm, setConfirm] = useState(false);
   useEffect(() => setLabel(c.label), [c.label]);
   const isList = c.kind === "list";
+  const isSite = c.kind === "website";
   const save = async (what: string, patch: ChannelPatch) => {
     setBusy(what);
     setError(null);
@@ -389,10 +391,28 @@ function ChannelDetails({ slug, c, onChange, onRemoved }: { slug: string; c: Cha
         </div>
       )}
 
-      <section>
-        <p className="cap">{isList ? "Sent from" : "Seemo posts as"}</p>
-        <Publisher slug={slug} c={c} busy={busy === "publisher"} onPick={(p) => void save("publisher", { publisher: p })} />
-      </section>
+      {isSite && <SiteWays c={c} busy={busy} onPick={(a) => void save("ability", { ability: a })} onInstall={(a) => void install(a).then(() => save("ability", { ability: a }))} />}
+
+      {(!isSite || c.ability) && (
+        <section>
+          <p className="cap">{isList ? "Sent from" : isSite ? "Publishes as" : "Seemo posts as"}</p>
+          <Publisher slug={slug} c={c} busy={busy === "publisher"} onPick={(p) => void save("publisher", { publisher: p })} />
+        </section>
+      )}
+
+      {isSite && c.ability && Object.keys(c.target ?? {}).length > 0 && <SiteFields slug={slug} c={c} busy={busy === "fields"} onSave={(f) => void save("fields", { fields: f })} />}
+
+      {!c.kind && c.ownership === "owned" && !c.suggested && r.state === "no_ability" && (
+        <section>
+          <p className="cap">Is it your website?</p>
+          <div className="ch-pub none">
+            <span className="muted sm grow">A website is published through a repository that builds it, or the blog engine that hosts it, wherever its address is.</span>
+            <button className="btn g sm" disabled={!!busy} onClick={() => void save("kind", { kind: "website" })}>
+              {busy === "kind" ? <Loader2 size={13} className="spin" /> : <Globe size={13} />} It is our website
+            </button>
+          </div>
+        </section>
+      )}
 
       <section>
         <p className="cap">What Seemo may do here</p>
@@ -479,6 +499,135 @@ function ChannelDetails({ slug, c, onChange, onRemoved }: { slug: string; c: Cha
   );
 }
 
+/**
+ * How a website is published: one of the abilities whose kind publishes a
+ * site (a repository that builds it, a blog engine that hosts it), installed
+ * here or from the marketplace. The site stays the channel; this is the how.
+ */
+function SiteWays({ c, busy, onPick, onInstall }: { c: Channel; busy: string | null; onPick: (ability: string) => void; onInstall: (ability: string) => void }) {
+  const ways = c.site_ways ?? [];
+  const picked = ways.find((w) => w.ability === c.ability);
+  return (
+    <section>
+      <p className="cap">Published through</p>
+      {ways.length === 0 ? (
+        <p className="muted sm">Nothing installed or in the marketplace publishes websites yet.</p>
+      ) : (
+        <div className="ch-ways" role="radiogroup" aria-label="Published through">
+          {ways.map((w: SiteWay) => {
+            const on = w.ability === c.ability;
+            return (
+              <button key={w.ability} role="radio" aria-checked={on} className={`ch-way ${on ? "on" : ""}`} disabled={!!busy || on} onClick={() => (w.installed ? onPick(w.ability) : onInstall(w.ability))}>
+                <b>{w.name}</b>
+                <small>{w.label || w.ability_name}</small>
+                {!w.installed && <span className="chip sm">{busy === "install" ? <Loader2 size={11} className="spin" /> : <Plus size={11} />} Install</span>}
+                {on && <Check size={14} className="ok" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {c.ability && !picked && <p className="warn sm">{c.ability} is not on here any more; pick how it is published.</p>}
+    </section>
+  );
+}
+
+/**
+ * Where exactly a website publishes through its ability: the kind's target
+ * fields (the repository that builds it), offered as a list read through the
+ * publisher once there is one, else typed.
+ */
+function SiteFields({ slug, c, busy, onSave }: { slug: string; c: Channel; busy: boolean; onSave: (f: Record<string, string>) => void }) {
+  const start = () => Object.fromEntries(Object.entries(c.fields ?? {}).map(([k, v]) => [k, String(v ?? "")]));
+  const [values, setValues] = useState<Record<string, string>>(start);
+  useEffect(() => setValues(start()), [c.id, JSON.stringify(c.fields)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const changed = JSON.stringify(filled(values)) !== JSON.stringify(filled(start()));
+  return (
+    <section>
+      <p className="cap">Where it publishes</p>
+      <div className="ch-site-fields">
+        {Object.entries(c.target ?? {}).map(([name, spec]) => (
+          <SiteField key={name} slug={slug} c={c} name={name} spec={spec} value={values[name] ?? ""} onChange={(v) => setValues({ ...values, [name]: v })} />
+        ))}
+      </div>
+      {changed && (
+        <div className="vf-acts">
+          <button className="btn p sm" disabled={busy} onClick={() => onSave(filled(values))}>
+            {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Save
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SiteField({ slug, c, name, spec, value, onChange }: { slug: string; c: Channel; name: string; spec: SpecField; value: string; onChange: (v: string) => void }) {
+  const listed = !!spec.choices && !!c.publisher;
+  const choices = useAsync(() => (listed ? api.channelChoices(slug, c.id, name) : Promise.resolve(null)), [listed, c.publisher, c.id, name]);
+  const opts = choices.data?.choices ?? [];
+  const options = opts.length ? (opts.some((o) => o.value === value) || !value ? opts.map((o) => o.value) : [value, ...opts.map((o) => o.value)]) : undefined;
+  return (
+    <label className="acc-field">
+      <span className="nm">
+        {spec.label ?? name.replace(/_/g, " ")}
+        {spec.optional && <small className="dim"> optional</small>}
+        {choices.loading && <Loader2 size={12} className="spin" />}
+      </span>
+      <FieldInput value={value} onChange={onChange} options={options ?? enumOf(spec)} optional={spec.optional} placeholder={spec.placeholder} mono ariaLabel={spec.label ?? name} />
+      {spec.choices && !c.publisher && <span className="ds muted">Pick who it publishes as first, and the list comes from there; or type it.</span>}
+      {choices.error && <span className="ds warn">{choices.error}</span>}
+      {spec.help && <span className="ds muted">{spec.help}</span>}
+    </label>
+  );
+}
+
+/**
+ * An ability's own one-click sign-in for a website ("Connect with
+ * WordPress"): the site's page in a new tab, its address from the channel;
+ * what it sends back becomes a credential and the channel's publisher. When
+ * the site can only call back over https and none is reachable, its page shows
+ * the values and the user types them into the Vault's form instead.
+ */
+function ChannelConnect({ slug, c, ability, need, label, onTypeIt }: { slug: string; c: Channel; ability: string; need: string; label: string; onTypeIt: () => void }) {
+  const [state, setState] = useState<"idle" | "starting" | "waiting" | "typing">("idle");
+  const [error, setError] = useState<string | null>(null);
+  useEvents(slug, (e) => {
+    if (e.type !== "credential_connected" || e.provider !== ability || state !== "waiting") return;
+    setState("idle");
+    if (!e.ok) setError(String(e.error ?? "the sign-in did not finish"));
+  }, { demo: false });
+  const start = async () => {
+    setState("starting");
+    setError(null);
+    try {
+      const r = await api.abilityConnect(slug, ability, { origin: window.location.origin, need, channel: c.id });
+      window.open(r.url, "_blank", "noopener");
+      setState(r.callback ? "waiting" : "typing");
+    } catch (x) {
+      setError((x as Error).message);
+      setState("idle");
+    }
+  };
+  return (
+    <>
+      <button className="btn p sm" disabled={state === "starting"} onClick={() => void start()}>
+        {state === "starting" ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />} {label}
+      </button>
+      {state === "waiting" && (
+        <span className="muted sm">
+          <Loader2 size={12} className="spin" /> Waiting for you to approve it in the new tab…
+        </span>
+      )}
+      {state === "typing" && (
+        <p className="sm ch-grant">
+          The page shows the values once. <button className="lnk-btn" onClick={onTypeIt}>Type them into the Vault</button>; this KIQR is not reachable over https for it to send them back.
+        </p>
+      )}
+      {error && <p className="err sm ch-grant">{error}</p>}
+    </>
+  );
+}
+
 function Perm({ title, help, value, choices, busy, onPick }: { title: string; help: string; value: ChannelMode; choices: { v: ChannelMode; label: string }[]; busy: boolean; onPick: (v: ChannelMode) => void }) {
   return (
     <div className="acx-perm">
@@ -510,16 +659,19 @@ function Publisher({ slug, c, busy, onPick }: { slug: string; c: Channel; busy: 
   const [adding, setAdding] = useState(false);
   const templates = useAsync(() => (adding ? api.vault().then((v) => v.templates) : Promise.resolve([])), [adding]);
   const add = need && (
-    <button className="btn g sm" onClick={() => setAdding(true)}>
-      <Plus size={13} /> {options.length ? "Add another" : `Add ${need.describe}`}
-    </button>
+    <>
+      {need.connect && <ChannelConnect slug={slug} c={c} ability={need.ability} need={need.connect.need} label={need.connect.label} onTypeIt={() => setAdding(true)} />}
+      <button className={`btn ${need.connect ? "t" : "g"} sm`} onClick={() => setAdding(true)}>
+        <Plus size={13} /> {options.length ? "Add another" : `${need.connect ? "Or add" : "Add"} ${need.describe}`}
+      </button>
+    </>
   );
   const drawer = (
     <AnimatePresence>
       {adding && need && (
         <Drawer key="add" title={`Add ${need.describe}`} iconNode={<KeyRound size={22} />} sub={`Seemo posts as it on ${c.label}`} onClose={() => setAdding(false)}>
-          {templates.data ? (
-            <CredentialForm templates={templates.data} domains={need.hosts} template={need.template[0]} forDomains={need.hosts.length ? need.hosts : undefined} grant={[{ project: slug, ability: need.ability }]} onSaved={(x) => (setAdding(false), onPick(x.id))} onCancel={() => setAdding(false)} />
+          {templates.data?.length ? (
+            <CredentialForm templates={templates.data} domains={need.hosts.length ? need.hosts : c.kind === "website" ? [c.domain] : []} template={need.template[0]} forDomains={need.hosts.length ? need.hosts : c.kind === "website" ? [c.domain] : undefined} grant={[{ project: slug, ability: need.ability }]} onSaved={(x) => (setAdding(false), onPick(x.id))} onCancel={() => setAdding(false)} />
           ) : (
             <Loader2 size={16} className="spin" />
           )}
@@ -564,7 +716,7 @@ function Publisher({ slug, c, busy, onPick }: { slug: string; c: Channel; busy: 
 
 /** Add a channel: a link or a site (the kind and its fields are read from it), a kind with its fields, or a mailing list. */
 function AddChannel({ slug, kinds, onDone, onCancel }: { slug: string; kinds: ChannelKind[]; onDone: (c: Channel) => void; onCancel: () => void }) {
-  const [what, setWhat] = useState<"link" | "kind" | "list">("link");
+  const [what, setWhat] = useState<"link" | "site" | "kind" | "list">("link");
   const [url, setUrl] = useState("");
   const spotKinds = kinds.filter((k) => k.kind !== "list" && !k.account_is_target && Object.keys(k.target ?? {}).length > 0);
   const [kindId, setKindId] = useState(spotKinds[0]?.kind ?? "");
@@ -575,7 +727,7 @@ function AddChannel({ slug, kinds, onDone, onCancel }: { slug: string; kinds: Ch
   const [ownership, setOwnership] = useState<Ownership | "">("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const missing = what === "link" ? !url.trim() : what === "list" ? !label.trim() : !kind || Object.entries(kind.target ?? {}).some(([n, s]) => !s.optional && !(fields[n] ?? "").trim());
+  const missing = what === "link" || what === "site" ? !url.trim() : what === "list" ? !label.trim() : !kind || Object.entries(kind.target ?? {}).some(([n, s]) => !s.optional && !(fields[n] ?? "").trim());
   const add = async () => {
     setBusy(true);
     setError(null);
@@ -584,6 +736,8 @@ function AddChannel({ slug, kinds, onDone, onCancel }: { slug: string; kinds: Ch
       const body =
         what === "list"
           ? { kind: "list", label: label.trim(), description: description.trim() || undefined }
+          : what === "site"
+            ? { kind: "website", ...(/^[a-z]+:\/\//i.test(u) ? { url: u } : { url: `https://${u}` }), label: label.trim() || undefined }
           : what === "kind"
             ? { kind: kind!.kind, fields: filled(fields), label: label.trim() || undefined, ownership }
             : { ...(/^[a-z]+:\/\//i.test(u) || u.includes("/") ? { url: /^[a-z]+:\/\//i.test(u) ? u : `https://${u}` } : { domain: u }), label: label.trim() || undefined, ownership };
@@ -600,6 +754,7 @@ function AddChannel({ slug, kinds, onDone, onCancel }: { slug: string; kinds: Ch
         {(
           [
             ["link", "A link or site"],
+            ["site", "Your website"],
             ...(spotKinds.length ? [["kind", "A community"]] : []),
             ["list", "A mailing list"],
           ] as [typeof what, string][]
@@ -617,6 +772,16 @@ function AddChannel({ slug, kinds, onDone, onCancel }: { slug: string; kinds: Ch
             <input className="input" autoFocus value={url} placeholder="https://x.com/yourcompany" onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !missing && void add()} />
           </div>
           <span className="ds muted">A profile, a page, a subreddit, a forum category. Seemo reads what it is from the link.</span>
+        </label>
+      )}
+      {what === "site" && (
+        <label className="acc-field">
+          <span className="nm">Its address</span>
+          <div className="ch-url">
+            {url.trim() && <Favicon domain={hostOf(url)} size={22} />}
+            <input className="input" autoFocus value={url} placeholder="yourcompany.com, or blog.yourcompany.com" onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !missing && void add()} />
+          </div>
+          <span className="ds muted">The business's own site, a blog or docs. Once added, pick how it is published: through the repository that builds it, or the blog engine that hosts it.</span>
         </label>
       )}
       {what === "kind" && (
@@ -641,7 +806,7 @@ function AddChannel({ slug, kinds, onDone, onCancel }: { slug: string; kinds: Ch
             <input className="input" value={description} placeholder="Product news, once a month" onChange={(e) => setDescription(e.target.value)} />
           </label>
         </>
-      ) : (
+      ) : what === "site" ? null : (
         <>
           <label className="acc-field">
             <span className="nm">

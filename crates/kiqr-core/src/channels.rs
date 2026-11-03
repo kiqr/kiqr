@@ -21,6 +21,12 @@ use std::collections::BTreeMap;
 /// The kind of a mailing list.
 pub const LIST: &str = "list";
 
+/// The kind of a website the business owns: published through the ability
+/// the channel picks (`ability`), one whose kind publishes a site (a
+/// repository that builds it, a blog engine that hosts it), never matched by
+/// domain. Its `fields` are that kind's target (the repository).
+pub const WEBSITE: &str = "website";
+
 /// What Seemo may do in a channel for an act that changes something there.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -190,6 +196,10 @@ pub fn host_of(url: &str) -> String {
 impl Channel {
     pub fn is_list(&self) -> bool {
         self.kind == LIST
+    }
+
+    pub fn is_website(&self) -> bool {
+        self.kind == WEBSITE
     }
 
     pub fn owned(&self) -> bool {

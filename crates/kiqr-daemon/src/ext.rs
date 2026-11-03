@@ -93,7 +93,7 @@ pub async fn program_of(app: &App, slug: Option<&str>, m: &Manifest) -> Result<M
 pub fn missing_in(app: &App, slug: Option<&str>, m: &Manifest) -> Vec<String> {
     match slug.filter(|s| !s.is_empty()) {
         Some(slug) => crate::creds::missing(app, slug, m),
-        None => m.needs().iter().filter(|n| !n.optional).map(|n| n.describe()).collect(),
+        None => m.needs().iter().filter(|n| !n.optional).map(|n| crate::vault::describe(app, n)).collect(),
     }
 }
 
@@ -790,6 +790,20 @@ pub(crate) fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<(
 }
 
 
+/// Whether a call still needs a setting: its request names it (`${NAME}` or `{{name}}`) somewhere the
+/// call's own arguments do not cover. `{{repo|${GITHUB_REPO}}}` with a `repo` given does not need it.
+fn uses_setting(shape: &str, key: &str, args: &serde_json::Map<String, Value>) -> bool {
+    let var = format!("${{{}}}", key.to_ascii_uppercase());
+    let mut rest = shape.to_string();
+    for (name, v) in args {
+        if v.is_null() || v.as_str() == Some("") {
+            continue;
+        }
+        rest = rest.replace(&format!("{{{{{name}|{var}}}}}"), "");
+    }
+    rest.contains(&var) || rest.contains(&format!("{{{{{key}}}")) || rest.contains(&format!("{{{{{key}|"))
+}
+
 // ---------------------------------------------------------------- executor
 
 /// What a connection produced.
@@ -813,16 +827,22 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
     // The project's settings for this ability (a property, a site); `pick` honours the credential they name.
     let setting = (!m.settings.is_empty()).then(|| Project::load(&app.store, slug).ok().and_then(|p| p.ability_settings.get(&m.id).cloned())).flatten();
     let named = conn.or(args.get("credential").and_then(Value::as_str));
-    let conn = crate::creds::pick(app, slug, m, named).await?;
+    let mut conn = crate::creds::pick(app, slug, m, named).await?;
     let mut args = args.clone();
     if let Some(o) = args.as_object_mut() {
         // The settings fill what the call left out; a call may name its own (another property).
         for (k, v) in setting.iter().flat_map(|s| s.values.iter()) {
             o.entry(k.clone()).or_insert_with(|| v.clone());
         }
-        let missing: Vec<&str> = m.settings.iter().filter(|(k, spec)| !spec["optional"].as_bool().unwrap_or(false) && o.get(*k).is_none_or(|v| v.is_null() || v.as_str() == Some(""))).map(|(k, spec)| spec["label"].as_str().unwrap_or(k)).collect();
+        let shape = serde_json::to_string(provide).unwrap_or_default();
+        let missing: Vec<&str> = m
+            .settings
+            .iter()
+            .filter(|(k, spec)| !spec["optional"].as_bool().unwrap_or(false) && o.get(*k).is_none_or(|v| v.is_null() || v.as_str() == Some("")) && uses_setting(&shape, k, o))
+            .map(|(k, spec)| spec["label"].as_str().unwrap_or(k))
+            .collect();
         if !missing.is_empty() {
-            bail!("{} has no {} picked yet; the user picks it under Performance (or on the ability)", m.name, missing.join(", ").to_lowercase());
+            bail!("{} has no {} picked yet; the user picks it on the ability (Setup → Abilities)", m.name, missing.join(", ").to_lowercase());
         }
     }
     // The channel the call happens in decides: a role it switched off is refused, whoever asks.
@@ -838,6 +858,10 @@ pub async fn execute(app: &App, slug: &str, m: &Manifest, provide: &Provide, abi
         if s.mode(&role) == kiqr_core::channels::Mode::Off {
             bail!("Seemo may not {role} in {}; the user can allow it on the channel", s.label);
         }
+    }
+    // A call in a website channel is made for that site: its address is `${SITE_URL}`.
+    if let (Some(c), Some(ch)) = (conn.as_mut(), spot.as_ref().and_then(|s| s.channel.as_ref()).filter(|ch| ch.is_website())) {
+        c.site = Some(crate::channels::site_url(ch));
     }
     if let Some(c) = &conn {
         if m.transport == Transport::Mcp {
@@ -1163,6 +1187,33 @@ pub fn mcp_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Conn>, env: &i
     crate::mcp_host::Launch { key: crate::mcp_host::Launch::key_for(slug, conn.map(|c| c.id()), &program.id), vars, dir, project_dir: Some(project_dir), warmup }
 }
 
+/// How long a step waits for a busy program (a long text typed at a person's pace) before it gives up.
+const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// One call on a hosted program, made again while the program says it is busy with an earlier action
+/// (its manifest's `busy_when`), up to `BUSY_WAIT`.
+async fn mcp_call_when_free(app: &App, program: &Manifest, launch: &crate::mcp_host::Launch, call: &str, args: &Value) -> Result<crate::mcp_host::McpOut> {
+    let started = std::time::Instant::now();
+    loop {
+        let (out, said) = match app.mcp.call(app.store.home().root(), program, launch, call, args).await {
+            Ok(r) => {
+                let out = crate::mcp_host::read_result(&r);
+                let said = if out.is_error { out.text.clone() } else { String::new() };
+                (Ok(out), said)
+            }
+            Err(e) => {
+                let said = format!("{e:#}");
+                (Err(e), said)
+            }
+        };
+        let busy = !said.is_empty() && program.busy_when.iter().any(|w| said.contains(w.as_str()));
+        if !busy || started.elapsed() > BUSY_WAIT {
+            return out;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
 /// Steps on a hosted program, in order: each calls one of the program's
 /// tools with `args` filled from the arguments and what earlier steps saved
 /// (`{{name.var}}`); `when` skips one; `for_each` runs one per entry of an
@@ -1171,15 +1222,22 @@ pub fn mcp_env(app: &App, slug: &str, m: &Manifest, conn: Option<&Conn>, env: &i
 /// answer, or, for a `text` that is a template, anything saved.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn mcp_steps(app: &App, program: &Manifest, launch: &crate::mcp_host::Launch, m: &Manifest, steps: &[extensions::Step], args: &Value, map: &ResultMap, env: &(impl Fn(&str) -> Option<String> + Clone)) -> Result<(Value, Option<String>)> {
+    // A step names the folders the program works in as the program does: `${KIQR_PROJECT_DIR}`, `${KIQR_ACCOUNT_DIR}`.
+    let folder = |d: &Option<std::path::PathBuf>| d.as_ref().map(|d| d.display().to_string());
+    let (account_dir, project_dir) = (folder(&launch.dir), folder(&launch.project_dir));
+    let outer = env.clone();
+    let env = &move |k: &str| match k {
+        "KIQR_ACCOUNT_DIR" => account_dir.clone(),
+        "KIQR_PROJECT_DIR" => project_dir.clone(),
+        _ => outer(k),
+    };
     let mut ctx = if args.is_object() { args.clone() } else { json!({}) };
     let mut last = Value::Null;
     for st in steps {
-        if let Some(w) = &st.when {
-            if !extensions::truthy(&extensions::fill_value(&Value::String(w.clone()), &ctx, env)) {
-                let skipped = if st.for_each.is_some() { json!([]) } else { Value::Null };
-                ctx[&st.name] = skipped;
-                continue;
-            }
+        if st.skipped(&ctx, env) {
+            let skipped = if st.for_each.is_some() { json!([]) } else { Value::Null };
+            ctx[&st.name] = skipped;
+            continue;
         }
         let runs: Vec<Option<(usize, Value)>> = match st.for_each.as_deref() {
             Some(list) => {
@@ -1209,8 +1267,7 @@ pub(crate) async fn mcp_steps(app: &App, program: &Manifest, launch: &crate::mcp
                     check_host(m, u, env)?;
                 }
             }
-            let r = app.mcp.call(app.store.home().root(), program, launch, &st.call, &call_args).await.with_context(|| format!("step '{}'", st.name))?;
-            let out = crate::mcp_host::read_result(&r);
+            let out = mcp_call_when_free(app, program, launch, &st.call, &call_args).await.with_context(|| format!("step '{}'", st.name))?;
             if out.is_error {
                 bail!("step '{}': {}", st.name, kiqr_core::profile::truncate_chars(out.text.trim(), 300));
             }
@@ -1440,13 +1497,11 @@ async fn steps_exec(m: &Manifest, steps: &[extensions::Step], args: &Value, map:
             Some(i) => format!("step '{}' (file {})", st.name, i + 1),
             None => format!("step '{}'", st.name),
         };
-        if let Some(w) = &st.when {
-            if !extensions::truthy(&extensions::fill_value(&Value::String(w.clone()), &ctx, env)) {
-                let skipped = if st.for_each.is_some() { json!([]) } else { Value::Null };
-                ctx[&st.name] = skipped.clone();
-                saved.insert(st.name.clone(), skipped);
-                continue;
-            }
+        if st.skipped(&ctx, env) {
+            let skipped = if st.for_each.is_some() { json!([]) } else { Value::Null };
+            ctx[&st.name] = skipped.clone();
+            saved.insert(st.name.clone(), skipped);
+            continue;
         }
         let runs: Vec<Option<(usize, Value)>> = match st.for_each.as_deref() {
             Some(list) => {
@@ -1744,6 +1799,16 @@ async fn run_ext_tool(State(app): State<App>, Path((slug, ext, tool)): Path<(Str
 #[cfg(test)]
 mod credential_host_tests {
     use super::*;
+
+    #[test]
+    fn a_setting_is_needed_only_where_the_call_does_not_cover_it() {
+        let args = |v: Value| v.as_object().cloned().unwrap();
+        let shape = r#"{"url":"https://api.github.com/repos/{{repo|${GITHUB_REPO}}}/git/trees/HEAD"}"#;
+        assert!(!uses_setting(shape, "github_repo", &args(json!({ "repo": "a/b" }))));
+        assert!(uses_setting(shape, "github_repo", &args(json!({}))));
+        assert!(uses_setting(r#"{"url":"https://api.github.com/repos/${GITHUB_REPO}/releases"}"#, "github_repo", &args(json!({ "repo": "a/b" }))));
+        assert!(!uses_setting(r#"{"url":"https://api.github.com/user/repos"}"#, "github_repo", &args(json!({}))));
+    }
 
     #[tokio::test]
     async fn a_credential_value_goes_only_to_its_domains() {

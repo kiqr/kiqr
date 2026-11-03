@@ -8,7 +8,7 @@
 # Linux and Windows (the engine has no macOS build yet).
 id: browser
 name: Browse with a real browser
-version: 0.1.0
+version: 0.1.1
 summary: "A real browser of Seemo's own, headless, one per login with its sign-in kept. Reads pages behind a login or paywall; site abilities (X, Reddit) post and reply through it, each asking first."
 categories: [browser, tools]
 icon: globe
@@ -41,6 +41,9 @@ args: []
 # The browser is opened once the program is up; the profile makes it the login's own.
 warmup:
   - { name: open, call: browser_open }
+# A long text is typed at a person's pace and goes on after the call that started it; until it is done the
+# program refuses other actions with this, and the next step waits for it.
+busy_when: ["is still typing"]
 # The profile (its sign-ins) and everything the program keeps live in the login's session folder.
 env_set:
   STEALTHFOX_PROFILE_DIR: "${KIQR_ACCOUNT_DIR}/profile"

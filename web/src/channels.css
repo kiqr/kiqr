@@ -71,3 +71,14 @@ a.au-via:hover { color: var(--fg); text-decoration: none; }
 .acc-field > .seg { align-self: flex-start; }
 .ch-pub .ch-grant { flex-basis: 100%; margin: 0; }
 .ch-pub.none .grow { flex: 1; min-width: 200px; }
+.ch-ways { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.ch-way { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; text-align: left; padding: 10px 12px; border-radius: var(--r); border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+.ch-way:hover:not(:disabled) { border-color: var(--line-2); }
+.ch-way.on { border-color: var(--accent); background: var(--accent-soft); cursor: default; }
+.ch-way b { font-weight: 600; }
+.ch-way small { grid-column: 1; color: var(--muted); font-size: 12px; }
+.ch-way .chip, .ch-way svg.ok { grid-column: 2; grid-row: 1 / span 2; }
+.ch-way svg.ok { color: var(--accent); }
+.ch-site-fields { display: grid; gap: 10px; }
+.ch-site-fields .acc-field { max-width: none; width: 100%; }
+.ch-site-fields .acc-field .input, .ch-site-fields .acc-field select { width: 100%; }

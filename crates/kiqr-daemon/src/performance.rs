@@ -14,7 +14,7 @@ use axum::{
 use chrono::Utc;
 use kiqr_core::events::EventKind;
 use kiqr_core::marketing::{kpi_label, Plan};
-use kiqr_core::metrics::{kpi_binding, source_label, window, Agg, Snapshot, SOURCES};
+use kiqr_core::metrics::{kpi_binding, kpi_events, source_label, window, Agg, Snapshot, SOURCES};
 use kiqr_core::project::Project;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -116,7 +116,10 @@ pub async fn view(app: &App, slug: &str, only: Option<&str>) -> Result<Value, Ap
                             let snap = Snapshot::latest(&app.store, slug, src);
                             match snap {
                                 Some(s) => {
-                                    let series = s.series(metric);
+                                    let series = match kpi_events(&o.kpi) {
+                                        Some(events) => s.series_where(metric, "event", events),
+                                        None => s.series(metric),
+                                    };
                                     let (now, prev) = window(&series, 30, agg, today);
                                     (now, prev, series.len(), Some(src))
                                 }

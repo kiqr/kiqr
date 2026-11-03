@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
 };
 use kiqr_core::vault::Credential;
-use kiqr_core::channels::{self, host_of, Channel, Mode, Ownership, LIST};
+use kiqr_core::channels::{self, host_of, Channel, Mode, Ownership, LIST, WEBSITE};
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{Kind, Manifest};
 use kiqr_core::vault::same_site;
@@ -28,6 +28,7 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/channels/suggest", axum::routing::post(suggest_route))
         .route("/api/projects/{slug}/channels/{id}", get(get_one).put(update_route).delete(delete_route))
         .route("/api/projects/{slug}/channels/{id}/learn", axum::routing::post(learn_now))
+        .route("/api/projects/{slug}/channels/{id}/choices/{name}", get(field_choices))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -90,6 +91,10 @@ pub async fn kind_for(app: &App, slug: &str, ch: &Channel) -> Option<(Manifest, 
         return None;
     }
     let all = kinds(app, slug).await;
+    // A website is published through the ability it picked, wherever it is.
+    if ch.is_website() {
+        return all.into_iter().find(|(m, k)| m.id == ch.ability && k.publishes_site());
+    }
     let pinned = |m: &Manifest| ch.ability.is_empty() || m.id == ch.ability;
     let fits = |k: &Kind| {
         let f = fields_for(ch, k);
@@ -104,14 +109,21 @@ pub async fn kind_for(app: &App, slug: &str, ch: &Channel) -> Option<(Manifest, 
     found.first().map(|x| (*x).clone())
 }
 
+/// A website channel's address, as its calls get it (`${SITE_URL}`): its link, else its domain over https.
+pub fn site_url(ch: &Channel) -> String {
+    let u = ch.url.trim().trim_end_matches('/');
+    if u.is_empty() { format!("https://{}", ch.domain) } else { u.to_string() }
+}
+
 /// The credentials that could publish to a channel: those in the Vault that
 /// fit what its publishing ability asks for (a login for x.com, a mail server).
+/// When the ability asks for one on whatever site it publishes (`${SITE_URL}`),
+/// only those for this website's own domain.
 pub async fn publishers(app: &App, slug: &str, ch: &Channel) -> Vec<Credential> {
     let Some(m) = publishing_ability(app, slug, ch).await else { return vec![] };
-    match m.needs().into_iter().next() {
-        Some(need) => crate::creds::fitting(app, slug, &m, &need),
-        None => vec![],
-    }
+    let Some(need) = m.needs().into_iter().next() else { return vec![] };
+    let any_site = !need.hosts.is_empty() && need.hosts.iter().all(|h| h.contains('$'));
+    crate::creds::fitting(app, slug, &m, &need).into_iter().filter(|c| !(ch.is_website() && any_site) || c.allows_host(&ch.domain)).collect()
 }
 
 /// Where a call happens: the kind, the target fields, how it reads, and the
@@ -142,11 +154,11 @@ impl Spot {
 /// The channel for a spot of a kind reached through an account: the same kind
 /// (or a channel on the kind's site that names no kind yet) and fields; when
 /// the profile itself is the spot, the one this credential publishes as.
-pub fn matching(store: &kiqr_core::Store, slug: &str, publisher: &str, kind: &Kind, domain: &str, fields: &BTreeMap<String, Value>) -> Option<Channel> {
+pub fn matching(store: &kiqr_core::Store, slug: &str, publisher: &str, ability: &str, kind: &Kind, domain: &str, fields: &BTreeMap<String, Value>) -> Option<Channel> {
     Channel::all(store, slug).unwrap_or_default().into_iter().find(|ch| {
         !ch.suggested
             && !ch.is_list()
-            && (ch.kind == kind.kind || (ch.kind.is_empty() && !domain.is_empty() && same_site(&ch.domain, domain)))
+            && (ch.kind == kind.kind || (ch.is_website() && ch.ability == ability && kind.publishes_site()) || (ch.kind.is_empty() && !domain.is_empty() && same_site(&ch.domain, domain)))
             && channels::same_fields(&fields_for(ch, kind), fields)
             && (!fields.is_empty() || ch.publisher == publisher)
     })
@@ -173,7 +185,7 @@ pub fn spot_of(store: &kiqr_core::Store, slug: &str, publisher: &str, who: &str,
         k.check_target(&f)?
     };
     let label = channels::spot_label(k, who, &fields);
-    let channel = matching(store, slug, publisher, k, &kind_domain(m, k), &fields);
+    let channel = matching(store, slug, publisher, &m.id, k, &kind_domain(m, k), &fields);
     Ok(Some(Spot { kind: k.clone(), fields, label, channel }))
 }
 
@@ -183,7 +195,7 @@ pub async fn add_spot(app: &App, slug: &str, m: &Manifest, c: &Credential, spot:
     let kind = spot["kind"].as_str()?;
     let fields: BTreeMap<String, Value> = spot["fields"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
     let k = m.kinds.iter().find(|k| k.kind == kind)?.clone();
-    if let Some(found) = matching(&app.store, slug, &c.id, &k, &kind_domain(m, &k), &fields) {
+    if let Some(found) = matching(&app.store, slug, &c.id, &m.id, &k, &kind_domain(m, &k), &fields) {
         return Some(found);
     }
     let mut ch = Channel::for_spot(&k, &crate::creds::name_of(c), fields, by).ok()?;
@@ -227,6 +239,10 @@ pub async fn readiness(app: &App, slug: &str, ch: &Channel, kind: Option<&(Manif
     let needs_publisher = ability.as_ref().is_none_or(|m| !m.needs().is_empty());
     let (state, text, fix) = if ch.suggested {
         ("suggested", "Suggested by Seemo: add it, or dismiss it".to_string(), json!({ "action": "add", "label": "Add" }))
+    } else if ch.is_website() && kind.is_none() {
+        let site = if ch.domain.is_empty() { "this site".to_string() } else { ch.domain.clone() };
+        let text = if ch.ability.is_empty() { format!("Pick how {site} is published") } else { format!("What published {site} is not on here; pick how it is published") };
+        ("pick_ability", text, json!({ "action": "pick_ability", "label": "Pick how it is published" }))
     } else if !ch.is_list() && kind.is_none_or(|(_, k)| !k.publishes()) {
         let site = if ch.domain.is_empty() { "this site".to_string() } else { ch.domain.clone() };
         // The marketplace ability that publishes there, when one does.
@@ -254,6 +270,15 @@ pub async fn readiness(app: &App, slug: &str, ch: &Channel, kind: Option<&(Manif
     } else {
         ("publisher_gone", "The credential it published as is gone".to_string(), json!({ "action": "publisher", "label": "Pick another" }))
     };
+    // Who it publishes as comes first (a repository list is read through it), then where exactly.
+    let missing = kind.filter(|(_, k)| ch.is_website() && !k.target.is_empty()).and_then(|(_, k)| {
+        let f = fields_for(ch, k);
+        k.required().into_iter().find(|n| f.get(*n).is_none_or(|v| v.as_str().is_some_and(|s| s.trim().is_empty()))).map(|n| k.target[n]["label"].as_str().unwrap_or(n).to_lowercase())
+    });
+    let (state, text, fix) = match missing {
+        Some(m) if state == "ready" => ("needs_fields", format!("Pick the {m}"), json!({ "action": "fields", "label": format!("Pick the {m}") })),
+        _ => (state, text, fix),
+    };
     json!({ "state": state, "ready": state == "ready", "text": text, "fix": fix })
 }
 
@@ -270,7 +295,7 @@ pub async fn view(app: &App, slug: &str, ch: &Channel) -> Value {
     };
     // What a publisher must be, for the Add panel: the publishing ability's first need.
     let ability = publishing_ability(app, slug, ch).await;
-    v["publisher_need"] = ability.as_ref().and_then(|m| m.needs().into_iter().next().map(|n| json!({ "ability": m.id, "ability_name": m.name, "describe": n.describe(), "template": n.template, "hosts": n.hosts.iter().filter(|h| !h.contains('$')).collect::<Vec<_>>(), "provider": n.provider, "scopes": n.scopes }))).unwrap_or(Value::Null);
+    v["publisher_need"] = ability.as_ref().and_then(|m| m.needs().into_iter().next().map(|n| json!({ "ability": m.id, "ability_name": m.name, "describe": crate::vault::describe(app, &n), "provider_name": crate::vault::provider_name(app, &n.provider), "template": n.template, "hosts": n.hosts.iter().filter(|h| !h.contains('$')).collect::<Vec<_>>(), "provider": n.provider, "scopes": n.scopes, "connect": n.connect.as_ref().filter(|c| c.needs.iter().all(|x| x == kiqr_core::conn::SITE_URL && ch.is_website())).map(|c| json!({ "need": n.id, "label": if c.label.is_empty() { format!("Connect with {}", m.name) } else { c.label.clone() } })) }))).unwrap_or(Value::Null);
     // The profile itself is the channel and kept the name it was made with: who it is now.
     if let Some(p) = v["publisher_view"]["label"].as_str().map(str::to_string) {
         if ch.fields.is_empty() && !ch.is_list() && ch.added_by == "account" {
@@ -290,9 +315,18 @@ pub async fn view(app: &App, slug: &str, ch: &Channel) -> Value {
         v["kind_name"] = json!("Mailing list");
         v["icon"] = json!("mail");
         v["publishes"] = json!(true);
-    } else if let Some((m, k)) = &kind {
-        v["kind"] = json!(k.kind);
-        v["kind_name"] = json!(k.display_name());
+    }
+    if ch.is_website() {
+        // How it can be published: the abilities here that publish a site, and the marketplace's.
+        v["site_ways"] = json!(site_ways(app, slug).await);
+        v["kind_name"] = json!("Website");
+        v["icon"] = json!("globe");
+    }
+    if let Some((m, k)) = kind.as_ref().filter(|_| !ch.is_list()) {
+        if !ch.is_website() {
+            v["kind"] = json!(k.kind);
+        }
+        v["kind_name"] = json!(if ch.is_website() { format!("Website through {}", k.display_name()) } else { k.display_name().to_string() });
         v["kind_label"] = json!(k.label);
         v["icon"] = json!(k.icon);
         v["publishes"] = json!(k.publishes());
@@ -312,6 +346,27 @@ pub async fn view(app: &App, slug: &str, ch: &Channel) -> Value {
 async fn publisher_view(app: &App, slug: &str, c: &Credential) -> Value {
     let st = crate::creds::state(app, slug, c).await;
     json!({ "credential": c.id, "label": crate::creds::name_of(c), "domain": c.default_domain(), "template": c.template, "state": st.word(), "ready": st.ready() })
+}
+
+/// How a website can be published: the installed abilities with a kind that
+/// publishes a site, then the marketplace's not installed here.
+pub async fn site_ways(app: &App, slug: &str) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for (m, k) in kinds(app, slug).await.into_iter().filter(|(_, k)| k.publishes_site()) {
+        if !out.iter().any(|o| o["ability"] == m.id.as_str()) {
+            out.push(json!({ "ability": m.id, "ability_name": m.name, "kind": k.kind, "name": k.display_name(), "label": k.label, "icon": k.icon, "installed": true }));
+        }
+    }
+    let here: Vec<String> = app.registry.read().await.entries.iter().map(|e| e.id().to_string()).collect();
+    for item in crate::market::catalogue(app).await {
+        if here.contains(&item.id) || out.iter().any(|o| o["ability"] == item.id.as_str()) {
+            continue;
+        }
+        if let Some(k) = item.kinds.iter().find(|k| k.site) {
+            out.push(json!({ "ability": item.id, "ability_name": item.name, "kind": k.kind, "name": k.display_name(), "label": "", "icon": k.icon, "installed": false }));
+        }
+    }
+    out
 }
 
 /// What can be added: each kind with its site and target fields, and a list.
@@ -433,7 +488,15 @@ pub async fn create(app: &App, slug: &str, b: NewChannel, by: &str) -> Result<Ch
     let _ = kiqr_core::project::Project::load(&app.store, slug)?;
     let kind = b.kind.trim().to_ascii_lowercase();
     let url = b.url.trim();
-    let mut ch = if kind == LIST {
+    let mut ch = if kind == WEBSITE {
+        // The site is the channel; how it is published is picked on it.
+        let domain = if url.is_empty() { kiqr_core::vault::normalise_host(&b.domain).unwrap_or_default() } else { host_of(url) };
+        if domain.is_empty() {
+            return Err(bad("name the website's address"));
+        }
+        let label = if b.label.trim().is_empty() { domain.clone() } else { b.label.trim().to_string() };
+        Channel { label, domain, kind: WEBSITE.into(), ownership: Ownership::Owned, url: url.to_string(), added_by: by.to_string(), ..Default::default() }
+    } else if kind == LIST {
         if b.label.trim().is_empty() {
             return Err(bad("a list needs a name"));
         }
@@ -478,7 +541,7 @@ pub async fn create(app: &App, slug: &str, b: NewChannel, by: &str) -> Result<Ch
     if !b.ownership.trim().is_empty() {
         ch.ownership = Ownership::parse(&b.ownership).ok_or_else(|| bad("ownership is owned or third_party"))?;
     }
-    if ch.is_list() {
+    if ch.is_list() || ch.is_website() {
         ch.ownership = Ownership::Owned;
     }
     ch.read = b.read.unwrap_or(true);
@@ -529,8 +592,13 @@ pub struct Patch {
     pub ownership: Option<String>,
     /// Who Seemo publishes as; empty: nobody.
     pub publisher: Option<String>,
-    /// The ability that publishes here, when several could; empty: any.
+    /// The ability that publishes here, when several could; empty: any. For a
+    /// website, how it is published: an ability with a kind that publishes a site.
     pub ability: Option<String>,
+    /// The spot's target fields (a website's repository), checked against its kind.
+    pub fields: Option<BTreeMap<String, Value>>,
+    /// `website`: a channel on a site, with no kind yet, is the business's website.
+    pub kind: Option<String>,
     pub read: Option<bool>,
     pub publish: Option<String>,
     pub reply: Option<String>,
@@ -558,8 +626,28 @@ async fn update_route(State(app): State<App>, Path((slug, id)): Path<(String, St
     if let Some(o) = p.ownership.filter(|_| !ch.is_list()) {
         ch.ownership = Ownership::parse(&o).ok_or_else(|| bad("ownership is owned or third_party"))?;
     }
+    if let Some(k) = p.kind.map(|k| k.trim().to_ascii_lowercase()).filter(|k| *k != ch.kind) {
+        if k != WEBSITE || !ch.kind.is_empty() || !ch.owned() || ch.domain.is_empty() {
+            return Err(bad("only an owned channel on a site, with no kind, can become the website"));
+        }
+        ch.kind = k;
+        ch.ability.clear();
+    }
     if let Some(a) = p.ability {
-        ch.ability = a.trim().to_string();
+        let a = a.trim().to_string();
+        if ch.is_website() && !a.is_empty() && !kinds(&app, &slug).await.iter().any(|(m, k)| m.id == a && k.publishes_site()) {
+            return Err(bad(format!("'{a}' does not publish websites here; install it, or pick one that does")));
+        }
+        if a != ch.ability && ch.is_website() {
+            // Another way of publishing: its fields and publisher were the old one's.
+            ch.fields.clear();
+            ch.publisher.clear();
+        }
+        ch.ability = a;
+    }
+    if let Some(f) = p.fields {
+        let (_, k) = kind_for(&app, &slug, &ch).await.ok_or_else(|| bad(format!("pick how {} is published first", ch.label)))?;
+        ch.fields = k.check_target(&f).map_err(|e| bad(e.to_string()))?;
     }
     if let Some(r) = p.read {
         ch.read = r;
@@ -593,6 +681,22 @@ async fn update_route(State(app): State<App>, Path((slug, id)): Path<(String, St
         let _ = crate::learn::start(&app, &slug, Some(ch.id.clone())).await;
     }
     Ok(Json(view(&app, &slug, &ch).await))
+}
+
+/// `GET …/channels/{id}/choices/{name}`: what a target field can be (a
+/// website's repository), read through the channel's publisher.
+async fn field_choices(State(app): State<App>, Path((slug, id, name)): Path<(String, String, String)>) -> ApiResult<Value> {
+    let ch = Channel::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let (m, k) = kind_for(&app, &slug, &ch).await.ok_or_else(|| bad(format!("pick how {} is published first", ch.label)))?;
+    if !k.target.contains_key(&name) {
+        return Err(bad(format!("{} has no field '{name}'", k.display_name())));
+    }
+    if ch.publisher.is_empty() {
+        return Err(bad("pick who it publishes as first; the list is read through them"));
+    }
+    let conn = crate::creds::pick(&app, &slug, &m, Some(&ch.publisher)).await.map_err(|e| bad(e.to_string()))?.ok_or_else(|| bad("pick who it publishes as first"))?;
+    let found = crate::ext::key_choices(&app, &slug, &m, &conn, &name).await.map_err(|e| bad(format!("{e:#}")))?;
+    Ok(Json(json!({ "name": name, "choices": found })))
 }
 
 /// "Learn now": read this source again and write the profile from it.
@@ -658,6 +762,25 @@ mod tests {
         assert!(spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "post", &json!({ "subreddit": "a/../b" }), true).is_err());
         // Reading names no spot.
         assert!(spot_of(&store, "acme", "u-acme", "u/acme", &kinds, "search", &json!({ "query": "backups" }), false).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_website_publishes_through_the_ability_it_picked() {
+        let dir = std::env::temp_dir().join(format!("kiqr-site-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = kiqr_core::Store::open(kiqr_core::Home::at(&dir)).unwrap();
+        let m = kiqr_core::extensions::parse_manifest("id: gh\nname: G\ntransport: http\nhosts: [api.github.test]\ntools:\n  - { name: pr, label: Opening a pull request, description: PR., role: publish, request: { method: POST, url: \"https://api.github.test/repos/{{repo}}/pulls\" } }\nkinds:\n  - kind: gh-site\n    label: Website from a repository\n    publish: pr\n    target: { repo: { label: Site repository, pattern: \"^[a-z]+/[a-z]+$\" } }\n").unwrap();
+        assert!(m.kinds[0].publishes_site());
+        let kinds: Vec<(Manifest, Kind)> = m.kinds.iter().map(|k| (m.clone(), k.clone())).collect();
+        // The business's site, on its own domain, publishing through gh to acme/site on its own.
+        Channel { id: "acme-com".into(), label: "acme.com".into(), domain: "acme.com".into(), kind: WEBSITE.into(), ability: "gh".into(), fields: [("repo".to_string(), json!("acme/site"))].into_iter().collect(), publish: Mode::Auto, ..Default::default() }.save(&store, "acme").unwrap();
+        let s = spot_of(&store, "acme", "", "", &kinds, "pr", &json!({ "repo": "acme/site" }), true).unwrap().unwrap();
+        assert_eq!((s.channel.as_ref().map(|c| c.id.as_str()), s.mode("publish")), (Some("acme-com"), Mode::Auto));
+        // Another repository is another site: no channel, so it asks.
+        let s = spot_of(&store, "acme", "", "", &kinds, "pr", &json!({ "repo": "acme/docs" }), true).unwrap().unwrap();
+        assert_eq!((s.channel.is_none(), s.mode("publish")), (true, Mode::Ask));
+        // Through another ability, the website is not this spot.
+        assert!(matching(&store, "acme", "", "other", &kinds[0].1, "api.github.test", &[("repo".to_string(), json!("acme/site"))].into_iter().collect()).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

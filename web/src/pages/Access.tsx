@@ -6,6 +6,7 @@
 // address), read through the credential its calls go through. Used by the
 // ability window, the Abilities list and Performance.
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { AnimatePresence } from "motion/react";
 import { Check, KeyRound, Loader2, Plus, Sparkles } from "lucide-react";
 import { api, SERVICE_GROUPS, useAsync, useEvents, type Ability, type AccessCred, type AccessNeed, type CredStateWord, type ServiceCard, type SpecField } from "../api";
@@ -167,14 +168,19 @@ function NeedBlock({ slug, a, n, onChange }: { slug: string; a: Ability; n: Acce
       {n.granted.length === 0 && n.fitting.length === 0 && <p className="muted sm">Nothing in the Vault fits yet.</p>}
       {n.fitting.length > 0 && n.granted.length === 0 && <p className="muted sm">Switch one on to let {a.name} use it in this project.</p>}
       {error && <p className="err sm">{error}</p>}
-      {n.connect && <NeedConnect slug={slug} a={a} n={n} onTypeIt={() => setAdding(true)} onDone={onChange} />}
+      {n.connect && !n.connect.from_channel && <NeedConnect slug={slug} a={a} n={n} onTypeIt={() => setAdding(true)} onDone={onChange} />}
+      {n.connect?.from_channel && (
+        <p className="muted sm">
+          {n.connect.label} from your website's channel, under <Link to={`/p/${slug}/channels`}>Marketing → Channels</Link>: pick {a.name} as how it is published, and the site's address comes from there.
+        </p>
+      )}
       <button className={`btn ${n.connect ? "t" : "g"} sm ax-add`} onClick={() => setAdding(true)}>
-        {n.provider ? <Sparkles size={13} /> : <Plus size={13} />} {n.provider ? "Sign in" : n.connect ? "Or add" : "Add"} {n.describe}
+        {n.provider ? <Sparkles size={13} /> : <Plus size={13} />} {n.provider ? `Sign in with ${n.provider_name || "kiqr.cloud"}` : `${n.connect ? "Or add" : "Add"} ${n.describe}`}
       </button>
       <AnimatePresence>
         {adding && (
-          <Drawer key="add" title={`Add ${n.describe}`} iconNode={<KeyRound size={22} />} sub={`For ${a.name}; it may use it in this project once added`} onClose={() => setAdding(false)}>
-            {templates.data ? (
+          <Drawer key="add" title={n.provider ? `Sign in with ${n.provider_name || "kiqr.cloud"}` : `Add ${n.describe}`} iconNode={<KeyRound size={22} />} sub={`For ${a.name}; it may use it in this project once added`} onClose={() => setAdding(false)}>
+            {templates.data?.length ? (
               <CredentialForm
                 templates={templates.data}
                 domains={n.hosts}

@@ -104,10 +104,21 @@ pub async fn read_source(app: &App, slug: &str, ch: &Channel, m: &Manifest, c: O
         }
     };
     let env = move |k: &str| env(k);
+    // The channel's own spot (a website's repository) goes with every call and fills `{{repo}}` in titles and links.
+    let spot: serde_json::Map<String, Value> = crate::channels::kind_for(app, slug, ch).await.map(|(_, k)| crate::channels::fields_for(ch, &k)).unwrap_or_default().into_iter().collect();
+    let ctx = Value::Object(spot.clone());
+    let with_spot = |mut a: Value| {
+        if let Some(o) = a.as_object_mut() {
+            for (k, v) in &spot {
+                o.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        a
+    };
     let mut read = 0usize;
     for d in &spec.documents {
         let LearnDoc { tool, args, title, url, each } = d;
-        let args = if args.is_null() { json!({}) } else { extensions::fill_value(args, &json!({}), &env) };
+        let args = with_spot(if args.is_null() { json!({}) } else { extensions::fill_value(args, &ctx, &env) });
         let out = match call(app, slug, &m, c, tool, &args).await {
             Ok(o) => o,
             Err(e) => {
@@ -116,7 +127,7 @@ pub async fn read_source(app: &App, slug: &str, ch: &Channel, m: &Manifest, c: O
             }
         };
         match each {
-            None => read += extract(ex, slug, extensions::fill(title, &json!({}), &env), extensions::fill(url, &json!({}), &env), doc_text(&out)).await,
+            None => read += extract(ex, slug, extensions::fill(title, &ctx, &env), extensions::fill(url, &ctx, &env), doc_text(&out)).await,
             Some(e) => {
                 let list = if e.list.is_empty() { Some(&out.json) } else { extensions::pointer(&out.json, &e.list) };
                 let items = list.and_then(Value::as_array).cloned().unwrap_or_default();
@@ -128,8 +139,9 @@ pub async fn read_source(app: &App, slug: &str, ch: &Channel, m: &Manifest, c: O
                     .take(e.limit())
                     .collect();
                 for v in values {
-                    let at = json!({ "value": v });
-                    match call(app, slug, &m, c, &e.tool, &json!({ e.arg.clone(): v })).await {
+                    let mut at = ctx.clone();
+                    at["value"] = json!(v);
+                    match call(app, slug, &m, c, &e.tool, &with_spot(json!({ e.arg.clone(): v }))).await {
                         Ok(o) => read += extract(ex, slug, extensions::fill(title, &at, &env), extensions::fill(url, &at, &env), doc_text(&o)).await,
                         Err(err) => tracing::info!(%slug, channel = %ch.label, value = %v, error = %err, "could not read a document to learn from"),
                     }

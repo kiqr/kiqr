@@ -164,6 +164,10 @@ pub async fn run(home: Home) -> Result<()> {
         None => tracing::info!("images: SVG via resvg; no browser found, so no HTML rendering"),
     }
     scheduler::recover(&app);
+    let cut = kiqr_core::conn::interrupted_sessions(&home);
+    if cut > 0 {
+        tracing::info!(sign_ins = cut, "sign-ins cut off by the last stop are marked as such");
+    }
     tokio::spawn(scheduler::run(app.clone()));
     tokio::spawn(update::run(app.clone()));
     tokio::spawn(telemetry::run(app.clone()));

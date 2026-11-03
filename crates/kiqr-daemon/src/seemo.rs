@@ -1030,7 +1030,9 @@ async fn todo(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Val
         }
     }
     let all = assets::list(&app.store, &slug)?;
-    let drafts: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Draft).collect();
+    // Only what goes out waits for a yes: the business's own media comes in from its sources without one.
+    let quiet: Vec<String> = assets::types(&app.store).into_iter().filter(|t| !t.publishes).map(|t| t.id).collect();
+    let drafts: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Draft && !quiet.contains(&a.kind)).collect();
     let ready: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Ready && a.publish_error.is_none()).collect();
     let mut scheduled: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Scheduled).collect();
     scheduled.sort_by_key(|a| a.publish_at);

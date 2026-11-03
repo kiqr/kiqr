@@ -8,6 +8,8 @@ icon: images
 description: Your own pictures, video, audio and documents, from your website, connected folders and uploads. What Seemo builds on.
 preview: media
 image: none
+# Imported from its sources as it is: nothing to approve, never published on its own.
+publishes: false
 files:
   - { role: image, accept: [png, jpg, jpeg, webp, gif, avif] }
   - { role: video, accept: [mp4, mov, webm] }

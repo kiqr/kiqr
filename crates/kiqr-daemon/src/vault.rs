@@ -35,10 +35,29 @@ fn locked(e: impl std::fmt::Display) -> ApiError {
     ApiError(StatusCode::SERVICE_UNAVAILABLE, e.to_string())
 }
 
-async fn list(State(app): State<App>) -> ApiResult<Value> {
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ListQuery {
+    /// A project: each credential then says whether it works there (`state`: signed out, needs a hand, …).
+    project: String,
+}
+
+async fn list(State(app): State<App>, axum::extract::Query(q): axum::extract::Query<ListQuery>) -> ApiResult<Value> {
     let status = app.vault.status();
     let credentials = if status.unlocked { app.vault.list().map_err(locked)? } else { vec![] };
-    Ok(Json(json!({ "status": status, "credentials": credentials, "templates": vault::templates() })))
+    let mut out = Vec::with_capacity(credentials.len());
+    for c in &credentials {
+        let mut v = json!(c);
+        if !q.project.is_empty() {
+            if let Ok(Some(full)) = app.vault.get(&c.id) {
+                let st = crate::creds::state(&app, &q.project, &full).await;
+                v["state"] = json!(st.word());
+                v["state_text"] = crate::creds::state_view(&st)["says"].clone();
+            }
+        }
+        out.push(v);
+    }
+    Ok(Json(json!({ "status": status, "credentials": out, "templates": vault::templates() })))
 }
 
 async fn one(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Value> {
@@ -93,6 +112,18 @@ async fn providers(State(app): State<App>) -> ApiResult<Value> {
     let list = provider_list(&app).await;
     let signed_in = crate::signins::token(&app, crate::signins::CLOUD).await.is_some();
     Ok(Json(json!({ "providers": list, "cloud_signed_in": signed_in })))
+}
+
+/// A provider's name from the last list kiqr.cloud gave ("Google"), without asking it again.
+pub fn provider_name(app: &App, id: &str) -> Option<String> {
+    let cache = app.store.home().root().join("tmp").join("providers.json");
+    let list: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(cache).ok()?).ok()?;
+    list.iter().find(|p| p["id"] == id).and_then(|p| p["name"].as_str()).map(str::to_string)
+}
+
+/// What a need asks for, in words, with its provider's name when there is one.
+pub fn describe(app: &App, n: &kiqr_core::extensions::CredentialNeed) -> String {
+    n.describe_as(Some(n.provider.as_str()).filter(|p| !p.is_empty()).and_then(|p| provider_name(app, p)).as_deref())
 }
 
 pub async fn provider_list(app: &App) -> Vec<Value> {

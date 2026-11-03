@@ -32,6 +32,16 @@ pub fn kpi_binding(kpi: &str) -> Option<(&'static str, &'static str, Agg)> {
     })
 }
 
+/// The events a KPI counts, when it is not every key event: a property counts purchases, ad conversions
+/// and sign-ups alike as key events, and "sign-ups" means the sign-ups (GA4's recommended event names).
+pub fn kpi_events(kpi: &str) -> Option<&'static [&'static str]> {
+    match kpi {
+        "signups" => Some(&["sign_up"]),
+        "qualified_leads" => Some(&["generate_lead", "qualify_lead"]),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Agg {
     Sum,
@@ -81,6 +91,15 @@ impl Snapshot {
         let mut out: Vec<(NaiveDate, f64)> = self.rows.iter().filter(|r| r.metric == metric && r.dims.is_empty()).map(|r| (r.date, r.value)).collect();
         out.sort_by_key(|(d, _)| *d);
         out
+    }
+
+    /// Day sums of one metric over the rows whose `dim` is one of `values`, oldest first.
+    pub fn series_where(&self, metric: &str, dim: &str, values: &[&str]) -> Vec<(NaiveDate, f64)> {
+        let mut by: BTreeMap<NaiveDate, f64> = BTreeMap::new();
+        for r in self.rows.iter().filter(|r| r.metric == metric && r.dims.get(dim).is_some_and(|v| values.contains(&v.as_str()))) {
+            *by.entry(r.date).or_default() += r.value;
+        }
+        by.into_iter().collect()
     }
 
     /// The metrics that have day totals.
@@ -144,5 +163,16 @@ mod tests {
         assert_eq!(s.metrics(), vec!["sessions".to_string()]);
         assert_eq!(s.top("clicks", "query", 5), vec![("scrape idealista".to_string(), 12.0), ("residential proxies".to_string(), 3.0)]);
         assert_eq!(kpi_binding("organic_traffic").map(|b| b.0), Some("traffic"));
+    }
+
+    #[test]
+    fn signups_count_only_the_sign_up_event() {
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let ev = |date: &str, e: &str, v: f64| Row { date: d(date), metric: "key_events".into(), value: v, dims: BTreeMap::from([("event".to_string(), e.to_string())]) };
+        let total = |date: &str, v: f64| Row { date: d(date), metric: "key_events".into(), value: v, dims: BTreeMap::new() };
+        let rows = vec![ev("2026-10-08", "ads_conversion_PURCHASE_1", 38.0), ev("2026-10-08", "sign_up", 1.0), total("2026-10-08", 39.0), ev("2026-10-21", "sign_up", 2.0), total("2026-10-21", 2.0)];
+        let s = Snapshot { source: "conversions".into(), provider: "t".into(), taken_at: Utc::now(), from: d("2026-10-05"), to: d("2026-11-03"), rows };
+        let series = s.series_where("key_events", "event", kpi_events("signups").unwrap());
+        assert_eq!(window(&series, 30, Agg::Sum, d("2026-11-03")).0, Some(3.0));
     }
 }

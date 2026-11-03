@@ -44,8 +44,10 @@ pub struct NeedSignIn {
     project: String,
     ability: String,
     need: String,
-    /// The settings typed first (`WP_SITE`), by name in capitals.
+    /// The settings typed first, and the website's address (`SITE_URL`), by name in capitals.
     values: BTreeMap<String, String>,
+    /// The website channel it was started from: what comes back becomes its publisher.
+    channel: Option<String>,
 }
 
 /// A "Sign in with …" started from the Vault, through kiqr.cloud.
@@ -93,9 +95,12 @@ struct NeedBody {
     /// Which need (`main` when left out).
     #[serde(default)]
     need: String,
-    /// The settings the sign-in asks for first, by name (`wp_site` or `WP_SITE`).
+    /// The settings the sign-in asks for first, by name (`site_url` or `SITE_URL`).
     #[serde(default)]
     values: BTreeMap<String, String>,
+    /// A website channel: its address is `SITE_URL`, and the credential becomes its publisher.
+    #[serde(default)]
+    channel: String,
 }
 
 /// `POST …/abilities/{ability}/connect {origin, values}`: start an ability's
@@ -118,7 +123,20 @@ async fn start_need(State(app): State<App>, Path((slug, ability)): Path<(String,
             values.insert(k.to_ascii_uppercase(), v);
         }
     }
+    let channel = match b.channel.trim() {
+        "" => None,
+        id => {
+            let ch = kiqr_core::channels::Channel::load(&app.store, &slug, id).map_err(|e| bad(e.to_string()))?;
+            if ch.is_website() {
+                values.insert(kiqr_core::conn::SITE_URL.into(), crate::channels::site_url(&ch));
+            }
+            Some(ch.id)
+        }
+    };
     if let Some(n) = c.needs.iter().find(|n| !values.contains_key(*n)) {
+        if n == kiqr_core::conn::SITE_URL {
+            return Err(bad(format!("{} connects a website: start it from the website's channel, under Marketing → Channels", m.name)));
+        }
         let label = m.settings.get(&n.to_ascii_lowercase()).and_then(|s| s["label"].as_str()).unwrap_or(n).to_lowercase();
         return Err(bad(format!("give the {label} first")));
     }
@@ -142,7 +160,7 @@ async fn start_need(State(app): State<App>, Path((slug, ability)): Path<(String,
     if with_callback {
         let mut p = app.connects.pending.lock().await;
         p.retain(|_, f| f.created.elapsed() < PENDING_FOR);
-        p.insert(state, Pending { connect: c.clone(), verifier, created: Instant::now(), callback: callback_url.clone(), target: Target::Need(NeedSignIn { project: slug.clone(), ability: m.id.clone(), need: need.id.clone(), values }) });
+        p.insert(state, Pending { connect: c.clone(), verifier, created: Instant::now(), callback: callback_url.clone(), target: Target::Need(NeedSignIn { project: slug.clone(), ability: m.id.clone(), need: need.id.clone(), values, channel }) });
     }
     // Without a callback the user types what the page shows: the fields of the credential to add.
     let fields: Vec<&String> = c.returns.keys().filter_map(|k| need.env.get(k)).collect();
@@ -167,8 +185,12 @@ async fn finish_need(app: &App, f: &Pending, n: &NeedSignIn, q: &BTreeMap<String
     let setting_names: Vec<String> = m.settings.keys().cloned().collect();
     let mut fields: BTreeMap<String, String> = BTreeMap::new();
     let mut settings: BTreeMap<String, String> = BTreeMap::new();
+    // The website it signed in on: what came back, else the channel's address it started from.
+    let mut site_url = n.values.get(kiqr_core::conn::SITE_URL).cloned();
     for (name, v) in values {
-        if let Some(field) = need.env.get(&name) {
+        if name == kiqr_core::conn::SITE_URL {
+            site_url = Some(v.trim_end_matches('/').to_string());
+        } else if let Some(field) = need.env.get(&name) {
             fields.insert(field.split('|').next().unwrap_or(field).trim().to_string(), v);
         } else if let Some(s) = setting_names.iter().find(|s| s.to_ascii_uppercase() == name) {
             settings.insert(s.clone(), v.trim_end_matches('/').to_string());
@@ -180,7 +202,7 @@ async fn finish_need(app: &App, f: &Pending, n: &NeedSignIn, q: &BTreeMap<String
         }
     }
     // Its domain: the site it signed in on (a setting that is an address), else the need's hosts.
-    let site = settings.values().find_map(|v| url::Url::parse(v).ok().and_then(|u| u.host_str().map(str::to_string)));
+    let site = site_url.iter().chain(settings.values()).find_map(|v| url::Url::parse(v).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string())));
     let domains: Vec<String> = site.into_iter().chain(need.hosts.iter().filter(|h| !h.contains('$')).cloned()).collect();
     if domains.is_empty() {
         bail!("{} did not say which site this is for", m.name);
@@ -199,6 +221,15 @@ async fn finish_need(app: &App, f: &Pending, n: &NeedSignIn, q: &BTreeMap<String
         app.bus.emit(Some(&n.project), EventKind::AbilitySettingsSaved { ability: m.id.clone(), credential: view.id.clone() });
     }
     crate::access::grant(app, &n.project, &m.id, &view.id, "connect").await?;
+    // Started from a website channel: it publishes as the new credential.
+    if let Some(id) = &n.channel {
+        if let Ok(mut ch) = kiqr_core::channels::Channel::load(&app.store, &n.project, id) {
+            ch.publisher = view.id.clone();
+            ch.save(&app.store, &n.project)?;
+            app.store.commit(&format!("channels({}): {} publishes as {}", n.project, ch.label, view.label)).await?;
+            crate::channels::emit(app, &n.project, &ch, None);
+        }
+    }
     Ok(view.id)
 }
 
@@ -284,8 +315,12 @@ async fn finish_vault(app: &App, f: &Pending, v: &VaultSignIn, q: &BTreeMap<Stri
     if let Some(e) = body["expires_in"].as_i64() {
         values.push(("expires_at".into(), (chrono::Utc::now().timestamp() + e).to_string()));
     }
+    // Who signed in, when kiqr.cloud could ask the provider: an address, a user name.
+    if let Some(a) = body["account"].as_str().filter(|a| !a.trim().is_empty()) {
+        values.push(("account".into(), a.trim().to_string()));
+    }
     // What the provider says it granted, else what was asked for.
-    let granted = body["scope"].as_str().map(|s| s.split(' ').filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.scopes.clone());
+    let granted = body["scope"].as_str().map(|s| s.split([' ', ',']).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.scopes.clone());
     values.push(("scopes".into(), granted.join(" ")));
     let id = match v.credential.as_deref() {
         Some(id) => {

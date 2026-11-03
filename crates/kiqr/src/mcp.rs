@@ -232,6 +232,7 @@ async fn wait_for_approval(client: &Client, scope: &Scope, id: &str) -> Value {
                     "pending" => continue,
                     "approved" => return tool_ok(v["result"].to_string(), Some(v["result"].clone())),
                     "declined" => return tool_ok(json!({ "declined": true, "note": "The user declined. Say so in one line and do not retry unless asked." }).to_string(), None),
+                    "failed" => return tool_error(format!("it was approved but failed: {}", v["result"]["error"].as_str().unwrap_or("no reason given"))),
                     other => return tool_error(format!("the request {other} before the user answered")),
                 }
             }

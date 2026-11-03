@@ -145,7 +145,7 @@ pub(crate) async fn resolve(app: &App, slug: &str, named: &str, spot: Option<&Ne
         let conn = crate::creds::pick(app, slug, &m, Some(sp.credential.as_str()).filter(|c| !c.is_empty())).await.map_err(|e| bad(e.to_string()))?;
         let c = conn.map(|c| c.primary().clone());
         let fields = if k.account_is_target { BTreeMap::new() } else { k.check_target(&sp.fields).map_err(|e| bad(e.to_string()))? };
-        match crate::channels::matching(&app.store, slug, c.as_ref().map(|c| c.id.as_str()).unwrap_or(""), &k, &crate::channels::kind_domain(&m, &k), &fields) {
+        match crate::channels::matching(&app.store, slug, c.as_ref().map(|c| c.id.as_str()).unwrap_or(""), &m.id, &k, &crate::channels::kind_domain(&m, &k), &fields) {
             Some(found) => (publisher_for(app, slug, &found).await.ok().flatten().or(c), found, false),
             None => (c.clone(), spot_channel(app, slug, c.as_ref(), &m, &k, fields, "user").await?, true),
         }

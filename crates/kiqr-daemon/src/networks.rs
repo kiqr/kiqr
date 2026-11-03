@@ -107,6 +107,10 @@ pub async fn channels_from_brand(app: &App, slug: &str) -> Vec<kiqr_core::channe
     let dismissed = Project::load(&app.store, slug).map(|p| p.suggestions_dismissed).unwrap_or_default();
     let bare = |u: &str| u.trim().trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("www.").trim_end_matches('/').to_ascii_lowercase();
     let mut made = Vec::new();
+    // The site itself is a channel too: a website, published through the ability the user picks.
+    if let Some(site) = website_channel(app, slug, &dismissed).await {
+        made.push(site);
+    }
     for s in &brand.social {
         let url = s.url.trim();
         if url.is_empty() || host_of(url).is_empty() || dismissed.iter().any(|d| *d == format!("channel:{}", bare(url))) {
@@ -123,6 +127,38 @@ pub async fn channels_from_brand(app: &App, slug: &str) -> Vec<kiqr_core::channe
         }
     }
     made
+}
+
+/// The project's own site as a website channel, once: a channel already on
+/// its site with no kind (added by hand before websites were channels)
+/// becomes it. None when it is there already or the user removed it.
+async fn website_channel(app: &App, slug: &str, dismissed: &[String]) -> Option<kiqr_core::channels::Channel> {
+    use kiqr_core::channels::{host_of, Channel, WEBSITE};
+    let url = Project::load(&app.store, slug).ok()?.url;
+    let domain = host_of(&url);
+    let bare = url.trim().trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("www.").trim_end_matches('/').to_ascii_lowercase();
+    if domain.is_empty() || dismissed.iter().any(|d| *d == format!("channel:{bare}")) {
+        return None;
+    }
+    let have = Channel::all(&app.store, slug).unwrap_or_default();
+    if have.iter().any(|c| c.is_website() && kiqr_core::vault::same_site(&c.domain, &domain)) {
+        return None;
+    }
+    if let Some(mut c) = have.into_iter().find(|c| c.kind.is_empty() && c.owned() && !c.suggested && c.domain == domain) {
+        c.kind = WEBSITE.into();
+        c.save(&app.store, slug).ok()?;
+        let _ = app.store.commit(&format!("[auto] channels({slug}): {} is the website", c.label)).await;
+        crate::channels::emit(app, slug, &c, None);
+        return None;
+    }
+    let b = crate::channels::NewChannel { kind: WEBSITE.into(), url: url.trim().to_string(), ownership: "owned".into(), ..Default::default() };
+    match crate::channels::create(app, slug, b, "crawl").await {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::info!(slug, error = %e.1, "the site is not a channel");
+            None
+        }
+    }
 }
 
 /// The marketplace ability that publishes to a site, when one does and is not installed: (id, name).

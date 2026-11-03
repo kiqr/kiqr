@@ -51,9 +51,22 @@ pub struct AssetType {
     /// images are the default for everything that can show one.
     #[serde(default)]
     pub image: ImageDefault,
+    /// Whether an asset of this type goes out to a channel and so waits for
+    /// approval. `false` for the business's own material (media), which comes
+    /// in from its sources without anyone approving it and is never published.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub publishes: bool,
     /// Shipped with KIQR (not saved in TYPE.yaml).
     #[serde(default, skip_deserializing)]
     pub builtin: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
 }
 
 fn default_icon() -> String {
@@ -262,10 +275,14 @@ pub struct TypeCount {
 pub fn install_builtin_types(store: &Store) -> Result<bool> {
     let mut wrote = false;
     for (id, body) in BUILTIN_TYPES {
+        // Kept current across releases (media became never published); a type the user edited stays theirs.
         let path = store.home().asset_types_dir().join(id).join("TYPE.yaml");
         if !path.exists() {
             store.write_text(&path, body)?;
+            std::fs::write(path.with_file_name(".builtin"), body)?;
             wrote = true;
+        } else {
+            wrote |= crate::extensions::install_builtin_text(store, &path, body)?;
         }
     }
     Ok(wrote)
@@ -571,6 +588,7 @@ mod tests {
             preview: "audio".into(),
             files: vec![FileSlot { role: "audio".into(), accept: vec!["mp3".into()] }],
             image: ImageDefault::None,
+            publishes: true,
             builtin: false,
         };
         save_type(&store, &song).unwrap();

@@ -179,13 +179,13 @@ export type HandsEndedEvent = { type: "hands_ended"; credential: string; hands: 
 export type ProgramInstallingEvent = { type: "program_installing"; program: string; version: string; note: string };
 export type ProgramInstalledEvent = { type: "program_installed"; program: string; version: string };
 export type ProgramFailedEvent = { type: "program_failed"; program: string; version: string; message: string };
-export const SESSION_EVENTS = ["credential_state_changed"];
+export const SESSION_EVENTS = ["reconnected", "credential_state_changed"];
 /** What the Vault page and the credential pickers reload on. */
-export const VAULT_EVENTS = ["credential_saved", "credential_deleted", "credential_connected", "credential_state_changed", "grant_changed"];
+export const VAULT_EVENTS = ["reconnected", "credential_saved", "credential_deleted", "credential_connected", "credential_state_changed", "grant_changed"];
 /** What changes an ability's readiness: its grants, its credentials, its settings, installs. */
-export const ACCESS_EVENTS = ["grant_changed", "credential_saved", "credential_deleted", "credential_connected", "credential_state_changed", "ability_settings_saved", "secret_set", "extension_installed", "extension_removed", "extension_paused"];
+export const ACCESS_EVENTS = ["reconnected", "grant_changed", "credential_saved", "credential_deleted", "credential_connected", "credential_state_changed", "ability_settings_saved", "secret_set", "extension_installed", "extension_removed", "extension_paused"];
 /** Everything that changes a channel or who publishes there: pages listing channels reload on these. */
-export const CHANNEL_EVENTS = ["channel_saved", "channel_deleted", "grant_changed", "credential_saved", "credential_deleted", "credential_state_changed", "extension_installed", "extension_removed", "extension_paused"];
+export const CHANNEL_EVENTS = ["reconnected", "channel_saved", "channel_deleted", "grant_changed", "credential_saved", "credential_deleted", "credential_state_changed", "extension_installed", "extension_removed", "extension_paused"];
 export const HANDS_EVENTS = ["hands_frame", "hands_started", "hands_ended"];
 export const PROGRAM_EVENTS = ["program_installing", "program_installed", "program_failed", "program_log"];
 
@@ -364,7 +364,7 @@ export type MarketAuth = { env: string; label: string; help: string; optional: b
 /** A credential as an ability's Access shows it: who it is and whether it is complete; never a value. */
 export type AccessCred = { credential: string; label: string; identity?: string | null; domain?: string | null; template: string; complete: boolean };
 /** What an ability asks for, and in this project what was allowed and what else in the Vault would fit. */
-export type AccessNeed = { id: string; describe: string; template: string[]; hosts: string[]; provider: string; scopes: string[]; for: string; optional: boolean; granted: AccessCred[]; fitting: AccessCred[]; /** A one-click sign-in of the ability's own ("Connect with WordPress"); `needs` are settings asked first. */ connect?: { label: string; needs: string[] } | null };
+export type AccessNeed = { id: string; describe: string; /** The kiqr.cloud provider a sign-in goes through, by name ("Google"), when known. */ provider_name?: string | null; template: string[]; hosts: string[]; provider: string; scopes: string[]; for: string; optional: boolean; granted: AccessCred[]; fitting: AccessCred[]; /** A one-click sign-in of the ability's own ("Connect with WordPress"); `needs` are settings asked first. */ connect?: { label: string; needs: string[]; /** It connects a website: started from the website's channel, which gives the address. */ from_channel?: boolean } | null };
 /** A kind an ability publishes as, and the target fields that name a spot of it (a subreddit). */
 export type KindInfo = { kind: string; label: string; name: string; section: string; target: Record<string, SpecField>; publishes: boolean };
 /** One field a manifest declares: a kind's target field (a subreddit) or an ability's setting (a GA4 property). */
@@ -375,7 +375,7 @@ export type ChannelMode = "off" | "ask" | "auto";
 export type Ownership = "owned" | "third_party";
 /** Whether a channel can be published to now, in a line, and the one fix. */
 export type ChannelReadiness = {
-  state: "ready" | "suggested" | "no_ability" | "publish_off" | "no_publisher" | "publisher_not_ready" | "publisher_gone";
+  state: "ready" | "suggested" | "no_ability" | "pick_ability" | "needs_fields" | "publish_off" | "no_publisher" | "publisher_not_ready" | "publisher_gone";
   ready: boolean;
   text: string;
   fix: { action: "add" | "abilities" | "install" | "publisher" | "credential"; label: string; credential?: string; ability?: string } | null;
@@ -410,7 +410,7 @@ export type Channel = {
   /** Who could publish here. */
   publishers: ChannelPublisher[];
   /** What a publisher must be: the publishing ability's need, to prefill "Add a credential". */
-  publisher_need?: { ability: string; ability_name: string; describe: string; template: string[]; hosts: string[]; provider: string; scopes: string[] } | null;
+  publisher_need?: { ability: string; ability_name: string; describe: string; provider_name?: string | null; /** The ability's own one-click sign-in for this website ("Connect with WordPress"). */ connect?: { need: string; label: string } | null; template: string[]; hosts: string[]; provider: string; scopes: string[] } | null;
   readiness: ChannelReadiness;
   kind_name?: string;
   kind_label?: string;
@@ -420,6 +420,8 @@ export type Channel = {
   ability_name?: string;
   target?: Record<string, SpecField>;
   can_learn?: boolean;
+  /** A website's ways of being published (`kind: website`): abilities here and in the marketplace whose kind publishes a site. */
+  site_ways?: SiteWay[];
   /** A list's people, counted. */
   contacts?: number;
   unsubscribed?: number;
@@ -430,8 +432,10 @@ export type Channel = {
 /** What can be added: a kind on its site, with its target fields; or a list. */
 export type ChannelKind = { kind: string; label: string; name: string; icon: string; domain: string; ownership: Ownership; target: Record<string, SpecField>; account_is_target: boolean; publishes?: boolean; ability?: string; ability_name?: string };
 export type ChannelsView = { channels: Channel[]; kinds: ChannelKind[] };
+/** How a website can be published: an ability whose kind publishes a site (a repository that builds it, a blog engine). */
+export type SiteWay = { ability: string; ability_name: string; kind: string; name: string; label: string; icon: string; installed: boolean };
 export type NewChannel = { kind?: string; url?: string; domain?: string; fields?: Record<string, unknown>; label?: string; description?: string; ownership?: Ownership | ""; publisher?: string; publish?: ChannelMode; reply?: ChannelMode; read?: boolean };
-export type ChannelPatch = { label?: string; description?: string; url?: string; ownership?: Ownership; publisher?: string; ability?: string; read?: boolean; publish?: ChannelMode; reply?: ChannelMode; learn?: boolean; add?: boolean };
+export type ChannelPatch = { label?: string; description?: string; url?: string; ownership?: Ownership; publisher?: string; ability?: string; kind?: "website"; fields?: Record<string, string>; read?: boolean; publish?: ChannelMode; reply?: ChannelMode; learn?: boolean; add?: boolean };
 /** Somewhere to publish that is no channel yet: it becomes one with the yes. */
 export type Spot = { kind: string; fields: Record<string, unknown>; account?: string };
 /** A service as the grid of things to connect shows it. `group` is one of SERVICE_GROUPS. */
@@ -582,6 +586,9 @@ export type Credential = {
   notes: string;
   missing: string[];
   fields: CredentialField[];
+  /** Whether it works in the project the list was read for (`?project=`): signed out, needs a hand, … */
+  state?: CredStateWord;
+  state_text?: string;
   created_at: string;
   updated_at: string;
 };
@@ -736,7 +743,7 @@ export const api = {
   setProjectSecret: (slug: string, name: string, value: string) => req<{ name: string; set: boolean }>(`/api/projects/${slug}/secrets/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
 
   /** Start signing in: `account` to sign one in again, else a new one is made when the sign-in comes back (with the name and permissions chosen). Saves what was asked first and returns the page to open; `callback: false` means the user pastes what it shows into the account. */
-  vault: () => req<VaultView>("/api/vault"),
+  vault: (project?: string) => req<VaultView>(`/api/vault${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   credential: (id: string) => req<Credential>(`/api/vault/${encodeURIComponent(id)}`),
   createCredential: (d: CredentialDraft) => req<Credential>("/api/vault", { method: "POST", body: JSON.stringify(d) }),
   updateCredential: (id: string, d: CredentialDraft) => req<Credential>(`/api/vault/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(d) }),
@@ -769,7 +776,7 @@ export const api = {
   /** The values a setting can take, read through the credential the ability's calls go through. */
   abilityChoices: (slug: string, ability: string, name: string, credential?: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/choices/${name}${credential ? `?credential=${encodeURIComponent(credential)}` : ""}`),
   /** Start an ability's own one-click sign-in for a need; `callback: false` means the user types what the page shows. */
-  abilityConnect: (slug: string, ability: string, b: { origin: string; need?: string; values?: Record<string, string> }) => req<{ url: string; callback: boolean; relayed: boolean; fields: string[]; template?: string }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/connect`, { method: "POST", body: JSON.stringify(b) }),
+  abilityConnect: (slug: string, ability: string, b: { origin: string; need?: string; values?: Record<string, string>; channel?: string }) => req<{ url: string; callback: boolean; relayed: boolean; fields: string[]; template?: string }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/connect`, { method: "POST", body: JSON.stringify(b) }),
   /** What the project picks once for an ability (a GA4 property, a site), and the credential its calls go through. */
   setAbilitySettings: (slug: string, ability: string, credential: string, values: Record<string, string>) => req<{ ability: string; setting: AbilitySetting }>(`/api/projects/${slug}/abilities/${encodeURIComponent(ability)}/settings`, { method: "PUT", body: JSON.stringify({ credential, values }) }),
 
@@ -779,6 +786,7 @@ export const api = {
   /** Add one by link, site or kind; or a list (`kind: "list"`). */
   addChannel: (slug: string, b: NewChannel) => req<Channel>(`/api/projects/${slug}/channels`, { method: "POST", body: JSON.stringify(b) }),
   /** Change what Seemo may do there, who it posts as, its name; or add a suggestion (`add: true`). */
+  channelChoices: (slug: string, id: string, name: string) => req<{ name: string; choices: { value: string; label: string }[] }>(`/api/projects/${slug}/channels/${encodeURIComponent(id)}/choices/${name}`),
   updateChannel: (slug: string, id: string, b: ChannelPatch) => req<Channel>(`/api/projects/${slug}/channels/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(b) }),
   /** Remove it (a list with everyone on it), or dismiss a suggestion. */
   removeChannel: (slug: string, id: string) => req<void>(`/api/projects/${slug}/channels/${encodeURIComponent(id)}`, { method: "DELETE" }),
@@ -923,6 +931,18 @@ function subscribe(url: string, listener: (e: KiqrEvent) => void, key: number) {
   if (!src) {
     const es = new EventSource(url);
     const entry = { es, key, listeners: new Set<(e: KiqrEvent) => void>() };
+    // The browser reconnects on its own after the daemon restarts, but what changed in between is not sent
+    // again: tell listeners so a page can reload what it shows.
+    let dropped = false;
+    es.onerror = () => {
+      dropped = true;
+    };
+    es.onopen = () => {
+      if (!dropped) return;
+      dropped = false;
+      const ev: KiqrEvent = { type: "reconnected", project: null, at: new Date().toISOString() };
+      for (const l of entry.listeners) l(ev);
+    };
     es.onmessage = (m) => {
       let ev: KiqrEvent;
       try {

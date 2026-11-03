@@ -20,6 +20,8 @@ export const STATUS_TONE: Record<AssetStatus, string> = { draft: "", ready: "acc
 export const STATUS_LABEL: Record<AssetStatus, string> = { draft: "Draft", ready: "Approved", scheduled: "Scheduled", published: "Published", archived: "Archive" };
 
 export function StatusChip({ a, where }: { a: Asset; where?: string }) {
+  // Media is the gallery Seemo builds from: never approved, never published on its own.
+  if (a.type === "media" && a.status !== "archived") return null;
   const text = a.status === "archived" ? "Archived" : a.status === "ready" && where ? `Approved for ${where}` : a.status === "scheduled" && a.publish_at ? `Scheduled ${whenAt(a.publish_at)}` : STATUS_LABEL[a.status];
   return <span className={`chip ${STATUS_TONE[a.status]}`}>{text}</span>;
 }

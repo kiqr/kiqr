@@ -134,6 +134,8 @@ pub struct IndexKind {
     pub name: String,
     pub icon: String,
     pub profile_hosts: Vec<String>,
+    /// It publishes a website wherever that is (a repository that builds it, a blog engine): a website channel can pick it.
+    pub site: bool,
 }
 
 impl IndexKind {
@@ -272,7 +274,7 @@ fn item_from_manifest(m: &Manifest) -> IndexItem {
         avatar: m.avatar.clone(),
         cost,
         provides: m.provides.keys().cloned().collect(),
-        kinds: m.kinds.iter().map(|c| IndexKind { kind: c.kind.clone(), name: c.display_name().to_string(), icon: c.icon.clone(), profile_hosts: m.service_card().profile_hosts }).collect(),
+        kinds: m.kinds.iter().map(|c| IndexKind { kind: c.kind.clone(), name: c.display_name().to_string(), icon: c.icon.clone(), profile_hosts: m.service_card().profile_hosts, site: c.publishes_site() }).collect(),
         sources: m.sources.keys().cloned().collect(),
         service: Some(m.service_card()),
         hosts: m.hosts.clone(),
@@ -552,7 +554,7 @@ fn ability_view(ctx: &Ctx, item: &IndexItem, m: Option<&Manifest>, e: Option<&ex
                 }
                 _ => (vec![], vec![]),
             };
-            json!({ "id": n.id, "describe": n.describe(), "template": n.template, "hosts": n.hosts.iter().filter(|h| !h.contains('$')).collect::<Vec<_>>(), "provider": n.provider, "scopes": n.scopes, "for": n.for_, "optional": n.optional, "granted": granted, "fitting": fitting, "connect": n.connect.as_ref().map(|c| json!({ "label": if c.label.is_empty() { format!("Connect with {}", item.name) } else { c.label.clone() }, "needs": c.needs.iter().map(|x| x.to_ascii_lowercase()).collect::<Vec<_>>() })) })
+            json!({ "id": n.id, "describe": crate::vault::describe(ctx.app, n), "provider_name": crate::vault::provider_name(ctx.app, &n.provider), "template": n.template, "hosts": n.hosts.iter().filter(|h| !h.contains('$')).collect::<Vec<_>>(), "provider": n.provider, "scopes": n.scopes, "for": n.for_, "optional": n.optional, "granted": granted, "fitting": fitting, "connect": n.connect.as_ref().map(|c| json!({ "label": if c.label.is_empty() { format!("Connect with {}", item.name) } else { c.label.clone() }, "needs": c.needs.iter().filter(|x| *x != kiqr_core::conn::SITE_URL).map(|x| x.to_ascii_lowercase()).collect::<Vec<_>>(), "from_channel": c.needs.iter().any(|x| x == kiqr_core::conn::SITE_URL) })) })
         })
         .collect();
     let program_found = m.filter(|m| m.transport == Transport::Mcp).map(|m| crate::ext::program_found(ctx.app, ctx.slug, m));

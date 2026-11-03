@@ -95,13 +95,13 @@ pub async fn pick(app: &App, slug: &str, m: &Manifest, named: Option<&str>) -> R
         match chosen {
             Some(c) => given.push((need.clone(), c)),
             None if need.optional => {}
-            None => bail!("{} needs {}; the user allows one under Setup → Abilities → {}", m.name, need.describe(), m.name),
+            None => bail!("{} needs {}; the user allows one under Setup → Abilities → {}", m.name, crate::vault::describe(app, need), m.name),
         }
     }
     if given.is_empty() {
         return Ok(None);
     }
-    let mut conn = Conn { given };
+    let mut conn = Conn { given, site: None };
     renew(app, &mut conn).await?;
     Ok(Some(conn))
 }
@@ -111,7 +111,7 @@ pub async fn pick(app: &App, slug: &str, m: &Manifest, named: Option<&str>) -> R
 pub fn missing(app: &App, slug: &str, m: &Manifest) -> Vec<String> {
     let env = settings_env(&settings_of(app, slug, &m.id));
     let grants = granted(app, slug, &m.id);
-    m.needs().iter().filter(|n| !n.optional).filter(|n| !grants.iter().any(|c| n.fits(c, &env) && c.missing().is_empty())).map(|n| n.describe()).collect()
+    m.needs().iter().filter(|n| !n.optional).filter(|n| !grants.iter().any(|c| n.fits(c, &env) && c.missing().is_empty())).map(|n| crate::vault::describe(app, n)).collect()
 }
 
 /// The installed ability (in this project) that signs a credential in on a hosted program: one with a `session` that fits it.
@@ -191,6 +191,9 @@ pub async fn renew(app: &App, conn: &mut Conn) -> Result<()> {
         }
         if let Some(e) = body["expires_in"].as_i64() {
             values.push(("expires_at".into(), (now + e).to_string()));
+        }
+        if let Some(a) = body["account"].as_str().filter(|a| !a.trim().is_empty()) {
+            values.push(("account".into(), a.trim().to_string()));
         }
         let pairs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         app.vault.set_values(&c.id, &pairs)?;

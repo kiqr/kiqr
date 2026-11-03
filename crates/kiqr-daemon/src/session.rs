@@ -65,7 +65,7 @@ pub async fn session_manifest(app: &App, slug: &str, c: &Conn) -> Option<Manifes
 pub async fn load(app: &App, slug: &str, id: &str) -> Result<Conn> {
     let c = app.vault.get(id)?.ok_or_else(|| anyhow!("there is no credential {id}"))?;
     let need = crate::creds::session_manifest(app, slug, &c).await.and_then(|m| m.needs().into_iter().find(|n| n.fits(&c, &|_| None))).unwrap_or_default();
-    Ok(Conn { given: vec![(need, c)] })
+    Ok(Conn { given: vec![(need, c)], site: None })
 }
 
 /// The login's values, read for the runner alone, with the one-time code computed from the saved key.
@@ -334,6 +334,8 @@ pub mod guided {
 
     /// At most this many pages per sign-in.
     const ROUNDS: usize = 6;
+    /// Looks at a page that has nothing to read yet before anything is typed (an app that draws itself late), 2.5 s apart.
+    const SETTLE_LOOKS: usize = 8;
     /// The controls handed to the model: this many, these keys.
     const MAX_CONTROLS: usize = 80;
     const KEPT: &[&str] = &["selector", "tag", "type", "name", "id", "placeholder", "label", "text", "role", "checked"];
@@ -445,8 +447,10 @@ pub mod guided {
         go(vec![step("open", "browser_navigate", json!({ "url": url, "wait_until": "domcontentloaded" }))]).await?;
         let mut typed: Vec<&str> = Vec::new();
         let mut forms = 0;
-        for round in 0..ROUNDS {
-            if round > 0 {
+        let mut waited = 0;
+        let mut round = 0;
+        while round < ROUNDS {
+            if round > 0 || waited > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
             }
             let (last, text) = go(vec![step("look", "browser_snapshot", json!({}))]).await?;
@@ -458,8 +462,9 @@ pub mod guided {
                 State::SignedIn => return Ok(None),
                 State::Blocked => return Ok(Some(if read.reason.trim().is_empty() { "the page needs a person".into() } else { read.reason.trim().to_string() })),
                 State::Unknown => {
-                    // Before anything was typed the page may still be loading: one more look. After, it is where the sign-in ended up.
-                    if typed.is_empty() && round == 0 {
+                    // Before anything was typed the page may still be loading: look again. After, it is where the sign-in ended up.
+                    if typed.is_empty() && waited < SETTLE_LOOKS {
+                        waited += 1;
                         continue;
                     }
                     bail!("after the sign-in the page at {} is not one I understand: {}", snap["url"].as_str().unwrap_or("?"), read.reason);
@@ -511,6 +516,7 @@ pub mod guided {
             if let Some(b) = blocked(sess, &said) {
                 return Ok(Some(b));
             }
+            round += 1;
         }
         bail!("the sign-in did not finish within {ROUNDS} pages")
     }

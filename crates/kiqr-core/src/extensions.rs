@@ -146,10 +146,22 @@ pub struct Step {
     pub save: BTreeMap<String, String>,
     /// Run only when this fills to something (not empty, not `[]`, not false).
     pub when: Option<String>,
+    /// The opposite: skipped when this fills to something (`unless: "{{files}}"`
+    /// is the step for an asset with no image).
+    pub unless: Option<String>,
     /// `files`: once per file of the asset; or an earlier step's name: once
     /// per entry of its list. Each run has `{{item}}` (the entry), `{{file}}`
     /// (the file at the same position) and `{{index}}`.
     pub for_each: Option<String>,
+}
+
+impl Step {
+    /// Is the step skipped for these arguments? `when` must fill to
+    /// something and `unless` to nothing.
+    pub fn skipped(&self, ctx: &Value, env: &impl Fn(&str) -> Option<String>) -> bool {
+        let holds = |t: &str| truthy(&fill_value(&Value::String(t.to_string()), ctx, env));
+        self.when.as_deref().is_some_and(|w| !holds(w)) || self.unless.as_deref().is_some_and(holds)
+    }
 }
 
 /// At most this many steps, and this many runs of one `for_each`.
@@ -336,6 +348,14 @@ impl Kind {
     /// A social network (as opposed to an inbox or a blog): somewhere posts go.
     pub fn is_network(&self) -> bool {
         self.text_limit.is_some() || self.preview == "feed"
+    }
+
+    /// How a website can be published (a repository that builds it, a blog
+    /// engine that hosts it): a page kind that publishes, is no network and has
+    /// no address of its own, so it serves the business's site wherever that
+    /// is. A website channel picks one; it is never matched by domain.
+    pub fn publishes_site(&self) -> bool {
+        self.publishes() && !self.is_network() && self.section() == "page" && self.url.is_empty()
     }
 
     /// The target fields a spot must have.
@@ -564,6 +584,11 @@ pub struct Manifest {
     /// else (opening the browser), each a step with `call` and `args`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warmup: Vec<Step>,
+    /// What a hosted program says when it is still busy with an earlier action (typing a long text at a
+    /// person's pace) and refuses the next until it is done: a call refused with one of these is made again
+    /// once the program is free, so a step never fails because the one before it is still going.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub busy_when: Vec<String>,
     /// Programs KIQR installs for this ability (pinned, checked), honoured only
     /// for official abilities.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -665,6 +690,17 @@ impl CredentialNeed {
     }
     /// "a login for x.com", "an API key for fal.ai".
     pub fn describe(&self) -> String {
+        self.describe_as(None)
+    }
+
+    /// The same, with the name of the provider a sign-in goes through when it
+    /// is known ("a Google sign-in"); the name comes from kiqr.cloud, never code.
+    pub fn describe_as(&self, provider: Option<&str>) -> String {
+        if let Some(name) = provider.filter(|p| !p.is_empty()) {
+            if !self.provider.is_empty() {
+                return format!("a {name} sign-in");
+            }
+        }
         let what = match self.template.first().map(String::as_str) {
             Some("login") => "a login",
             Some("api_key") => "an API key",
@@ -804,7 +840,8 @@ pub struct LiveView {
 
 /// The list a setting is picked from, when it has one.
 pub fn choices_of(m: &Manifest, name: &str) -> Option<Choices> {
-    let spec = m.settings.get(name)?;
+    // A setting's, else a kind's target field's (the repository a website channel publishes from).
+    let spec = m.settings.get(name).or_else(|| m.kinds.iter().find_map(|k| k.target.get(name)))?;
     serde_json::from_value(spec.get("choices")?.clone()).ok()
 }
 
@@ -878,6 +915,7 @@ impl Default for Manifest {
             program: String::new(),
             env_set: BTreeMap::new(),
             warmup: Vec::new(),
+            busy_when: Vec::new(),
             requires: Vec::new(),
             url_args: Vec::new(),
             session: None,
@@ -1236,8 +1274,8 @@ fn check_needs(m: &Manifest) -> Result<()> {
             }
             let settings: Vec<String> = m.settings.keys().map(|k| k.to_ascii_uppercase()).collect();
             for name in c.needs.iter().chain(c.returns.keys()) {
-                if !n.env.contains_key(name) && !settings.contains(name) {
-                    bail!("credentials: the connect names {name}, which is neither in env nor a setting");
+                if !n.env.contains_key(name) && !settings.contains(name) && name != crate::conn::SITE_URL {
+                    bail!("credentials: the connect names {name}, which is neither in env, a setting nor SITE_URL (the website channel's address)");
                 }
             }
         }
@@ -1417,8 +1455,8 @@ pub fn validate(m: &Manifest) -> Result<()> {
         if c.kind.trim().is_empty() {
             bail!("a kind needs a name (`kind`)");
         }
-        if !crate::tools::valid_ext_id(&c.kind) || c.kind == "list" {
-            bail!("kind '{}' must be lowercase letters, digits and dashes (and not `list`)", c.kind);
+        if !crate::tools::valid_ext_id(&c.kind) || c.kind == crate::channels::LIST || c.kind == crate::channels::WEBSITE {
+            bail!("kind '{}' must be lowercase letters, digits and dashes (and not `list` or `website`)", c.kind);
         }
         if !c.section.is_empty() && !SECTIONS.contains(&c.section.as_str()) {
             bail!("kind '{}': section '{}' is not one of {}", c.kind, c.section, SECTIONS.join(", "));
@@ -1435,6 +1473,12 @@ pub fn validate(m: &Manifest) -> Result<()> {
             }
             if let Some(p) = spec["pattern"].as_str() {
                 regex::Regex::new(p).map_err(|e| anyhow::anyhow!("kind '{}': the pattern of {name} does not compile: {e}", c.kind))?;
+            }
+            if let Some(ch) = spec.get("choices") {
+                let ch: Choices = serde_json::from_value(ch.clone()).map_err(|e| anyhow::anyhow!("kind '{}': the choices of {name} do not parse: {e}", c.kind))?;
+                if ch.request.url.trim().is_empty() || ch.list.trim().is_empty() || ch.value.trim().is_empty() {
+                    bail!("kind '{}': the choices of {name} need a request, a list and a value", c.kind);
+                }
             }
         }
         for (arg, pat) in &c.target_from {
@@ -2021,6 +2065,44 @@ kinds:
     }
 
     #[test]
+    fn a_kind_with_no_address_publishes_a_site() {
+        // A blog engine (or a repository that builds a site) publishes a website wherever it is; a network or a list does not.
+        let k = &parse_manifest(WP).unwrap().kinds[0];
+        assert!(k.publishes_site());
+        let net = parse_manifest(&WP.replace("account_is_target: true", "account_is_target: true, text_limit: 280")).unwrap();
+        assert!(!net.kinds[0].publishes_site());
+        let at = parse_manifest(&WP.replace("account_is_target: true", "url: \"https://myblog.com/{{sub}}\", target: { sub: { label: Sub } }")).unwrap();
+        assert!(!at.kinds[0].publishes_site());
+        // `website` and `list` are core's own kinds.
+        assert!(parse_manifest(&WP.replace("kind: wordpress", "kind: website")).unwrap_err().to_string().contains("not `list` or `website`"));
+        // A target field may offer choices, read like a setting's; a broken list is refused.
+        let repo = WP.replace("account_is_target: true", "target: { repo: { label: Repository, pattern: \"^[a-z]+/[a-z]+$\", choices: { request: { method: GET, url: \"https://myblog.com/repos\" }, list: /*, value: /name } } }");
+        let m = parse_manifest(&repo).unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(choices_of(&m, "repo").unwrap().value, "/name");
+        assert!(m.kinds[0].publishes_site());
+        assert!(parse_manifest(&repo.replace(", value: /name", "")).unwrap_err().to_string().contains("need a request, a list and a value"));
+    }
+
+    /// The marketplace's manifests, when its checkout sits beside this one: each still loads.
+    #[test]
+    fn marketplace_manifests_load() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../marketplace");
+        let Ok(rd) = std::fs::read_dir(&root) else { return };
+        for e in rd.flatten() {
+            let f = e.path().join("extension.yaml");
+            if let Ok(text) = std::fs::read_to_string(&f) {
+                parse_manifest(&text).unwrap_or_else(|err| panic!("{}: {err:#}", f.display()));
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(root.join("github/extension.yaml")) {
+            let m = parse_manifest(&text).unwrap();
+            let k = m.kinds.iter().find(|k| k.kind == "github-repo").unwrap();
+            assert!(k.publishes_site() && k.target.contains_key("repo"));
+            assert!(choices_of(&m, "repo").is_some());
+        }
+    }
+
+    #[test]
     fn credential_needs_and_kinds_parse() {
         // A need defaults its id and hosts; an unknown template or field is refused.
         let m = parse_manifest(WP).unwrap();
@@ -2119,6 +2201,21 @@ kinds:
         assert_eq!(core_of_folder("business-brief").map(|c| c.id), Some("business-profile"));
         assert!(is_core_id("kiqr-render") && is_core_id("make-images") && is_core_id("browser") && is_core_id("tasks") && !is_core_id("fal-image"));
         assert!(shipped("browser").is_some_and(|(folder, _, _, m)| folder == "browser" && m.service_card().id == "browser"));
+    }
+
+    #[test]
+    fn a_step_runs_on_when_and_skips_on_unless() {
+        let env = |_: &str| None;
+        let with_file = json!({ "files": [{ "name": "a.png" }] });
+        let without = json!({ "files": [] });
+        let photo = Step { when: Some("{{files}}".into()), ..Default::default() };
+        let message = Step { unless: Some("{{files}}".into()), ..Default::default() };
+        let always = Step::default();
+        assert!(!photo.skipped(&with_file, &env));
+        assert!(photo.skipped(&without, &env));
+        assert!(message.skipped(&with_file, &env));
+        assert!(!message.skipped(&without, &env));
+        assert!(!always.skipped(&without, &env));
     }
 }
 
