@@ -714,7 +714,8 @@ mod tests {
         let args = json!({ "text": "Body", "title": "A title", "image": "card.png", "asset": { "type": "post", "id": "p1" } });
         let a = Approved::from_args(&args, "Publish a post on X", "required", std::path::Path::new("/h/p"));
         assert_eq!(a.title, "");
-        assert_eq!(a.image.as_deref(), Some("/h/p/assets/post/p1/card.png"));
+        let want = std::path::Path::new("/h/p").join("assets").join("post").join("p1").join("card.png");
+        assert_eq!(a.image.as_deref(), want.to_str());
         let a = Approved::from_args(&args, "Submit a post with the approved title and text", "none", std::path::Path::new("/h/p"));
         assert_eq!(a.title, "A title");
         assert!(a.image.is_none(), "a text-only hand never sees the image");
