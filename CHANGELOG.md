@@ -4,6 +4,8 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+## v0.6.0 — 2026-11-03
+
 - **Seemo remembers.** Seemo → Memory lists what Seemo keeps for this project: rules, preferences, facts and lessons, each holding everywhere, on your own channels or in other people's places. Tell Seemo how things should always be done and it notes it ("Noted: …" in the chat); after chats and task runs it saves what it learned, and a lesson from a task run waits for your Keep. Add, edit and delete anything on the page, or switch learning off. `kiqr memory`.
 - **Everything is configurable through Seemo.** Whatever you can change in KIQR's pages, Seemo can propose on a card: `update_channels` changes several channels at once (publisher, what Seemo may do, name, link, a website's ability), and `change_kiqr` covers the rest (which ability may use which login, ability settings, installing, updating, pausing and removing abilities, their instructions, your setup answers, memory, Vault labels, renaming chats). Secret values, the people on a list and your own decisions stay yours.
 - **In a browser, abilities say what, not how.** Replying and posting on X and Reddit is a goal ("publish a post with the approved text and image") that a model reaches page by page, so a site's new markup no longer breaks it. It types only the text you approved, reads it back before it sends, and stops for anything it was not asked to do. A route that worked is remembered per login and replayed without the model while the page still matches, and steps are picked by a fast model, so a post needs far fewer model calls and a cheaper model for the rest.
