@@ -16,6 +16,7 @@ import { FirstProjectAbilities } from "./pages/Settings";
 import { AssetPage, LibraryPage } from "./pages/Library";
 import { ChatsPage } from "./pages/Chats";
 import { CalendarPage, TasksPage } from "./pages/Tasks";
+import { MemoryPage } from "./pages/Memory";
 import { TodoPage } from "./pages/Todo";
 import { VaultPage } from "./pages/Vault";
 import { ChannelsPage } from "./pages/Channels";
@@ -56,6 +57,7 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/p/:slug/chats/:id" element={<ChatsPage />} />
           <Route path="/p/:slug/calendar" element={<CalendarPage />} />
           <Route path="/p/:slug/tasks" element={<TasksPage />} />
+          <Route path="/p/:slug/memory" element={<MemoryPage />} />
           <Route path="/p/:slug/todo" element={<TodoPage />} />
           <Route path="/p/:slug/skills" element={<Redirect to="abilities" />} />
           <Route path="/p/:slug/abilities" element={<AbilitiesPage />} />

@@ -33,6 +33,7 @@ pub fn routes() -> Router<App> {
         .route("/api/projects/{slug}/assets/{kind}/{id}/approve", axum::routing::post(approve_route))
         .route("/api/projects/{slug}/assets/{kind}/{id}/schedule", axum::routing::post(schedule_route).delete(unschedule_route))
         .route("/api/projects/{slug}/assets/{kind}/{id}/unpublish", axum::routing::post(unpublish_route))
+        .route("/api/projects/{slug}/assets/{kind}/{id}/attempt", axum::routing::post(attempt_route))
         .route("/api/projects/{slug}/email", axum::routing::post(email_route))
 }
 
@@ -197,6 +198,136 @@ async fn keep(app: &App, slug: &str, t: &Target) -> Result<Channel, ApiError> {
 // -------------------------------------------------------------- publishing
 
 /// An asset's body as Markdown and its media files, for sending.
+/// Room left under a network's limit when Seemo shortens a post: links and
+/// emoji count longer on some networks than their characters.
+const SHORTEN_MARGIN: usize = 20;
+
+/// A post longer than the network takes is shortened by Seemo before it goes
+/// anywhere (at the yes, at a schedule, at the publish, and by the sweep):
+/// in a browser it would only find Post greyed out. The original stays on
+/// the asset (`source.shortened`) and Seemo says what it did. Refused only
+/// when shortening fails. The new text follows the channel's rule: where
+/// Seemo publishes on its own (`publish: auto`) it stays approved; anywhere
+/// else nobody has said yes to it yet, so it goes back to Draft (`true`).
+async fn fit(app: &App, slug: &str, a: Asset, k: &Kind, ch: &Channel) -> Result<(Asset, bool), ApiError> {
+    let Some(limit) = k.text_limit.map(|l| l as usize) else { return Ok((a, false)) };
+    let (body, _) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
+    let n = body.trim().chars().count();
+    if n <= limit {
+        return Ok((a, false));
+    }
+    let title = a.title.clone();
+    let a = shorten(app, slug, a, &body, limit, &k.display_name(), ch).await.map_err(|e| bad(format!("\"{title}\" is {n} characters and {} takes {limit}, and I could not shorten it: {e:#}", k.display_name())))?;
+    let asks = a.target.is_none();
+    Ok((a, asks))
+}
+
+/// What a publish says when the shortened text waits for the user's yes.
+fn shortened_asks(a: &Asset, ch: &Channel) -> ApiError {
+    bad(format!("\"{}\" was too long for {}, so I shortened it; {} asks before anything goes out, so the new text waits for the user's yes on its card (or on To do)", a.title, ch.label, ch.label))
+}
+
+const SHORTEN: &str = "You shorten a social media post so it fits a network's character limit. Keep what it says, its voice, its line breaks, its first line and any link or call to action at the end; drop the least important words or clause. Never add anything, never add hashtags or emoji. Answer with the shortened post only, no quotes, no comment.";
+
+async fn shorten(app: &App, slug: &str, mut a: Asset, body: &str, limit: usize, network: &str, ch: &Channel) -> anyhow::Result<Asset> {
+    let target = limit.saturating_sub(SHORTEN_MARGIN).max(limit / 2);
+    let from = body.trim().chars().count();
+    let (rules, _) = kiqr_core::memory::load(&app.store, slug).map(|m| m.lines()).unwrap_or_default();
+    let spec = app.config.read().await.models.chat.clone();
+    let (prov, model) = kiqr_core::provider::resolve(&spec)?;
+    let mut text = body.trim().to_string();
+    for _ in 0..3 {
+        let prompt = format!(
+            "Network: {network}. Limit: {limit} characters; aim for at most {target}. This one is {} characters: cut at least {} characters, a whole sentence or clause if that is what it takes.{}\n\nThe post:\n{text}",
+            text.chars().count(),
+            text.chars().count().saturating_sub(target),
+            if rules.is_empty() { String::new() } else { format!("\nThe owner's rules:\n{}", rules.join("\n")) }
+        );
+        let out = prov.complete(&kiqr_core::provider::Request { system: SHORTEN.into(), prompt, model: model.clone(), json: false, max_tokens: 800 }).await?;
+        let out = out.trim().trim_matches('"').trim().to_string();
+        if !out.is_empty() {
+            text = out;
+        }
+        if text.chars().count() <= limit {
+            break;
+        }
+    }
+    let to = text.chars().count();
+    if to > limit || to == 0 {
+        anyhow::bail!("the shortest I got was {to} characters");
+    }
+    let name = assets::body_file(&a).map(str::to_string).unwrap_or_else(|| format!("{}.md", a.kind));
+    let kept = a.source.get("shortened").and_then(|s| s["original"].as_str()).map(str::to_string).unwrap_or_else(|| body.trim().to_string());
+    let auto = ch.publish == Mode::Auto;
+    let mut note = json!({ "at": Utc::now(), "network": network, "from": from, "to": to, "original": kept });
+    if !auto {
+        // Nobody said yes to this text: back to Draft, remembering where and when it was going.
+        note["channel"] = json!(a.target.take());
+        note["publish_at"] = json!(a.publish_at.take());
+    }
+    a.source.insert("shortened".into(), note);
+    a.publish_error = None;
+    let a = assets::save(&app.store, slug, &a)?;
+    let a = assets::write_file(&app.store, slug, &a.kind, &a.id, "body", &name, (text + "\n").as_bytes())?;
+    if let Err(e) = app.store.commit(&format!("[auto] assets({slug}): shortened {} to fit {network}", a.title)).await {
+        tracing::warn!(%slug, error = %e, "could not commit the shortened post");
+    }
+    crate::api::emit_saved(app, slug, &a, false);
+    let then = if auto {
+        format!("{} lets me publish on my own, so it stays approved", ch.label)
+    } else {
+        format!("{} asks before anything goes out, so it needs your yes again", ch.label)
+    };
+    app.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("\"{}\" was {from} characters and {network} takes {limit}, so I shortened it to {to}. {then}; the original is on its card.", a.title) });
+    Ok(a)
+}
+
+/// The sweep: approved posts that do not fit where they go are shortened
+/// before their time comes. Each is tried at most every six hours.
+pub async fn heal_due(app: &App, slug: &str) {
+    static TRIED: std::sync::LazyLock<tokio::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
+    let Ok(list) = assets::list(&app.store, slug) else { return };
+    for a in list.into_iter().filter(|a| matches!(a.status, Status::Ready | Status::Scheduled) && a.publications.is_empty() && !a.archived && a.publish_attempt.is_none()) {
+        let Some(t) = a.target.clone() else { continue };
+        let Ok(ch) = Channel::load(&app.store, slug, &t) else { continue };
+        let Ok((_, k)) = publisher_of(app, slug, &ch).await else { continue };
+        let Some(limit) = k.text_limit.map(|l| l as usize) else { continue };
+        let Ok((body, _)) = asset_parts(app, slug, &a) else { continue };
+        if body.trim().chars().count() <= limit {
+            continue;
+        }
+        let key = format!("{slug}/{}/{}", a.kind, a.id);
+        {
+            let mut tried = TRIED.lock().await;
+            if tried.get(&key).is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(6 * 3600)) {
+                continue;
+            }
+            tried.insert(key.clone(), std::time::Instant::now());
+        }
+        let job = format!("publish:{key}");
+        if !app.jobs.write().await.insert(job.clone()) {
+            continue;
+        }
+        if let Err(e) = shorten(app, slug, a, &body, limit, &k.display_name(), &ch).await {
+            tracing::warn!(%slug, asset = %key, error = %e, "could not shorten a post that is too long");
+        }
+        app.jobs.write().await.remove(&job);
+    }
+}
+
+/// What Seemo saves for a network must fit it: refused with the numbers, so
+/// it rewrites in the same turn. By the asset's tags (its network first).
+pub(crate) async fn check_length(app: &App, slug: &str, tags: &[String], text: &str) -> Result<(), ApiError> {
+    let kinds = crate::networks::installed(app, slug).await;
+    let Some(k) = tags.iter().find_map(|t| kinds.iter().find(|k| k.kind.eq_ignore_ascii_case(t))) else { return Ok(()) };
+    let Some(limit) = k.text_limit.map(|l| l as usize) else { return Ok(()) };
+    let n = text.trim().chars().count();
+    if n > limit {
+        return Err(bad(format!("that is {n} characters and {} takes {limit}: write it shorter (aim for {} or less, links count long) and save again", k.display_name(), limit.saturating_sub(SHORTEN_MARGIN))));
+    }
+    Ok(())
+}
+
 pub(crate) fn asset_parts(app: &App, slug: &str, a: &Asset) -> Result<(String, Vec<(String, Vec<u8>, String)>)> {
     let dir = app.store.home().assets_dir(slug).join(&a.kind).join(&a.id);
     let body = assets::body_file(a).map(|f| std::fs::read_to_string(dir.join(f)).unwrap_or_default()).unwrap_or_default();
@@ -275,6 +406,9 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     let kind = preview["asset"]["type"].as_str().unwrap_or("").to_string();
     let id = preview["asset"]["id"].as_str().unwrap_or("").to_string();
     let mut a = assets::load(&app.store, slug, &kind, &id)?;
+    if let Some(t) = &a.publish_attempt {
+        return Err(ApiError(StatusCode::CONFLICT, format!("\"{}\" may have gone out already ({}): the last try clicked send but never saw it arrive. The user checks the channel and says on the asset whether it is there or to try again", a.title, t.at.format("%Y-%m-%d %H:%M UTC"))));
+    }
     let tv = &preview["target"];
     let c: Option<Credential> = match tv["credential"].as_str().filter(|c| !c.is_empty()) {
         Some(id) => Some(app.vault.get(id)?.ok_or_else(|| bad("the credential on the card is gone"))?),
@@ -295,6 +429,9 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
     if let Some(at) = preview["at"].as_str().and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.with_timezone(&Utc)) {
         a.publish_options = preview["options"].as_object().cloned().unwrap_or_default();
         let a = set_schedule(app, slug, a, &entry, Some(at)).await?;
+        if a.target.is_none() {
+            return Err(shortened_asks(&a, &entry));
+        }
         return Ok(json!({
             "scheduled": true,
             "asset": { "type": a.kind, "id": a.id, "title": a.title, "status": a.status },
@@ -305,6 +442,10 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
         }));
     }
     let (m, k) = publisher_of(app, slug, &entry).await?;
+    let (a, asks) = fit(app, slug, a, &k, &entry).await?;
+    if asks {
+        return Err(shortened_asks(&a, &entry));
+    }
     let cid = c.as_ref().map(|c| c.id.clone()).unwrap_or_default();
     let who = c.as_ref().map(crate::creds::name_of).unwrap_or_else(|| m.name.clone());
     let (body, _) = asset_parts(app, slug, &a).map_err(|e| bad(e.to_string()))?;
@@ -356,11 +497,45 @@ pub async fn do_publish(app: &App, slug: &str, preview: &Value, by: &str) -> Res
             args[n] = v.clone();
         }
     }
-    let out = crate::ext::execute(app, slug, &m, &provide, None, Some(&k.publish), &args, Some(cid.as_str()).filter(|c| !c.is_empty())).await.map_err(|e| bad(format!("{e:#}")))?;
+    // In the browser a publish takes a minute or two: it goes on after the answer, and Seemo says how it went.
+    if provide.hand.is_some() && by != "schedule" {
+        let key = format!("publish:{slug}/{}/{}", a.kind, a.id);
+        if !app.jobs.write().await.insert(key.clone()) {
+            return Err(ApiError(StatusCode::CONFLICT, format!("\"{}\" is being published already", a.title)));
+        }
+        let (title_of, entry_id, entry_label) = (a.title.clone(), entry.id.clone(), entry.label.clone());
+        let (app2, slug2, title) = (app.clone(), slug.to_string(), a.title.clone());
+        let (asset_ref, label) = ((a.kind.clone(), a.id.clone()), entry.label.clone());
+        tokio::spawn(async move {
+            let r = send_out(&app2, &slug2, a, &entry, &m, &k, &provide, &args, &cid, &where_, now, run).await;
+            app2.jobs.write().await.remove(&key);
+            match r {
+                Ok(v) => {
+                    let link = v["url"].as_str().map(|u| format!(": {u}")).unwrap_or_default();
+                    app2.bus.emit(Some(&slug2), EventKind::SeemoSays { text: format!("\"{title}\" is up on {label}{link}") });
+                }
+                Err(ApiError(_, msg)) => failed(&app2, &slug2, &asset_ref.0, &asset_ref.1, &title, &msg, false).await,
+            }
+        });
+        return Ok(json!({
+            "publishing": true,
+            "asset": { "type": kind, "id": id, "title": title_of },
+            "target": entry_id,
+            "target_label": entry_label,
+            "note": format!("Publishing to {entry_label} in the browser now; it takes a minute or two. The result comes in the chat on its own: do not publish it again or check on it."),
+        }));
+    }
+    send_out(app, slug, a, &entry, &m, &k, &provide, &args, &cid, &where_, now, run).await
+}
+
+/// Put it out through the channel's publisher and record it.
+#[allow(clippy::too_many_arguments)]
+async fn send_out(app: &App, slug: &str, a: Asset, entry: &Channel, m: &Manifest, k: &Kind, provide: &kiqr_core::extensions::Provide, args: &Value, cid: &str, where_: &str, now: DateTime<Utc>, run: Option<String>) -> Result<Value, ApiError> {
+    let out = crate::ext::execute(app, slug, m, provide, None, Some(&k.publish), args, Some(cid).filter(|c| !c.is_empty())).await.map_err(|e| bad(format!("{e:#}")))?;
     let url = out.text.clone().filter(|t| t.starts_with("http")).or_else(|| out.json.get("url").and_then(|u| u.as_str()).map(str::to_string)).or_else(|| out.json.get("link").and_then(|u| u.as_str()).map(str::to_string));
     let from = out.json.get("from").and_then(|f| f.as_str()).map(str::to_string);
     let detail = out.text.clone().unwrap_or_else(|| kiqr_core::profile::truncate_chars(&out.json.to_string(), 200));
-    let a = record(app, slug, a, &entry, Publication { channel: entry.id.clone(), credential: cid.clone(), ability: m.id.clone(), from, to: None, url: url.clone(), at: now, run }, &where_).await?;
+    let a = record(app, slug, a, entry, Publication { channel: entry.id.clone(), credential: cid.to_string(), ability: m.id.clone(), from, to: None, url: url.clone(), at: now, run }, where_).await?;
     Ok(json!({
         "published": true,
         "asset": { "type": a.kind, "id": a.id, "title": a.title },
@@ -379,6 +554,7 @@ async fn record(app: &App, slug: &str, mut a: Asset, entry: &Channel, p: Publica
     a.target = Some(entry.id.clone());
     a.publish_at = None;
     a.publish_error = None;
+    a.publish_attempt = None;
     let a = assets::save(&app.store, slug, &a)?;
     crate::api::emit_saved(app, slug, &a, false);
     if let Ok(mut e) = Channel::load(&app.store, slug, &entry.id) {
@@ -433,6 +609,18 @@ async fn set_schedule(app: &App, slug: &str, mut a: Asset, e: &Channel, at: Opti
     if !a.publications.is_empty() {
         return Err(bad("it is published already; unpublish it first"));
     }
+    if let Ok((_, k)) = publisher_of(app, slug, e).await {
+        let (fitted, asks) = fit(app, slug, a, &k, e).await?;
+        if asks {
+            // The yes was for the longer text; the shortened one waits for its own.
+            return Ok(fitted);
+        }
+        a = fitted;
+    }
+    if let Some(s) = a.source.get_mut("shortened").and_then(|s| s.as_object_mut()) {
+        s.remove("channel");
+        s.remove("publish_at");
+    }
     a.target = Some(e.id.clone());
     a.publish_at = at;
     a.publish_error = None;
@@ -450,7 +638,9 @@ async fn approve_route(State(app): State<App>, Path((slug, kind, id)): Path<(Str
     let t = resolve(&app, &slug, &b.target, b.spot.as_ref(), Some(&a)).await?;
     publisher_of(&app, &slug, &t.channel).await?;
     let e = keep(&app, &slug, &t).await?;
-    let at = a.publish_at;
+    // A post shortened back to Draft keeps the time it had, if that is still ahead.
+    let was = a.source.get("shortened").and_then(|s| s["publish_at"].as_str()).and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.with_timezone(&Utc));
+    let at = a.publish_at.or(was).filter(|t| *t > Utc::now());
     Ok(Json(set_schedule(&app, &slug, a, &e, at).await?))
 }
 
@@ -504,7 +694,8 @@ async fn unpublish_route(State(app): State<App>, Path((slug, kind, id)): Path<(S
 /// stays on the asset (it falls back to Ready, with the reason) and Seemo says so.
 pub async fn publish_due(app: &App, slug: &str, now: DateTime<Utc>) {
     let Ok(list) = assets::list(&app.store, slug) else { return };
-    for a in list.into_iter().filter(|a| a.status == Status::Scheduled && a.publish_at.is_some_and(|t| t <= now)) {
+    // One that may have gone out already waits for a person, whatever its time says.
+    for a in list.into_iter().filter(|a| a.status == Status::Scheduled && a.publish_at.is_some_and(|t| t <= now) && a.publish_attempt.is_none()) {
         let key = format!("publish:{slug}/{}/{}", a.kind, a.id);
         if !app.jobs.write().await.insert(key.clone()) {
             continue;
@@ -515,18 +706,67 @@ pub async fn publish_due(app: &App, slug: &str, now: DateTime<Utc>) {
             Err(e) => Err(e),
         };
         if let Err(ApiError(_, msg)) = r {
-            tracing::warn!(slug, asset = %format!("{}/{}", a.kind, a.id), error = %msg, "a scheduled publish failed");
-            if let Ok(mut x) = assets::load(&app.store, slug, &a.kind, &a.id) {
-                x.publish_at = None;
-                x.publish_error = Some(msg.clone());
-                if let Ok(x) = assets::save(&app.store, slug, &x) {
-                    crate::api::emit_saved(app, slug, &x, false);
-                }
-            }
-            app.bus.emit(Some(slug), EventKind::SeemoSays { text: format!("I could not publish \"{}\" as scheduled: {msg}", a.title) });
+            failed(app, slug, &a.kind, &a.id, &a.title, &msg, true).await;
         }
         app.jobs.write().await.remove(&key);
     }
+}
+
+/// A publish that did not happen: the reason stays on the asset and Seemo says so. When its last click
+/// was made, it may have gone out after all: the asset says that instead, and waits for a person.
+async fn failed(app: &App, slug: &str, kind: &str, id: &str, title: &str, msg: &str, scheduled: bool) {
+    tracing::warn!(slug, asset = %format!("{kind}/{id}"), error = %msg, scheduled, "a publish failed");
+    let mut maybe = false;
+    if let Ok(mut x) = assets::load(&app.store, slug, kind, id) {
+        x.publish_at = None;
+        match x.publish_attempt.as_mut() {
+            Some(t) => {
+                maybe = true;
+                t.note = msg.to_string();
+                x.publish_error = None;
+            }
+            None => x.publish_error = Some(msg.to_string()),
+        }
+        if let Ok(x) = assets::save(&app.store, slug, &x) {
+            crate::api::emit_saved(app, slug, &x, false);
+        }
+        let _ = app.store.commit(&format!("[auto] publish({slug}): {title} did not go out")).await;
+    }
+    let when = if scheduled { " as scheduled" } else { "" };
+    let text = if maybe {
+        format!("I am not sure \"{title}\" went out{when}: I clicked send, but never saw it arrive ({msg}). Please look on the channel and tell me on the asset whether it is there; I will not send it again until you do.")
+    } else {
+        format!("I could not publish \"{title}\"{when}: {msg}")
+    };
+    app.bus.emit(Some(slug), EventKind::SeemoSays { text });
+}
+
+#[derive(Deserialize)]
+struct AttemptBody {
+    /// It is there (a link, if the user has one), or it is not and may be tried again.
+    went_out: bool,
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// `POST …/assets/{kind}/{id}/attempt`: the user says whether a publish that may have gone out did.
+async fn attempt_route(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>, Json(b): Json<AttemptBody>) -> ApiResult<Value> {
+    let mut a = assets::load(&app.store, &slug, &kind, &id)?;
+    let Some(t) = a.publish_attempt.clone() else {
+        return Err(bad("nothing waits to be confirmed on this asset"));
+    };
+    if b.went_out {
+        let entry = Channel::load(&app.store, &slug, &t.channel).map_err(|_| bad("the channel it went to is gone"))?;
+        let (m, _) = publisher_of(&app, &slug, &entry).await?;
+        let url = b.url.filter(|u| u.starts_with("http"));
+        let a = record(&app, &slug, a, &entry, Publication { channel: entry.id.clone(), credential: entry.publisher.clone(), ability: m.id.clone(), from: None, to: None, url, at: t.at, run: None }, &entry.label).await?;
+        return Ok(Json(json!({ "asset": a })));
+    }
+    a.publish_attempt = None;
+    let a = assets::save(&app.store, &slug, &a)?;
+    crate::api::emit_saved(&app, &slug, &a, false);
+    app.store.commit(&format!("assets({slug}): {} did not go out; it may be published again", a.title)).await?;
+    Ok(Json(json!({ "asset": a })))
 }
 
 // ------------------------------------------------------------------- email

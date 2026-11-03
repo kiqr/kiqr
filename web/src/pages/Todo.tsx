@@ -32,6 +32,9 @@ export function TodoPage() {
   // The getting-started steps sit here until every one is done or skipped; the page is "Getting started" until then.
   const [guideDone, setGuideDone] = useState<boolean | undefined>(undefined);
   const starting = guideDone === false;
+  // A draft Seemo proposed to publish is shown once, as that proposal above.
+  const proposed = new Set((d?.approvals ?? []).filter((x) => x.kind === "publish").map((x) => { const r = x.payload.asset as { type?: string; id?: string } | undefined; return `${r?.type}/${r?.id}`; }));
+  const drafts = (d?.drafts ?? []).filter((a) => !proposed.has(`${a.type}/${a.id}`));
   const empty = d && guideDone !== false && d.approvals.length === 0 && d.drafts.length === 0 && d.ready.length === 0 && d.scheduled.length === 0 && d.attention.length === 0 && hands.length === 0;
   return (
     <div className="prof todo">
@@ -111,13 +114,13 @@ export function TodoPage() {
         </section>
       )}
 
-      {d && d.drafts.length > 0 && (
+      {d && drafts.length > 0 && (
         <section className="todo-sec" id="todo-drafts">
           <h2>
-            Drafts to approve <span className="n">{d.drafts.length}</span>
+            Drafts to approve <span className="n">{drafts.length}</span>
           </h2>
           <div className="todo-drafts">
-            {d.drafts.map((a) => (
+            {drafts.map((a) => (
               <AssetEmbed key={`${a.type}/${a.id}`} slug={slug} type={a.type} id={a.id} given={a} compact={false} onChange={todo.reload} />
             ))}
           </div>

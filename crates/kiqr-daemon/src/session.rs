@@ -83,7 +83,7 @@ pub fn has_login(_app: &App, _slug: &str, c: &Conn) -> bool {
     p.field("username").is_some_and(|f| !f.value.trim().is_empty()) && p.field("password").is_some_and(|f| !f.value.is_empty())
 }
 
-async fn set_state(app: &App, slug: &str, c: &Conn, state: &str, message: impl Into<String>) -> SessionStatus {
+pub(crate) async fn set_state(app: &App, slug: &str, c: &Conn, state: &str, message: impl Into<String>) -> SessionStatus {
     let mut st = c.session(app.store.home());
     let now = chrono::Utc::now();
     st.state = state.to_string();

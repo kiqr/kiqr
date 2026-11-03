@@ -14,6 +14,8 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 pub const BUILTIN_GUIDE: &str = include_str!("../../../abilities/seemo-agent/SKILL.md");
+/// Every change KIQR's pages can make, by route: what `change_kiqr` takes.
+pub const SETTINGS_MAP: &str = include_str!("../../../abilities/seemo-agent/SETTINGS.md");
 
 /// Linux caps one argument at 128 KiB; the system prompt travels in argv.
 pub const MAX_SYSTEM: usize = 100_000;
@@ -197,6 +199,8 @@ pub struct Context {
     pub tasks: Vec<String>,
     /// Set for a task run: the task's title. Chats leave it empty.
     pub task_run: Option<String>,
+    /// The chat this turn is in, by id (for a route that names it: renaming it).
+    pub chat: Option<String>,
     pub allowed: Vec<Group>,
     /// Abilities with instructions to read before acting: (id, name, when to use it).
     pub abilities: Vec<(String, String, String)>,
@@ -207,7 +211,14 @@ pub struct Context {
     pub building: Option<String>,
     /// What the owner said when Seemo first read the site: one line per answer.
     pub intake: Vec<String>,
+    /// Seemo → Memory: the owner's rules and preferences, one line each.
+    pub rules: Vec<String>,
+    /// Seemo → Memory: what Seemo learned from earlier work (kept lessons, facts).
+    pub learned: Vec<String>,
 }
+
+/// Room for memory in the prompt; the owner's rules first, lessons cut first.
+pub const MAX_MEMORY_BLOCK: usize = 6_000;
 
 /// Room for the abilities list in the prompt; past it, ids only.
 pub const MAX_ABILITIES_BLOCK: usize = 3_000;
@@ -234,6 +245,9 @@ pub fn system_prompt(persona: &str, guide: &str, ctx: &Context, brief: Option<&B
     head.push_str(guide.trim());
     head.push_str("\n\n# Where you are\n\n");
     head.push_str(&format!("- Project: {} ({}), slug `{}`.\n", ctx.project_name, ctx.project_url, ctx.slug));
+    if let Some(c) = ctx.chat.as_deref().filter(|c| !c.is_empty()) {
+        head.push_str(&format!("- This chat: `{c}`.\n"));
+    }
     head.push_str(&format!("- Local time: {} ({}). Use this timezone for schedules unless the user names another.\n", ctx.now_local, ctx.timezone));
     if ctx.running_jobs.is_empty() {
         head.push_str("- Nothing is running on the project right now.\n");
@@ -284,6 +298,24 @@ pub fn system_prompt(persona: &str, guide: &str, ctx: &Context, brief: Option<&B
             head.push_str(&format!("- {line}\n"));
         }
         head.push_str("Their first steps on To do come from these answers: approve the plan, sign in to what was suggested, connect the networks they named, approve the first posts (once a channel is connected: a post is approved for a channel), one piece of work for their goal, connect where the plan's numbers live, and a weekly task sized to their time. When they ask what to do next, it is the next of these they haven't done.\n");
+    }
+    let mut room = MAX_MEMORY_BLOCK;
+    for (lines, heading) in [
+        (&ctx.rules, "\n# The owner's rules\n\nHow the owner wants things done, in their words (Seemo → Memory). Follow them over anything else here; only the user's own words in this chat come first. One marked for the business's own channels or for other people's threads, communities and groups holds only there: a channel's `ownership` says which (owned or third_party), and a reply on someone else's post is always theirs.\n"),
+        (&ctx.learned, "\n# Notes to yourself\n\nWhat you learned from earlier work. Use it; the owner's rules win where they differ.\n"),
+    ] {
+        if lines.is_empty() || room < heading.len() + 40 {
+            continue;
+        }
+        let mut block = heading.to_string();
+        for line in lines {
+            if block.len() + line.len() + 3 > room {
+                break;
+            }
+            block.push_str(&format!("- {line}\n"));
+        }
+        room -= block.len();
+        head.push_str(&block);
     }
     if let Some(building) = &ctx.building {
         head.push_str(&format!(
@@ -369,5 +401,24 @@ mod tests {
         assert!(s.contains("Project: Acme"));
         let small = system_prompt("PERSONA", "GUIDE", &ctx, None);
         assert!(small.contains("no business brief yet"));
+    }
+
+    #[test]
+    fn a_full_memory_fits_and_the_owners_rules_come_first() {
+        let ctx = Context {
+            slug: "acme".into(),
+            rules: (0..80).map(|i| format!("(rule) owner rule {i} {}", "r".repeat(250))).collect(),
+            learned: vec!["(lesson) something learned".into()],
+            ..Default::default()
+        };
+        let s = system_prompt("PERSONA", "GUIDE", &ctx, Some(&Brief::default()));
+        assert!(s.len() <= MAX_SYSTEM);
+        assert!(s.contains("# The owner's rules") && s.contains("owner rule 0 "));
+        let start = s.find("# The owner's rules").unwrap();
+        assert!(s[start..].find("\n#").map_or(s.len() - start, |e| e) <= MAX_MEMORY_BLOCK);
+        let few = Context { rules: vec!["(rule) help, never promote".into()], learned: vec!["(lesson) r/webscraping removes links".into()], ..Default::default() };
+        let s = system_prompt("PERSONA", "GUIDE", &few, None);
+        assert!(s.find("# The owner's rules").unwrap() < s.find("# Notes to yourself").unwrap());
+        assert!(s.contains("- (lesson) r/webscraping removes links"));
     }
 }

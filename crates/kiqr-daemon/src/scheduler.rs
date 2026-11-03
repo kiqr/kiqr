@@ -51,6 +51,7 @@ async fn tick(app: &App, startup: bool) {
     let now = Utc::now();
     let Ok(projects) = Project::list(&app.store) else { return };
     for p in projects {
+        crate::publish::heal_due(app, &p.slug).await;
         crate::publish::publish_due(app, &p.slug, now).await;
         crate::performance::pull_due(app, &p.slug, tz).await;
         crate::learn::due(app, &p.slug).await;

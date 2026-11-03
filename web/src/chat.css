@@ -77,9 +77,24 @@
 .aa .aa-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
 .aa .input.sm { padding: 5px 8px; font-size: 12.5px; height: 30px; max-width: 260px; }
 .aa .chip, .aa .chip.acc { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; }
+.aa-short { font-size: 12.5px; color: var(--accent-2); }
+.aa-short summary { cursor: pointer; }
+.aa-short p { margin: 6px 0 0; color: var(--muted); white-space: pre-wrap; border-left: 2px solid var(--line-2); padding-left: 10px; }
+.aa-fix { display: flex; flex-direction: column; gap: 8px; }
+.aa-fix textarea { width: 100%; resize: vertical; font: 14px/1.5 var(--sans); }
+.aa-count { font: 12px var(--mono); color: var(--muted); margin-right: 4px; } .aa-count.over { color: var(--bad); }
 .aa .err { display: flex; align-items: center; gap: 6px; color: var(--bad); font-size: 12.5px; margin: 0; }
 .aa.compact .lib-pubs { margin: 0; }
 .chat-embed .foot .aa { flex: 1 1 auto; }
+/* a publish Seemo proposes: the asset's own card, the proposal in its footer */
+.pub-ask { flex: 1 1 100%; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent-2) 35%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--accent-2) 7%, transparent); }
+.pub-ask .cap { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--accent-2); }
+.pub-ask .sched, .pub-ask p { margin: 0; }
+.pub-ask .row { display: flex; gap: 8px; margin-top: 4px; }
+.pub-status { display: flex; align-items: center; gap: 6px; margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+.pub-status a { display: inline-flex; align-items: center; gap: 3px; }
+.pub-card.failed .pub-status { color: var(--bad, #f87171); }
+.todo-approval .chat-embed { margin: 0; max-width: 620px; }
 /* to do */
 .todo-sec { margin-top: 26px; }
 .todo-sec h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; margin: 0 0 12px; }
@@ -284,3 +299,26 @@
 }
 /* A yes that adds somewhere new to the Audience: said in indigo, on approval cards and the asset actions. */
 .new-spot { color: var(--accent-2); margin-top: 6px; font-size: 12.5px; }
+
+/* memory page */
+.mem-learn { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.mem-add { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 8px; padding: 12px; margin-bottom: 8px; }
+.mem-sec { margin-top: 24px; }
+.mem-sec > .cap { margin-bottom: 10px; }
+.mem-sec > .muted.sm { font-size: 13px; margin: -4px 0 10px; }
+.mem .mem-text { font-size: 14px; line-height: 1.5; color: var(--fg); }
+.mem-edit { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+.mem .meta .chip a, .mem .meta a { color: inherit; }
+.cm.note.memory { color: var(--accent-2); }
+.cm.note.memory a { color: inherit; text-decoration: underline; text-underline-offset: 2px; margin-left: 6px; }
+@media (max-width: 640px) {
+  .mem-add, .mem-edit { grid-template-columns: 1fr 1fr auto; }
+  .mem-edit { grid-template-columns: 1fr 1fr; }
+  .mem-add .input:first-child, .mem-edit .input:first-child { grid-column: 1 / -1; }
+  .cm-head:has(.mem-learn) { flex-wrap: wrap; gap: 12px; }
+}
+
+/* Seemo's channel changes: one block per channel */
+.ch-change + .ch-change { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.ch-change .ttl { margin-bottom: 2px; }
+.api-body { font: 12px/1.5 var(--mono); white-space: pre-wrap; }

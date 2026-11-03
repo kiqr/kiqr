@@ -348,9 +348,12 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
     if !intake.is_empty() {
         intake.extend(crate::setup::prompt_lines(app, &project.slug).await);
     }
+    let (rules, learned) = kiqr_core::memory::load(&app.store, &project.slug).map(|m| m.lines()).unwrap_or_default();
     core_agent::Context {
         building,
         intake,
+        rules,
+        learned,
         abilities,
         plan_period: plan.as_ref().map(|p| p.period.clone()).unwrap_or_default(),
         plan: plan.as_ref().map(|p| p.prompt_lines()).unwrap_or_default(),
@@ -362,6 +365,7 @@ async fn context(app: &App, project: &Project, task_run: Option<(&str, &[Group])
         running_jobs,
         tasks: task_lines,
         task_run: task_run.map(|(t, _)| t.to_string()),
+        chat: None,
         allowed: task_run.map(|(_, a)| a.to_vec()).unwrap_or_else(|| Group::BUILTIN.to_vec()),
     }
 }
@@ -420,7 +424,8 @@ async fn spec_for(app: &App, project: &Project, session: Session, chat: Option<&
     let model = core_agent::claude_model(&cfg.models.chat)?;
     let guide = kiqr_core::extract::instructions_text(&app.store, kiqr_core::extensions::GUIDE_FOLDER, core_agent::BUILTIN_GUIDE);
     let brief = Brief::load(&app.store, &project.slug)?;
-    let ctx = context(app, project, task_run).await;
+    let mut ctx = context(app, project, task_run).await;
+    ctx.chat = chat.map(str::to_string);
     let system = core_agent::system_prompt(&persona(app), &guide, &ctx, brief.as_ref());
     let mcp = core_agent::mcp_config(&app.exe, &app.daemon_url, &project.slug, chat, run, allowed);
     Ok(Spec { model, session, system, mcp, max_budget_usd: cfg.agent.max_budget_usd })
@@ -493,6 +498,7 @@ pub async fn chat_turn(app: App, slug: String, mut chat: Chat, turn: std::sync::
     app.turns.write().await.remove(&chat.id);
     crate::seemo::expire_approvals_for(&app, &slug, &chat.id).await;
     app.bus.emit(Some(&slug), EventKind::ChatTurnFinished { chat: chat.id.clone(), error: out.error.filter(|e| e != "stopped") });
+    crate::memory::after_chat(&app, &slug, &chat.id);
     // A task that finished while Seemo was talking: say so now.
     let next = app.queued.write().await.get_mut(&chat.id).and_then(|q| q.pop_front());
     if let Some(note) = next {
@@ -607,6 +613,7 @@ async fn task_run(app: App, slug: String, mut task: Task, mut run: Run, key: Str
     let first_line = run.summary.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
     app.bus.emit(Some(&slug), EventKind::TaskRunFinished { task: task.id.clone(), run: run.id.clone(), status: run.status.id().into(), summary: kiqr_core::profile::truncate_chars(&first_line, 200) });
     emit_task(&app, &slug, &task);
+    crate::memory::after_run(&app, &slug, &task, &run);
     match task.follow_up_chat.clone() {
         Some(chat_id) => {
             let assets = if run.assets.is_empty() { String::new() } else { format!("\nAssets: {}.", run.assets.join(", ")) };

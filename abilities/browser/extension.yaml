@@ -8,7 +8,7 @@
 # Linux and Windows (the engine has no macOS build yet).
 id: browser
 name: Browse with a real browser
-version: 0.1.1
+version: 0.1.2
 summary: "A real browser of Seemo's own, headless, one per login with its sign-in kept. Reads pages behind a login or paywall; site abilities (X, Reddit) post and reply through it, each asking first."
 categories: [browser, tools]
 icon: globe
@@ -50,6 +50,10 @@ env_set:
   INVISIBLE_MCP_HOME: "${KIQR_ACCOUNT_DIR}/program"
   INVISIBLE_MCP_UPLOAD_DIRS: "${KIQR_PROJECT_DIR}/assets"
   STEALTHFOX_HEADLESS: "1"
+  # The browser draws on its own hidden display, but a file picker would go through the desktop's portal and
+  # open on the person's screen: no portal, no session bus, so nothing it opens ever shows there.
+  GTK_USE_PORTAL: "0"
+  DBUS_SESSION_BUS_ADDRESS: "disabled:"
 # Reading only, for Seemo; the URL it opens stays on the site.
 expose: [browser_navigate, browser_read_text, browser_snapshot, browser_take_screenshot]
 url_args: [url]

@@ -151,7 +151,7 @@ async fn call(client: &Client, scope: &Scope, name: &str, mut args: Value) -> Va
             for k in used {
                 obj.remove(&k);
             }
-            if tool.name == "create_asset" {
+            if tool.name == "create_asset" || tool.name == "remember" {
                 obj.insert("by".into(), json!(by));
             }
             let (send_body, query) = match body {

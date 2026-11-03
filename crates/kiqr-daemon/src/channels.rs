@@ -18,7 +18,7 @@ use kiqr_core::channels::{self, host_of, Channel, Mode, Ownership, LIST, WEBSITE
 use kiqr_core::events::EventKind;
 use kiqr_core::extensions::{Kind, Manifest};
 use kiqr_core::vault::same_site;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -473,13 +473,14 @@ async fn check_publisher(app: &App, slug: &str, ch: &Channel, id: &str) -> Resul
         return Ok(String::new());
     }
     let all = publishers(app, slug, ch).await;
-    let c = all.iter().find(|c| c.id == id || c.label.eq_ignore_ascii_case(id)).cloned().ok_or_else(|| {
+    // By id, label or who it is (`identity`, e.g. the account's handle): what a person or Seemo would call it.
+    let said = id.trim_start_matches('@');
+    let c = all.iter().find(|c| c.id == id || c.label.eq_ignore_ascii_case(id) || c.identity().is_some_and(|i| i.trim_start_matches('@').eq_ignore_ascii_case(said))).cloned().ok_or_else(|| {
         let what = app.vault.get(id).ok().flatten().map(|c| c.label).unwrap_or_else(|| format!("'{id}'"));
-        bad(if ch.is_list() { format!("{what} is not a mail server") } else { format!("{what} cannot publish to {}", ch.label) })
+        let can: Vec<String> = all.iter().map(|c| format!("{} ({})", c.label, c.id)).collect();
+        let fits = if can.is_empty() { String::new() } else { format!("; it can be {}", can.join(", ")) };
+        bad(if ch.is_list() { format!("{what} is not a mail server{fits}") } else { format!("{what} cannot publish to {}{fits}", ch.label) })
     })?;
-    if let Some(m) = publishing_ability(app, slug, ch).await {
-        crate::access::grant(app, slug, &m.id, &c.id, "publisher").await?;
-    }
     Ok(c.id)
 }
 
@@ -583,7 +584,7 @@ async fn create_route(State(app): State<App>, Path(slug): Path<String>, Json(b):
     Ok((StatusCode::CREATED, Json(view(&app, &slug, &ch).await)))
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Serialize, Default, Clone)]
 #[serde(default)]
 pub struct Patch {
     pub label: Option<String>,
@@ -608,8 +609,43 @@ pub struct Patch {
 }
 
 async fn update_route(State(app): State<App>, Path((slug, id)): Path<(String, String)>, Json(p): Json<Patch>) -> ApiResult<Value> {
-    let mut ch = Channel::load(&app.store, &slug, &id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    let ch = update(&app, &slug, &id, p, "user").await?;
+    Ok(Json(view(&app, &slug, &ch).await))
+}
+
+/// Change a channel (from its page, or after the user's yes to Seemo's card) and save it.
+pub async fn update(app: &App, slug: &str, id: &str, p: Patch, by: &str) -> Result<Channel, ApiError> {
+    let mut ch = Channel::load(&app.store, slug, id).map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
     let was_learning = ch.learn;
+    let was_publisher = ch.publisher.clone();
+    apply(app, slug, &mut ch, &p).await?;
+    // Picking a publisher is the one grant made for the user: the publishing ability may use it here from now on.
+    if !ch.publisher.is_empty() && ch.publisher != was_publisher {
+        if let Some(m) = publishing_ability(app, slug, &ch).await {
+            crate::access::grant(app, slug, &m.id, &ch.publisher, "publisher").await?;
+        }
+    }
+    let accepted = p.add && ch.suggested;
+    if p.add {
+        ch.suggested = false;
+    }
+    ch.save(&app.store, slug).map_err(|x| bad(x.to_string()))?;
+    let who = if by == "user" { String::new() } else { format!(" ({by})") };
+    app.store.commit(&format!("channels({slug}): {}{who}", ch.label)).await?;
+    if accepted {
+        added(app, slug, &ch);
+    } else {
+        emit(app, slug, &ch, None);
+    }
+    if ch.learn && !was_learning {
+        let _ = crate::learn::start(app, slug, Some(ch.id.clone())).await;
+    }
+    Ok(ch)
+}
+
+/// A patch applied to a channel in memory, every rule checked; nothing saved.
+async fn apply(app: &App, slug: &str, ch: &mut Channel, p: &Patch) -> Result<(), ApiError> {
+    let (app, slug, p) = (app, slug.to_string(), p.clone());
     if let Some(l) = p.label.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
         ch.label = l;
     }
@@ -666,21 +702,65 @@ async fn update_route(State(app): State<App>, Path((slug, id)): Path<(String, St
         }
         ch.learn = l;
     }
-    let accepted = p.add && ch.suggested;
-    if p.add {
-        ch.suggested = false;
+    Ok(())
+}
+
+/// Seemo's `update_channels`: each change checked as the Channels page would, shown as before → after.
+pub async fn changes_preview(app: &App, slug: &str, payload: &Value) -> Result<Value, ApiError> {
+    let list = payload["changes"].as_array().filter(|l| !l.is_empty()).ok_or_else(|| bad("name at least one channel and what changes on it"))?;
+    let mut out = Vec::new();
+    for c in list {
+        let id = c["channel"].as_str().unwrap_or("").trim();
+        let mut ch = Channel::find(&app.store, slug, id).ok_or_else(|| bad(format!("there is no channel '{id}'; list_channels has their ids")))?;
+        let before = ch.clone();
+        let mut patch: Patch = serde_json::from_value(c.clone()).map_err(|e| bad(format!("{}: {e}", before.label)))?;
+        apply(app, slug, &mut ch, &patch).await.map_err(|ApiError(s, m)| ApiError(s, format!("{}: {m}", before.label)))?;
+        // What is applied on the yes is the checked result: a publisher by its id, whatever it was called.
+        if patch.publisher.is_some() {
+            patch.publisher = Some(ch.publisher.clone());
+        }
+        let cred = |id: &str| if id.is_empty() { "nobody".to_string() } else { app.vault.view(id).ok().flatten().map(|c| c.label).unwrap_or_else(|| id.to_string()) };
+        let mut diff = Vec::new();
+        let mut row = |key: &str, from: String, to: String| {
+            if from != to {
+                diff.push(json!({ "key": key, "from": from, "to": to }));
+            }
+        };
+        row("label", before.label.clone(), ch.label.clone());
+        row("description", before.description.clone(), ch.description.clone());
+        row("publisher", cred(&before.publisher), cred(&ch.publisher));
+        row("publish", word(&before.publish), word(&ch.publish));
+        row("reply", word(&before.reply), word(&ch.reply));
+        row("read", before.read.to_string(), ch.read.to_string());
+        row("learn", before.learn.to_string(), ch.learn.to_string());
+        row("ability", before.ability.clone(), ch.ability.clone());
+        row("fields", serde_json::to_string(&before.fields).unwrap_or_default(), serde_json::to_string(&ch.fields).unwrap_or_default());
+        row("url", before.url.clone(), ch.url.clone());
+        row("ownership", word(&before.ownership), word(&ch.ownership));
+        if patch.add && before.suggested {
+            row("added", "suggested".into(), "a channel".into());
+        }
+        if diff.is_empty() {
+            continue;
+        }
+        out.push(json!({ "channel": before.id, "label": before.label, "patch": patch, "diff": diff }));
     }
-    ch.save(&app.store, &slug).map_err(|x| bad(x.to_string()))?;
-    app.store.commit(&format!("channels({slug}): {}", ch.label)).await?;
-    if accepted {
-        added(&app, &slug, &ch);
-    } else {
-        emit(&app, &slug, &ch, None);
+    if out.is_empty() {
+        return Err(bad("that changes nothing: the channels are already like that"));
     }
-    if ch.learn && !was_learning {
-        let _ = crate::learn::start(&app, &slug, Some(ch.id.clone())).await;
+    Ok(json!({ "changes": out, "reason": payload["reason"].as_str().unwrap_or("") }))
+}
+
+/// After the yes: every change, in order.
+pub async fn apply_changes(app: &App, slug: &str, preview: &Value, by: &str) -> Result<Value, ApiError> {
+    let mut done = Vec::new();
+    for c in preview["changes"].as_array().cloned().unwrap_or_default() {
+        let patch: Patch = serde_json::from_value(c["patch"].clone()).map_err(|e| bad(e.to_string()))?;
+        let id = c["channel"].as_str().unwrap_or("");
+        let ch = update(app, slug, id, patch, by).await?;
+        done.push(json!({ "channel": ch.id, "label": ch.label, "readiness": view(app, slug, &ch).await["readiness"] }));
     }
-    Ok(Json(view(&app, &slug, &ch).await))
+    Ok(json!({ "changed": done, "note": "Changed. Each channel's readiness says whether it can be published to now." }))
 }
 
 /// `GET …/channels/{id}/choices/{name}`: what a target field can be (a
@@ -783,4 +863,9 @@ mod tests {
         assert!(matching(&store, "acme", "", "other", &kinds[0].1, "api.github.test", &[("repo".to_string(), json!("acme/site"))].into_iter().collect()).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A serialised enum's word (`auto`, `third_party`), for showing a change.
+fn word<T: Serialize>(v: &T) -> String {
+    serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
 }

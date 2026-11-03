@@ -4,9 +4,9 @@
 // time (Scheduled), Publish sends it (Published). Unpublish, Archive and
 // Bring back are the only steps backwards. The same block sits under a post
 // in the chat, in the Library's modal, on the asset page and on the To do page.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, Archive, ArchiveRestore, CalendarClock, Check, ExternalLink, Loader2, MapPin, Send, Undo2 } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, CalendarClock, Check, ExternalLink, Loader2, MapPin, Pencil, RotateCcw, Send, Sparkles, Undo2 } from "lucide-react";
 import { FieldInput } from "./FieldInput";
 import { api, type Asset, type AssetStatus, type Channel, type ChannelKind, type Spot } from "../api";
 import { networkOf, useNetworks } from "../networks";
@@ -107,6 +107,101 @@ function SpotForm({ kinds, busy, onApprove, onCancel }: { kinds: ChannelKind[]; 
   );
 }
 
+/** Too long for where it goes (X takes 280): says by how much, and fixes it here, by hand or by Seemo. */
+function TooLong({ slug, a, limit, network, onChange }: { slug: string; a: Asset; limit: number; network: string; onChange: () => void }) {
+  const file = a.files.find((f) => f.role === "body");
+  const [text, setText] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (file) api.assetText(slug, a, file.path).then(setText, () => setText(null));
+  }, [slug, a.type, a.id, file?.path, file?.sha256]); // eslint-disable-line react-hooks/exhaustive-deps
+  const count = (t: string) => [...t.trim()].length;
+  if (text === null || (draft === null && count(text) <= limit)) return null;
+  const over = count(text) - limit;
+  const save = async () => {
+    if (draft === null) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.setAssetText(slug, a, draft);
+      setText(draft);
+      setDraft(null);
+      onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ask = async () => {
+    const c = await api.createChat(slug, `Shorten ${a.title}`);
+    openSeemo(c.id);
+    await api.sendMessage(slug, c.id, `"${a.title}" is ${count(text)} characters and ${network} takes ${limit}. Shorten it to fit with update_asset, keeping what it says and its voice, and show me the new text.`);
+  };
+  if (draft !== null) {
+    const n = count(draft);
+    return (
+      <div className="aa-fix">
+        <textarea className="input" rows={6} value={draft} autoFocus onChange={(e) => setDraft(e.target.value)} aria-label="Text" />
+        <div className="aa-row">
+          <span className={`aa-count ${n > limit ? "over" : ""}`}>
+            {n} / {limit}
+          </span>
+          <button className="btn p sm" disabled={busy || n > limit || n === 0} onClick={() => void save()}>
+            {busy ? <Loader2 size={14} className="spin" /> : <Check size={14} />} Save
+          </button>
+          <button className="btn t sm" onClick={() => setDraft(null)}>
+            Cancel
+          </button>
+        </div>
+        {err && (
+          <p className="err">
+            <AlertTriangle size={13} /> {err}
+          </p>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="aa-fix">
+      <p className="err">
+        <AlertTriangle size={13} /> {count(text)} characters; {network} takes {limit}. Shorten it by {over} before it can go out.
+      </p>
+      <div className="aa-row">
+        <button className="btn g sm" onClick={() => setDraft(text.trim())}>
+          <Pencil size={14} /> Edit text
+        </button>
+        <button className="btn t sm" onClick={() => void ask()}>
+          <Sparkles size={14} /> Ask Seemo to shorten it
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type ShortNote = { from?: number; to?: number; network?: string; original?: string; channel?: string | null; publish_at?: string | null };
+const shortNote = (a: Asset) => a.source?.shortened as ShortNote | undefined;
+
+/** Seemo shortened it to fit where it goes; the original stays readable. On a
+ *  channel that asks first the new text is a draft again, waiting for a yes. */
+function Shortened({ a, channels }: { a: Asset; channels: Channel[] }) {
+  const s = shortNote(a);
+  if (!s?.original || a.publications.length > 0) return null;
+  const was = s.channel && !a.target ? (channels.find((c) => c.id === s.channel)?.label ?? s.channel) : null;
+  const time = was && s.publish_at && new Date(s.publish_at) > new Date() ? ` Approving keeps its time, ${whenAt(s.publish_at)}.` : "";
+  return (
+    <details className="aa-short">
+      <summary>
+        Seemo shortened it from {s.from} to {s.to} characters to fit {s.network}.{" "}
+        {was ? `${was} asks before anything goes out, so the new text needs your yes.${time}` : a.target ? "It stays approved." : ""}
+      </summary>
+      <p>{s.original}</p>
+    </details>
+  );
+}
+
 export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: Asset; compact?: boolean; onChange: () => void }) {
   const view = useChannels(slug);
   const networks = useNetworks(slug);
@@ -115,7 +210,8 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   // Somewhere new: a kind whose spots have names (a subreddit), published to by an ability here.
   const kinds = (view.data?.kinds ?? []).filter((k) => k.kind !== "list" && k.publishes && !k.account_is_target && Object.keys(k.target ?? {}).length > 0);
   const canSpot = kinds.length > 0;
-  const fits = fitting(a, publishing, networkOf(a, networks)?.kind);
+  const net = networkOf(a, networks);
+  const fits = fitting(a, publishing, net?.kind);
   const usable = fits.filter((e) => e.readiness.ready);
   const [pick, setPick] = useState("");
   const [mode, setMode] = useState<"" | "schedule" | "where" | "spot">("");
@@ -125,7 +221,8 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   const [opts, setOpts] = useState<Record<string, string>>({});
   const own = entries.find((e) => e.id === a.target);
   const ownText = own?.label ?? a.target ?? "";
-  const chosenId = pick || (usable.find((e) => e.id !== a.target) ?? usable[0])?.id || "";
+  const wasFor = a.target ? undefined : shortNote(a)?.channel;
+  const chosenId = pick || (usable.find((e) => e.id === wasFor) ?? usable.find((e) => e.id !== a.target) ?? usable[0])?.id || "";
   const chosen = publishing.find((e) => e.id === chosenId);
   // Choices a publish there offers (a blog: draft or published), the first value by default.
   const offered = Object.entries(own?.options ?? {}).filter(([, s]) => s.enum?.length);
@@ -328,12 +425,30 @@ export function AssetActions({ slug, a, compact, onChange }: { slug: string; a: 
   }
   return (
     <div className={`aa ${compact ? "compact" : ""}`}>
+      {a.publications.length === 0 && !a.archived && !a.target && net?.text_limit && <TooLong slug={slug} a={a} limit={net.text_limit} network={net.name} onChange={onChange} />}
+      <Shortened a={a} channels={entries} />
       {a.publish_error && (
         <p className="err">
-          <AlertTriangle size={13} /> The scheduled publish failed: {a.publish_error}
+          <AlertTriangle size={13} /> The last publish failed: {a.publish_error}
         </p>
       )}
-      {body}
+      {a.publish_attempt ? (
+        <div className="aa-maybe">
+          <p className="err">
+            <AlertTriangle size={13} /> It may have gone out to {entries.find((e) => e.id === a.publish_attempt?.channel)?.label ?? "its channel"} at {whenAt(a.publish_attempt.at)}: send was clicked, but it was never seen to arrive{a.publish_attempt.note ? ` (${a.publish_attempt.note})` : ""}. Look there, then:
+          </p>
+          <div className="row">
+            <button className="btn p sm" disabled={!!busy} onClick={() => void run("there", () => api.confirmAttempt(slug, a, true))}>
+              {spin("there", Check)} It's there
+            </button>
+            <button className="btn g sm" disabled={!!busy} onClick={() => void run("again", () => api.confirmAttempt(slug, a, false))}>
+              {spin("again", RotateCcw)} It's not; publish it again
+            </button>
+          </div>
+        </div>
+      ) : (
+        body
+      )}
       {error && (
         <p className="err">
           <AlertTriangle size={13} /> {error}

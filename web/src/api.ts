@@ -155,6 +155,8 @@ export type Asset = {
   target?: string | null;
   publish_at?: string | null;
   publish_error?: string | null;
+  /** The last click of a publish was made but never seen to arrive: it may have gone out. */
+  publish_attempt?: { at: string; channel?: string; note?: string } | null;
   archived?: boolean;
   publications: Publication[];
 };
@@ -600,6 +602,11 @@ export type SignInProvider = { id: string; name: string; domains: string[]; scop
 /** A new credential, or changes to one: values by field name (an empty value clears it). */
 export type CredentialDraft = { label?: string; template?: string; domains?: string[]; values?: Record<string, string>; fields?: { name: string; label: string; kind: CredentialField["kind"]; optional?: boolean }[]; login_url?: string; notes?: string };
 export type Access = { grants: Record<string, string[]> };
+/** Seemo → Memory: the owner's rules (`by: user`) and what Seemo learned; `pending` lessons wait for a Keep. */
+export type MemoryKind = "rule" | "preference" | "fact" | "lesson";
+export type MemoryScope = "everywhere" | "own" | "others";
+export type Memory = { id: string; text: string; kind: MemoryKind; scope?: MemoryScope; by: "user" | "seemo"; from?: string | null; pending?: boolean; created_at: string; updated_at: string };
+export type Memories = { items: Memory[]; learning: boolean; pending: number };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO) return demoRequest<T>(path, init);
@@ -629,6 +636,12 @@ export const api = {
   crawl: (slug: string) => req<{ started: boolean }>(`/api/projects/${slug}/crawl`, { method: "POST", body: "{}" }),
   build: (slug: string) => req<Build>(`/api/projects/${slug}/build`),
   intake: (slug: string) => req<Intake>(`/api/projects/${slug}/intake`),
+  memory: (slug: string) => req<Memories>(`/api/projects/${slug}/memory`),
+  addMemory: (slug: string, text: string, kind: MemoryKind, scope: MemoryScope) => req<Memories>(`/api/projects/${slug}/memory`, { method: "POST", body: JSON.stringify({ text, kind, scope }) }),
+  updateMemory: (slug: string, id: string, b: { text?: string; kind?: MemoryKind; scope?: MemoryScope }) => req<Memories>(`/api/projects/${slug}/memory/${id}`, { method: "PUT", body: JSON.stringify(b) }),
+  keepMemory: (slug: string, id: string) => req<Memories>(`/api/projects/${slug}/memory/${id}/keep`, { method: "POST", body: "{}" }),
+  deleteMemory: (slug: string, id: string) => req<Memories>(`/api/projects/${slug}/memory/${id}`, { method: "DELETE" }),
+  setLearning: (slug: string, on: boolean) => req<Memories>(`/api/projects/${slug}/memory/learning`, { method: "PUT", body: JSON.stringify({ on }) }),
   setup: (slug: string) => req<Setup>(`/api/projects/${slug}/setup`),
   saveIntake: (slug: string, i: Intake) => req<Intake>(`/api/projects/${slug}/intake`, { method: "PUT", body: JSON.stringify(i) }),
   /** Set the page limit; `live` when the running crawl picked it up. */
@@ -800,7 +813,9 @@ export const api = {
   approveAsset: (slug: string, a: Pick<Asset, "type" | "id">, where: { target?: string; spot?: Spot }) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/approve`, { method: "POST", body: JSON.stringify(where) }),
   scheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">, at: string, where: { target?: string; spot?: Spot } = {}, options: Record<string, unknown> = {}) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "POST", body: JSON.stringify({ at, ...where, options }) }),
   unscheduleAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/schedule`, { method: "DELETE" }),
+  confirmAttempt: (slug: string, a: Pick<Asset, "type" | "id">, went_out: boolean) => req<{ asset: Asset }>(`/api/projects/${slug}/assets/${a.type}/${a.id}/attempt`, { method: "POST", body: JSON.stringify({ went_out }) }),
   unpublishAsset: (slug: string, a: Pick<Asset, "type" | "id">) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}/unpublish`, { method: "POST", body: "{}" }),
+  setAssetText: (slug: string, a: Pick<Asset, "type" | "id">, text: string) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}`, { method: "PATCH", body: JSON.stringify({ text }) }),
   archiveAsset: (slug: string, a: Pick<Asset, "type" | "id">, archived: boolean) => req<Asset>(`/api/projects/${slug}/assets/${a.type}/${a.id}`, { method: "PATCH", body: JSON.stringify({ archived }) }),
   sendEmail: (slug: string, m: { to: string; subject: string; text: string; asset?: { type: string; id: string } }) => req<{ sent: boolean; to: string; subject: string; connection: string }>(`/api/projects/${slug}/email`, { method: "POST", body: JSON.stringify(m) }),
 
@@ -824,6 +839,32 @@ let demoConfig: Config = {
   abilities: {},
 };
 
+const demoNow = "2026-11-03T09:00:00Z";
+let demoMemory: Memories = {
+  learning: true,
+  pending: 1,
+  items: [
+    { id: "m_1", text: "Help people first and never promote; being useful is the promotion.", kind: "rule", scope: "others", by: "user", from: "chat:demo", created_at: demoNow, updated_at: demoNow },
+    { id: "m_2", text: "No hashtags on X or LinkedIn.", kind: "preference", by: "user", created_at: demoNow, updated_at: demoNow },
+    { id: "m_3", text: "The owner rewrote every X post shorter: aim for 240 characters.", kind: "lesson", by: "seemo", from: "chat:demo", created_at: demoNow, updated_at: demoNow },
+    { id: "m_4", text: "r/webscraping removed the post that linked to the pricing page.", kind: "lesson", by: "seemo", from: "run:community/20261102T100000Z", pending: true, created_at: demoNow, updated_at: demoNow },
+  ],
+};
+
+function demoMemoryRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const m = init?.method ?? "GET";
+  const body = init?.body ? JSON.parse(String(init.body)) : {};
+  const id = path.match(/\/memory\/(m_[^/]+)/)?.[1];
+  let items = demoMemory.items;
+  if (path.endsWith("/memory/learning")) demoMemory = { ...demoMemory, learning: body.on };
+  else if (path.endsWith("/keep")) items = items.map((x) => (x.id === id ? { ...x, pending: false } : x));
+  else if (m === "POST") items = [...items, { id: `m_${Date.now()}`, text: body.text, kind: body.kind, scope: body.scope, by: "user", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }];
+  else if (m === "PUT" && id) items = items.map((x) => (x.id === id ? { ...x, ...body, by: "user", pending: false } : x));
+  else if (m === "DELETE") items = items.filter((x) => x.id !== id);
+  demoMemory = { ...demoMemory, items, pending: items.filter((x) => x.pending).length };
+  return Promise.resolve(demoMemory as T);
+}
+
 let demoIntake: Intake = { goal: "", goal_note: "", customers: "", time: "", networks: [], skipped: [] };
 
 function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -840,6 +881,7 @@ function demoRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === "/api/asset-types" || path.includes("/assets")) return demoAssetRequest<T>(path, init);
   if (path.endsWith("/brief")) return Promise.resolve((init?.method === "PUT" ? JSON.parse(String(init.body)) : demoState.created ? demoBrief : null) as T);
   if (path.endsWith("/build")) return Promise.resolve({ stage: "crawling", pct: 0, eta_secs: null, max_pages: 200, found: 0, fetched: 0, queued: 0, read: 0, facts: 0, sections_done: 0, sections_total: 12, running: true, started_at: null, last_at: null, problem: null } as T);
+  if (/\/memory(\/|$)/.test(path)) return demoMemoryRequest<T>(path, init);
   if (path.endsWith("/intake")) {
     if (init?.method === "PUT") demoIntake = JSON.parse(String(init.body));
     return Promise.resolve(demoIntake as T);

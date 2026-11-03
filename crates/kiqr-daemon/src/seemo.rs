@@ -174,6 +174,9 @@ struct AssetPatch {
 /// Change parts of an asset; `text` rewrites its body file.
 async fn patch_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String, String, String)>, Json(p): Json<AssetPatch>) -> ApiResult<assets::Asset> {
     let mut a = assets::load(&app.store, &slug, &kind, &id)?;
+    if let Some(t) = &p.text {
+        crate::publish::check_length(&app, &slug, p.tags.as_ref().unwrap_or(&a.tags), t).await?;
+    }
     if let Some(t) = p.title {
         if t.trim().is_empty() {
             return Err(bad("an asset needs a title"));
@@ -195,6 +198,10 @@ async fn patch_asset(State(app): State<App>, Path((slug, kind, id)): Path<(Strin
     }
     if let Some(s) = p.summary {
         a.summary = s;
+    }
+    // New text: the last publish's failure was about the old one.
+    if p.text.is_some() {
+        a.publish_error = None;
     }
     let mut saved = assets::save(&app.store, &slug, &a)?;
     if let Some(text) = p.text {
@@ -483,6 +490,8 @@ async fn create_approval(State(app): State<App>, Path(slug): Path<String>, Json(
         "plan" => crate::marketing::plan_preview(&app, &slug, &b.payload)?,
         "campaign" => crate::marketing::campaign_preview(&app, &slug, &b.payload)?,
         "action" => crate::ext::action_preview(&app, &slug, &b.payload).await?,
+        "channels" => crate::channels::changes_preview(&app, &slug, &b.payload).await?,
+        "api" => crate::selfconf::preview(&slug, &b.payload)?,
         "channel" => {
             let p = &b.payload;
             let (url, kind, label) = (p["url"].as_str().unwrap_or("").trim(), p["kind"].as_str().unwrap_or("").trim(), p["label"].as_str().unwrap_or("").trim());
@@ -676,6 +685,14 @@ async fn resolve_approval(State(app): State<App>, Path((slug, id)): Path<(String
                     Err(e) => return Err(e),
                 }
             }
+            "api" => match crate::selfconf::apply(&app, &approval.payload).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(ApiError(_, msg)) => Decision { status: "failed".into(), result: json!({ "failed": true, "error": msg, "note": "It did not work. Say so in one line with the reason." }) },
+            },
+            "channels" => match crate::channels::apply_changes(&app, &slug, &approval.payload, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
+                Ok(v) => Decision { status: "approved".into(), result: v },
+                Err(e) => return Err(e),
+            },
             "list" => match crate::lists::create_list(&app, &slug, crate::lists::NewList { label: approval.payload["label"].as_str().unwrap_or("").to_string(), description: approval.payload["description"].as_str().unwrap_or("").to_string(), account: approval.payload["account"].as_str().unwrap_or("").to_string() }, &approval.chat.as_ref().map(|c| format!("chat:{c}")).unwrap_or_else(|| "user".into())).await {
                 Ok(l) => Decision { status: "approved".into(), result: json!({ "created": true, "list": l.id, "label": l.label, "note": "The list is a channel now, and empty. The user adds people there; you never handle addresses." }) },
                 Err(e) => return Err(e),
@@ -1033,10 +1050,10 @@ async fn todo(State(app): State<App>, Path(slug): Path<String>) -> ApiResult<Val
     // Only what goes out waits for a yes: the business's own media comes in from its sources without one.
     let quiet: Vec<String> = assets::types(&app.store).into_iter().filter(|t| !t.publishes).map(|t| t.id).collect();
     let drafts: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Draft && !quiet.contains(&a.kind)).collect();
-    let ready: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Ready && a.publish_error.is_none()).collect();
+    let ready: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Ready && a.publish_error.is_none() && a.publish_attempt.is_none()).collect();
     let mut scheduled: Vec<&assets::Asset> = all.iter().filter(|a| a.status == assets::Status::Scheduled).collect();
     scheduled.sort_by_key(|a| a.publish_at);
-    let attention: Vec<&assets::Asset> = all.iter().filter(|a| a.publish_error.is_some() && !a.archived && a.publications.is_empty()).collect();
+    let attention: Vec<&assets::Asset> = all.iter().filter(|a| (a.publish_error.is_some() || a.publish_attempt.is_some()) && !a.archived && a.publications.is_empty()).collect();
     // Credentials used here whose sign-in needs a person: a captcha, a device check, or a first sign-in by hand.
     let home = app.store.home();
     let needing_hand: Vec<Value> = kiqr_core::access::Access::load(&app.store, &slug)

@@ -1776,6 +1776,7 @@ dependencies = [
  "tar",
  "tokio",
  "tokio-stream",
+ "tower",
  "tower-http",
  "tracing",
  "url",

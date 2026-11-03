@@ -179,6 +179,9 @@ pub enum EventKind {
     BuildStage { stage: String, #[serde(default)] problem: Option<String> },
     /// The owner answered (or skipped) a welcome question.
     IntakeSaved,
+    /// Seemo → Memory: a memory added, changed or kept (`by`: user or seemo).
+    MemorySaved { id: String, text: String, by: String },
+    MemoryDeleted { id: String },
 
     // KIQR itself: a newer release was found, installed (the daemon restarts next), or could not be installed.
     UpdateAvailable { version: String },
@@ -240,6 +243,8 @@ impl EventKind {
                 | EventKind::MetricsSnapshot { .. }
                 | EventKind::MetricsFailed { .. }
                 | EventKind::IntakeSaved
+                | EventKind::MemorySaved { .. }
+                | EventKind::MemoryDeleted { .. }
                 | EventKind::UpdateAvailable { .. }
                 | EventKind::Updated { .. }
                 | EventKind::UpdateFailed { .. }

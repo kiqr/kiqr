@@ -202,6 +202,7 @@ impl Chat {
         writeln!(f, "{}", serde_json::to_string(m)?)?;
         self.messages += 1;
         self.touch(m);
+        self.keep_title(store, slug);
         self.save(store, slug)
     }
 
@@ -216,7 +217,15 @@ impl Chat {
         store.write_text(&store.home().chat_dir(slug, &self.id).join("messages.jsonl"), &text)?;
         self.messages = all.len();
         self.touch(m);
+        self.keep_title(store, slug);
         self.save(store, slug)
+    }
+
+    /// A rename made while a turn ran is on disk: the turn's older copy keeps it.
+    fn keep_title(&mut self, store: &Store, slug: &str) {
+        if let Ok(Some(disk)) = store.read_yaml_opt::<Chat>(&store.home().chat_dir(slug, &self.id).join("chat.yaml")) {
+            self.title = disk.title;
+        }
     }
 
     fn touch(&mut self, m: &Message) {

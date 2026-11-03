@@ -210,6 +210,11 @@ enum Command {
         #[command(subcommand)]
         cmd: MediaCmd,
     },
+    /// Seemo → Memory: the rules Seemo follows here and what it learned
+    Memory {
+        #[command(subcommand)]
+        cmd: MemoryCmd,
+    },
     /// What waits for you in a project: approvals open in chats, drafts to approve, publishes coming up
     Todo { slug: String },
     /// The marketing plan Seemo owns: objectives, targets and the campaigns under them
@@ -254,6 +259,26 @@ enum MediaCmd {
     },
     /// Bring the website's pictures in (the ones the crawl found that are not there yet)
     Pull { slug: String },
+}
+
+#[derive(Subcommand)]
+enum MemoryCmd {
+    /// Everything Seemo remembers, the owner's rules first; lessons waiting for a Keep are marked
+    Ls { slug: String },
+    /// Add a rule (or --kind preference, fact, lesson)
+    Add {
+        slug: String,
+        text: String,
+        #[arg(long, default_value = "rule")]
+        kind: String,
+        /// Where it holds: everywhere, own (the business's own channels) or others (other people's threads and groups)
+        #[arg(long, default_value = "everywhere")]
+        scope: String,
+    },
+    /// Keep a lesson Seemo learned in a task run
+    Keep { slug: String, id: String },
+    /// Remove one
+    Rm { slug: String, id: String },
 }
 
 #[derive(Subcommand)]
@@ -1251,6 +1276,27 @@ impl Client {
                     print_brand(&v);
                 }
             }
+            Command::Memory { cmd } => {
+                let v: serde_json::Value = match cmd {
+                    MemoryCmd::Ls { slug } => self.get(&format!("/api/projects/{slug}/memory")).await?,
+                    MemoryCmd::Add { slug, text, kind, scope } => self.post(&format!("/api/projects/{slug}/memory"), &serde_json::json!({ "text": text, "kind": kind, "scope": scope })).await?,
+                    MemoryCmd::Keep { slug, id } => self.post(&format!("/api/projects/{slug}/memory/{id}/keep"), &serde_json::json!({})).await?,
+                    MemoryCmd::Rm { slug, id } => self.delete_json(&format!("/api/projects/{slug}/memory/{id}"), &serde_json::json!({})).await?,
+                };
+                let items = v["items"].as_array().cloned().unwrap_or_default();
+                if items.is_empty() {
+                    println!("Nothing remembered yet.");
+                }
+                for m in items {
+                    let s = |k: &str| m[k].as_str().unwrap_or("").to_string();
+                    let who = if m["pending"].as_bool().unwrap_or(false) { "to keep?" } else if s("by") == "user" { "yours" } else { "learned" };
+                    let at = match s("scope").as_str() { "own" => "our channels", "others" => "others' places", _ => "everywhere" };
+                    println!("{:<14} {:<10} {:<9} {:<15} {}", s("id"), s("kind"), who, at, s("text"));
+                }
+                if !v["learning"].as_bool().unwrap_or(true) {
+                    println!("Seemo does not learn from its work here (switched off on Seemo → Memory).");
+                }
+            }
             Command::Media { cmd } => match cmd {
                 MediaCmd::Sources { slug } => {
                     let v: serde_json::Value = self.get(&format!("/api/projects/{slug}/media/sources")).await?;
@@ -1806,6 +1852,9 @@ fn print_event(ev: &Event) {
             _ => format!("build    now {stage}"),
         },
         EventKind::IntakeSaved => "intake   saved what you told Seemo".into(),
+        EventKind::MemorySaved { text, by, .. } => format!("memory   {} {text}", if by == "user" { "kept" } else { "learned" }),
+        EventKind::MemoryDeleted { id } if id.is_empty() => "memory   learning switched".into(),
+        EventKind::MemoryDeleted { .. } => "memory   removed one".into(),
         EventKind::UpdateAvailable { version } => format!("update   KIQR {version} is available — run `kiqr update`"),
         EventKind::Updated { from, to } => format!("update   KIQR {from} → {to}, restarting"),
         EventKind::UpdateFailed { version, error } => format!("update   KIQR {version} could not be installed: {error}"),

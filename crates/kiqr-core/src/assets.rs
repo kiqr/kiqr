@@ -153,11 +153,27 @@ pub struct Asset {
     /// Why the last scheduled publish did not happen; cleared by the next publish or schedule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_error: Option<String>,
+    /// A publish that reached its last click but was never seen to arrive: it may have gone out. Nothing
+    /// publishes the asset again until a person says whether it is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_attempt: Option<Attempt>,
     /// Put away. Archived assets live in the Archive and count nowhere.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
     #[serde(default)]
     pub publications: Vec<Publication>,
+}
+
+/// The last click of a publish, made but not seen to arrive.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Attempt {
+    pub at: DateTime<Utc>,
+    /// The channel it went to, when known.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub channel: String,
+    /// What was seen after the click.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 impl Asset {
@@ -418,6 +434,7 @@ pub fn create(store: &Store, slug: &str, new: NewAsset) -> Result<Asset> {
         publish_at: None,
         publish_options: Default::default(),
         publish_error: None,
+        publish_attempt: None,
         archived: false,
         publications: Vec::new(),
     };

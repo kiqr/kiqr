@@ -1090,6 +1090,8 @@ async fn run_with(app: &App, slug: &str, m: &Manifest, provide: &Provide, abilit
             let cmd = provide.command.as_ref().ok_or_else(|| anyhow!("{} has no command for this", m.name))?;
             command_exec(cmd, &args, &provide.result, &env).await
         }
+        // A goal a model reaches in the browser, page by page.
+        Transport::Mcp if provide.hand.is_some() => crate::hand::run(app, slug, m, provide.hand.as_ref().unwrap(), args, conn, &env).await,
         Transport::Mcp if !provide.steps.is_empty() => {
             let program = program_of(app, Some(slug), m).await?;
             let launch = mcp_env(app, slug, m, conn, &env);
@@ -1192,7 +1194,7 @@ const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// One call on a hosted program, made again while the program says it is busy with an earlier action
 /// (its manifest's `busy_when`), up to `BUSY_WAIT`.
-async fn mcp_call_when_free(app: &App, program: &Manifest, launch: &crate::mcp_host::Launch, call: &str, args: &Value) -> Result<crate::mcp_host::McpOut> {
+pub(crate) async fn mcp_call_when_free(app: &App, program: &Manifest, launch: &crate::mcp_host::Launch, call: &str, args: &Value) -> Result<crate::mcp_host::McpOut> {
     let started = std::time::Instant::now();
     loop {
         let (out, said) = match app.mcp.call(app.store.home().root(), program, launch, call, args).await {

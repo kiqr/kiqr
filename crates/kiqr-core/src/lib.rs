@@ -23,6 +23,7 @@ pub mod extensions;
 pub mod extract;
 pub mod fetch;
 pub mod marketing;
+pub mod memory;
 pub mod markdown;
 pub mod media;
 pub mod metrics;

@@ -67,6 +67,8 @@ pub fn router(app: App) -> Router {
         .merge(crate::reset::routes())
         .merge(crate::setup::routes())
         .merge(crate::marketing::routes())
+        .merge(crate::memory::routes())
+        .merge(crate::selfconf::routes())
         .merge(crate::performance::routes())
         .merge(crate::update::routes())
         .merge(crate::telemetry::routes())
@@ -711,6 +713,9 @@ pub(crate) fn emit_saved(app: &App, slug: &str, a: &Asset, created: bool) {
 
 async fn create_asset(State(app): State<App>, Path(slug): Path<String>, Json(new): Json<NewAsset>) -> Result<(StatusCode, Json<Asset>), ApiError> {
     let _ = Project::load(&app.store, &slug)?;
+    if let Some(t) = &new.text {
+        crate::publish::check_length(&app, &slug, &new.tags, t).await?;
+    }
     let a = assets::create(&app.store, &slug, new)?;
     emit_saved(&app, &slug, &a, true);
     Ok((StatusCode::CREATED, Json(a)))
@@ -804,7 +809,7 @@ async fn put_asset(State(app): State<App>, Path((slug, kind, id)): Path<(String,
         return Err(ApiError(StatusCode::BAD_REQUEST, "an asset needs a title".into()));
     }
     // Status, publications and the publish schedule are facts the dedicated routes change, not this one.
-    let next = Asset { id: current.id, kind: current.kind, created: current.created, files: current.files, title: body.title.trim().to_string(), publications: current.publications, target: current.target, publish_at: current.publish_at, publish_error: current.publish_error, ..body };
+    let next = Asset { id: current.id, kind: current.kind, created: current.created, files: current.files, title: body.title.trim().to_string(), publications: current.publications, target: current.target, publish_at: current.publish_at, publish_error: current.publish_error, publish_attempt: current.publish_attempt, ..body };
     let saved = assets::save(&app.store, &slug, &next)?;
     emit_saved(&app, &slug, &saved, false);
     Ok(Json(saved))

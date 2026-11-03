@@ -19,7 +19,7 @@ type NavItem = { sub: string; label: string; icon: LucideIcon; count?: number; h
  * (types are data, so the group grows when Seemo makes a new kind of thing); Business (what
  * KIQR knows); Seemo (chats and tasks); Setup (abilities, the Vault, project settings) last.
  */
-function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting: number): { label: string; items: NavItem[] }[] {
+function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting: number, toKeep = 0): { label: string; items: NavItem[] }[] {
   const n = (id: string) => counts?.find((c) => c.type === id)?.count ?? 0;
   // A type appears once the project has something of it; nothing is pinned. Media is the one
   // exception: its page is where sources are added, so it is there before anything is in it.
@@ -62,6 +62,7 @@ function navGroups(types: AssetType[], counts: TypeCount[] | undefined, waiting:
       items: [
         { sub: "chats", label: "Chats", icon: MessagesSquare },
         { sub: "tasks", label: "Tasks", icon: ListChecks },
+        { sub: "memory", label: "Memory", icon: Brain, count: toKeep || undefined },
       ],
     },
     // Installed once, configured per project, rarely visited.
@@ -82,12 +83,15 @@ function useAssetNav(slug: string | undefined) {
   const counts = useAsync(() => (slug ? api.assetSummary(slug).catch(() => [] as TypeCount[]) : Promise.resolve([] as TypeCount[])), [slug]);
   // What waits for the user (approvals, drafts, failed publishes), for the To do count.
   const waiting = useAsync(() => (slug ? api.todo(slug).then((t) => t.count).catch(() => 0) : Promise.resolve(0)), [slug]);
+  // Lessons from task runs waiting for a Keep, for the Memory count.
+  const toKeep = useAsync(() => (slug ? api.memory(slug).then((m) => m.pending).catch(() => 0) : Promise.resolve(0)), [slug]);
   useEvents(slug ?? null, (e) => {
+    if (e.type.startsWith("memory_")) toKeep.reload();
     if (e.type === "asset_saved" || e.type === "asset_deleted") counts.reload();
     if (e.type === "asset_type_saved") types.reload();
     if (TODO_EVENTS.includes(e.type)) waiting.reload();
   }, { demo: false });
-  return navGroups(types.data ?? [], counts.data, waiting.data ?? 0);
+  return navGroups(types.data ?? [], counts.data, waiting.data ?? 0, toKeep.data ?? 0);
 }
 
 export function Shell() {

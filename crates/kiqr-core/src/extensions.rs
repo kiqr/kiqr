@@ -231,6 +231,25 @@ pub struct Provide {
     pub attach: Option<bool>,
     /// Replace an argument's value before templating: `orientation: {landscape: 1536x1024, "*": 1024x1024}`.
     pub map: BTreeMap<String, BTreeMap<String, Value>>,
+    /// MCP on a browser: what to get done, in a sentence; a model reads each page and does it (`Hand`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hand: Option<Hand>,
+}
+
+/// A goal a model reaches in a hosted browser, page by page, instead of fixed steps: "Publish a post on
+/// X as the signed-in account". The manifest says what, never how; the site may change its markup.
+/// What goes out is the call's approved `text` (and `title`, and its image), typed and checked by KIQR.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hand {
+    /// What to get done, a template over the call's arguments.
+    pub goal: String,
+    /// The page to start on, a template; empty: the hosts' first.
+    pub start: String,
+    /// What a person would tell someone new to the site, if anything ("the image button is in the composer's toolbar").
+    pub hints: String,
+    /// The approved image: `required` (it goes out with it or not at all), `none` (text only), else attached when there is one.
+    pub image: String,
 }
 
 impl Provide {
@@ -1497,6 +1516,9 @@ pub fn validate(m: &Manifest) -> Result<()> {
 }
 
 fn check_provide(m: &Manifest, p: &Provide, what: &str) -> Result<()> {
+    if p.hand.is_some() && m.transport != Transport::Mcp {
+        bail!("{what}: a hand works in a hosted browser (transport: mcp)");
+    }
     match m.transport {
         Transport::Http => match (&p.request, p.steps.is_empty()) {
             (Some(_), false) => bail!("{what} has both a request and steps; use one"),
@@ -1528,6 +1550,18 @@ fn check_provide(m: &Manifest, p: &Provide, what: &str) -> Result<()> {
         Transport::Command => {
             if p.command.as_ref().map(|c| c.command.trim().is_empty()).unwrap_or(true) {
                 bail!("{what} needs a command");
+            }
+        }
+        Transport::Mcp if p.hand.is_some() => {
+            let h = p.hand.as_ref().unwrap();
+            if h.goal.trim().is_empty() {
+                bail!("{what}: a hand needs its goal");
+            }
+            if !["", "optional", "required", "none"].contains(&h.image.as_str()) {
+                bail!("{what}: a hand's image is required, optional or none");
+            }
+            if !p.steps.is_empty() || p.tool.is_some() {
+                bail!("{what} has a hand and steps or a tool; use one");
             }
         }
         Transport::Mcp if !p.steps.is_empty() => {

@@ -470,6 +470,14 @@ pub fn catalogue() -> Vec<Tool> {
             call: Call::Http { method: "PATCH", path: "/api/projects/{slug}/brief", body: Body::Args },
             schema: || obj(json!({ "changes": { "type": "object", "description": "Brief keys and their new values", "additionalProperties": true } }), &["changes"]),
         },
+        Tool {
+            name: "remember",
+            group: WriteProfile,
+            label: "Noting it in memory",
+            description: "Keep one of the owner's standing rules or preferences, in their words, for every future chat and task (Seemo → Memory). Use it when the user says how things should always or never be done (\"never promote, just help\", \"no hashtags\"), not for one-off requests. Set `scope` when the rule depends on the place: promoting is fine on the business's own profiles and unwelcome in someone else's thread, so \"don't promote\" said about replies or communities is `others`. One sentence, never a secret or anything about a third party. Only in a chat. The chat shows a note that it was kept; you need not repeat it.",
+            call: Call::Http { method: "POST", path: "/api/projects/{slug}/memory/remember", body: Body::Args },
+            schema: || obj(json!({ "text": { "type": "string", "description": "The rule in one sentence, close to the user's words" }, "kind": { "type": "string", "enum": ["rule", "preference"], "description": "rule: must or must not; preference: how they like it" }, "scope": { "type": "string", "enum": ["everywhere", "own", "others"], "description": "Where it holds: own = the business's own channels (its profiles, pages, blog, lists); others = other people's threads, communities and groups (replies, third-party channels); everywhere when it is not about the place" } }), &["text"]),
+        },
         // ---------------------------------------------------- write_assets
         Tool {
             name: "create_asset",
@@ -591,7 +599,7 @@ pub fn catalogue() -> Vec<Tool> {
             name: "update_task",
             group: Tasks,
             label: "Changing a task",
-            description: "Change a task's title, instruction or schedule. Pass only what changes.",
+            description: "Change a task's title, instruction, schedule or campaign (empty takes it out of its campaign). Pass only what changes. What the task may do (its tool groups) changes only with the user's yes: change_kiqr, PATCH with `allowed`.",
             call: Call::Http { method: "PATCH", path: "/api/projects/{slug}/tasks/{task}", body: Body::Args },
             schema: || obj(
                 json!({
@@ -599,6 +607,7 @@ pub fn catalogue() -> Vec<Tool> {
                     "title": { "type": "string" },
                     "instruction": { "type": "string" },
                     "schedule": { "type": "object", "additionalProperties": true },
+                    "campaign": { "type": "string", "description": "A campaign id; empty: none" },
                 }),
                 &["task"],
             ),
@@ -697,6 +706,34 @@ pub fn catalogue() -> Vec<Tool> {
             ),
         },
         Tool {
+            name: "update_channels",
+            group: Publish,
+            label: "Proposing channel changes",
+            description: "Change one or more channels at once: who Seemo posts as there (`publisher`: a credential id from list_credentials, or its label or handle; empty: nobody; it must be one the channel's ability can use, and picking it lets that ability use it here), what Seemo may do (`publish`, `reply`: off, ask or auto; `read`, `learn`: true or false), its `label`, `description`, `url`, `ownership`, how a website is published (`ability`) and its target `fields`, or `add: true` to make a suggestion a channel. Only what you name changes. Everything the Channels page can change, this can. The user sees each change as before → after on one card and confirms; this call waits for that answer. Never set auto unless the user asked for Seemo to act there on its own.",
+            call: Call::Approval("channels"),
+            schema: || obj(
+                json!({
+                    "changes": { "type": "array", "items": { "type": "object", "properties": {
+                        "channel": { "type": "string", "description": "A channel id from list_channels" },
+                        "publisher": { "type": "string" },
+                        "publish": { "type": "string", "enum": ["off", "ask", "auto"] },
+                        "reply": { "type": "string", "enum": ["off", "ask", "auto"] },
+                        "read": { "type": "boolean" },
+                        "learn": { "type": "boolean" },
+                        "label": { "type": "string" },
+                        "description": { "type": "string" },
+                        "url": { "type": "string" },
+                        "ownership": { "type": "string", "enum": ["owned", "third_party"] },
+                        "ability": { "type": "string" },
+                        "fields": { "type": "object", "additionalProperties": true },
+                        "add": { "type": "boolean" }
+                    }, "required": ["channel"] } },
+                    "reason": { "type": "string", "description": "One sentence on why" },
+                }),
+                &["changes"],
+            ),
+        },
+        Tool {
             name: "channel_activity",
             group: Publish,
             label: "Checking what happened in a channel",
@@ -735,6 +772,30 @@ pub fn catalogue() -> Vec<Tool> {
                     "reason": { "type": "string", "description": "One sentence on why" },
                 }),
                 &["changes"],
+            ),
+        },
+        Tool {
+            name: "kiqr_settings_map",
+            group: Config,
+            label: "Reading how KIQR is set up",
+            description: "Every change a person can make in KIQR's pages, by route and body: channels, the Vault (never values), which ability may use which credential, ability settings, installing, updating, pausing and removing abilities, their instructions, the setup answers, memory, the library and campaigns. Read it before change_kiqr. Nothing in KIQR is only changeable by hand except secret values, the people on a list and the user's own decisions.",
+            call: Call::Http { method: "GET", path: "/api/projects/{slug}/kiqr/settings-map", body: Body::None },
+            schema: no_args,
+        },
+        Tool {
+            name: "change_kiqr",
+            group: Config,
+            label: "Proposing a change to KIQR",
+            description: "Make any change KIQR's own pages make: the same request (`method`, `path` from kiqr_settings_map, `{slug}` is this project, and its JSON `body`), with `summary`: what it changes, in plain words, for the card. The user sees it and confirms; this call waits for that answer, and returns the route's answer or why it did not work. Prefer a dedicated tool when there is one (update_channels, update_task, change_config, …). Never for a secret value, the people on a list or another project: those are refused.",
+            call: Call::Approval("api"),
+            schema: || obj(
+                json!({
+                    "method": { "type": "string", "enum": ["POST", "PUT", "PATCH", "DELETE"] },
+                    "path": { "type": "string", "description": "e.g. /api/projects/{slug}/access/grant" },
+                    "body": { "type": "object", "additionalProperties": true },
+                    "summary": { "type": "string", "description": "What changes, in a sentence the user reads on the card" },
+                }),
+                &["method", "path", "summary"],
             ),
         },
         Tool {

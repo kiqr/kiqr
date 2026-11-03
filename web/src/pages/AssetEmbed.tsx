@@ -1,14 +1,16 @@
 // An asset shown as it will look, with what you can do with it: a post as
 // its feed card, anything else as a tile. Kept live while images land on it
 // and as its status moves. Under Seemo's messages in the chat and on the To
-// do page; the Library has its own grid.
+// do page; the Library has its own grid. When Seemo proposes publishing it,
+// the proposal is this card's footer (`approval`), not a second card.
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, useAsync, useEvents, type Asset } from "../api";
 import { PostCard } from "./PostCard";
 import { AssetActions, StatusChip } from "./AssetActions";
 import { assetIcon } from "../assetIcons";
 
-export function AssetEmbed({ slug, type, id, compact, given, onChange }: { slug: string; type: string; id: string; compact?: boolean; given?: Asset; onChange?: () => void }) {
+export function AssetEmbed({ slug, type, id, compact, given, onChange, approval }: { slug: string; type: string; id: string; compact?: boolean; given?: Asset; onChange?: () => void; /** A publish waiting for a yes: in place of the usual actions. */ approval?: ReactNode }) {
   const asset = useAsync(() => api.asset(slug, type, id).catch(() => null), [slug, type, id]);
   const types = useAsync(() => api.assetTypes(), []);
   const brand = useAsync(() => api.brand(slug), [slug]);
@@ -46,8 +48,12 @@ export function AssetEmbed({ slug, type, id, compact, given, onChange }: { slug:
         </Link>
       )}
       <div className="foot">
-        {a.status !== "ready" && a.status !== "scheduled" && <StatusChip a={a} />}
-        <AssetActions slug={slug} a={a} compact={compact ?? true} onChange={reload} />
+        {approval ?? (
+          <>
+            {a.status !== "ready" && a.status !== "scheduled" && <StatusChip a={a} />}
+            <AssetActions slug={slug} a={a} compact={compact ?? true} onChange={reload} />
+          </>
+        )}
         <Link className="open" to={`/p/${slug}/library/${a.type}/${a.id}`}>
           Open in the library
         </Link>

@@ -470,7 +470,27 @@ const messages: Message[] = [
       { tool: "brand_kit", label: "Opening the brand kit", ok: true },
       { tool: "read_instructions", label: "Reading how to: Create images with the built-in renderer", ok: true },
       { tool: "create_image", label: "Making an image", ok: true, image: DEMO_IMAGE, asset: { type: "post", id: "flat-one-credit-pricing-explained" } },
+      { tool: "publish_asset", label: "Proposing to publish", ok: true },
     ],
+  },
+  // A publish proposal: shown as the post's own card, the yes in its footer.
+  {
+    id: "m5",
+    at: ago(35),
+    role: "card",
+    text: "",
+    card: {
+      kind: "approval",
+      approval: "a-publish-flat",
+      approval_kind: "publish",
+      status: "pending",
+      payload: {
+        asset: { type: "post", id: "one-credit-per-success", title: "Failures are free", status: "ready" },
+        target: { channel: "x-unblockingapi", label: "X (UnblockingAPI)", kind: "x", ownership: "owned", account: "x-team", account_label: "unblockingapi", new: false },
+        excerpt: "A fetch that fails costs nothing.",
+        asks_first: true,
+      },
+    },
   },
 ];
 

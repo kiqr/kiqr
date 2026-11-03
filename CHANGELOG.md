@@ -4,6 +4,15 @@ Every KIQR release, newest first. Versions follow [semver](https://semver.org): 
 
 ## Unreleased
 
+- **Seemo remembers.** Seemo → Memory lists what Seemo keeps for this project: rules, preferences, facts and lessons, each holding everywhere, on your own channels or in other people's places. Tell Seemo how things should always be done and it notes it ("Noted: …" in the chat); after chats and task runs it saves what it learned, and a lesson from a task run waits for your Keep. Add, edit and delete anything on the page, or switch learning off. `kiqr memory`.
+- **Everything is configurable through Seemo.** Whatever you can change in KIQR's pages, Seemo can propose on a card: `update_channels` changes several channels at once (publisher, what Seemo may do, name, link, a website's ability), and `change_kiqr` covers the rest (which ability may use which login, ability settings, installing, updating, pausing and removing abilities, their instructions, your setup answers, memory, Vault labels, renaming chats). Secret values, the people on a list and your own decisions stay yours.
+- **In a browser, abilities say what, not how.** Replying and posting on X and Reddit is a goal ("publish a post with the approved text and image") that a model reaches page by page, so a site's new markup no longer breaks it. It types only the text you approved, reads it back before it sends, and stops for anything it was not asked to do. A route that worked is remembered per login and replayed without the model while the page still matches, and steps are picked by a fast model, so a post needs far fewer model calls and a cheaper model for the rest.
+- **A post that does not fit is fixed, not refused.** Seemo cannot save a post longer than its network allows; an approved post that is too long anyway is shortened before it goes out, and keeps its approval only on a channel that lets Seemo publish on its own; elsewhere it comes back for your yes, keeping its channel and time.
+- **A publish proposal is the post's own card**: the post as it will look, with where, as whom and when, and Publish it / Decline, instead of a second card below it.
+- **A website is a channel** published through an ability it picks (a repository that builds it, a blog engine), with its own fields; WordPress connects from the channel. Signed-in apps show their account, and the Vault lists logins that need a hand.
+- A chat renamed while Seemo is answering keeps its new name.
+- Update the X and Reddit abilities after updating KIQR (0.5.0 needs this release).
+
 ## v0.5.0 — 2026-11-02
 
 - **The Vault, Channels and abilities replace accounts and the Audience.** There is no migration: accounts made by an earlier KIQR are not carried over; add their logins and keys to the Vault once.
