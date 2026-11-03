@@ -1,6 +1,6 @@
 ---
 name: Create images with the built-in renderer
-description: How to make the featured image for a post, an article cover or a standalone visual: a real picture of the business from Library → Media when there is one, a designed card otherwise, a generated picture only for a mood or a concept, never passed off as the business's own. With the built-in renderer (SVG, or HTML when a browser is installed) and, when one is connected, a generator.
+description: "How to make the featured image for a post, an article cover or a standalone visual: a real picture of the business from Library → Media when there is one, a designed card otherwise, a generated picture only for a mood or a concept, never passed off as the business's own. With the built-in renderer (SVG, or HTML when a browser is installed) and, when one is connected, a generator."
 abilities: [image]
 ---
 

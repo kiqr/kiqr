@@ -1862,8 +1862,16 @@ pub fn instructions_meta(folder: &str, text: &str) -> Instructions {
     let mut meta = Instructions::default();
     if let Some(rest) = text.strip_prefix("---") {
         if let Some(end) = rest.find("\n---") {
-            if let Ok(m) = serde_yaml::from_str::<Instructions>(&rest[..end]) {
-                meta = m;
+            let head = &rest[..end];
+            match serde_yaml::from_str::<Instructions>(head) {
+                Ok(m) => meta = m,
+                Err(e) => {
+                    // Hand-written frontmatter often has a plain line with ": " in
+                    // it ("description: … a visual: a picture …"), which YAML refuses.
+                    // Read it line by line instead of losing the "when".
+                    tracing::warn!(folder, error = %e, "SKILL.md frontmatter is not valid YAML; reading it line by line");
+                    meta = lenient_meta(head);
+                }
             }
         }
     }
@@ -1871,6 +1879,26 @@ pub fn instructions_meta(folder: &str, text: &str) -> Instructions {
         meta.name = folder.to_string();
     }
     meta
+}
+
+/// Frontmatter YAML refused, one top-level `key: value` line at a time: a
+/// line that parses on its own keeps its YAML meaning (a list), any other
+/// is the plain text after the first ": ".
+fn lenient_meta(head: &str) -> Instructions {
+    let mut map = serde_yaml::Mapping::new();
+    for line in head.lines() {
+        if line.starts_with([' ', '\t', '#']) {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let value = value.trim();
+        let v = match serde_yaml::from_str::<serde_yaml::Mapping>(line) {
+            Ok(m) => m.into_iter().next().map(|(_, v)| v).unwrap_or_default(),
+            Err(_) => serde_yaml::Value::String(value.to_string()),
+        };
+        map.insert(serde_yaml::Value::String(key.trim().to_string()), v);
+    }
+    serde_yaml::from_value(serde_yaml::Value::Mapping(map)).unwrap_or_default()
 }
 
 /// Install the built-in folders. A SKILL.md is written once and then left to
@@ -2201,6 +2229,15 @@ kinds:
         assert_eq!(m.description, "When asked to put an article on the blog.");
         assert_eq!(m.abilities, vec!["publish"]);
         assert_eq!(instructions_meta("plain", "no frontmatter").name, "plain");
+        let m = instructions_meta("imgs", "---\nname: Make images\ndescription: For a standalone visual: a real picture first.\nabilities: [image]\n---\n\nBody");
+        assert_eq!(m.description, "For a standalone visual: a real picture first.", "a plain line with \": \" keeps its text");
+        assert_eq!(m.abilities, vec!["image"]);
+        for (name, text, _) in BUILTIN_EXTENSIONS {
+            if let Some(rest) = text.and_then(|t| t.strip_prefix("---")) {
+                let head = &rest[..rest.find("\n---").unwrap()];
+                assert!(serde_yaml::from_str::<Instructions>(head).is_ok(), "{name}'s SKILL.md frontmatter is valid YAML");
+            }
+        }
     }
 
     #[test]

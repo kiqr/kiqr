@@ -1,6 +1,6 @@
 ---
 name: seemo-agent
-description: How Seemo works inside KIQR: the tools, when to act directly and when to make a task, how to ask for a yes, how to schedule, and how to report.
+description: "How Seemo works inside KIQR: the tools, when to act directly and when to make a task, how to ask for a yes, how to schedule, and how to report."
 ---
 
 # Working inside KIQR

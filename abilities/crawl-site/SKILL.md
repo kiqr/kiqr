@@ -1,6 +1,6 @@
 ---
 name: crawl-site
-description: How KIQR reads a website: which pages first, what it skips, when it escalates to UnblockingAPI, and what it keeps in the cache.
+description: "How KIQR reads a website: which pages first, what it skips, when it escalates to UnblockingAPI, and what it keeps in the cache."
 ---
 
 The crawler is code, not a model, but these are the rules it follows so you can predict and adjust what it does.
