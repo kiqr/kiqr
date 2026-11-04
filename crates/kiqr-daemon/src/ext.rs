@@ -1786,7 +1786,11 @@ async fn run_ext_tool(State(app): State<App>, Path((slug, ext, tool)): Path<(Str
     let by = by_of(&headers, &args);
     let out = execute(&app, &slug, &m, &t.provide, None, Some(&t.name), &args, args["connection"].as_str()).await.map_err(|e| bad(format!("{e:#}")))?;
     let mut v = match out.file {
-        Some((bytes, mime)) if t.provide.attach.unwrap_or(false) => attach(&app, &slug, "image", &args, &by, bytes, mime, &m.name, &t.name).await?,
+        Some((bytes, mime)) if t.provide.attach.unwrap_or(false) => {
+            // A new asset is of the tool's type, else of the file's own kind: an mp3 is audio, never an image.
+            let kind = if t.asset_type.trim().is_empty() { kiqr_core::fetch::asset_kind_for(&mime) } else { t.asset_type.trim() };
+            attach(&app, &slug, kind, &args, &by, bytes, mime, &m.name, &t.name).await?
+        }
         Some((bytes, mime)) => json!({ "ok": true, "bytes": bytes.len(), "mime": mime, "connection": m.name, "note": "the file was not kept; pass `asset` to put it on one" }),
         None => out.json,
     };

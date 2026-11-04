@@ -111,6 +111,8 @@ kinds:                         # where content goes out through this ability (se
     publish: publish_article   # the tool (or ability) that performs a publish
 ```
 
+A tool whose answer is a file (audio, an image or a video straight back, or a `result` with `file_url` or `file_b64`) says `attach: true`: the file lands on the asset the call names in `asset` (`{type, id}`), else on a new asset of the tool's `asset_type`, or, left out, of the file's own kind (audio on an audio asset, video on a video, anything else on an image), titled by `title`, else by `prompt`. `name` is the file's name without its extension; the asset type's slots give it its role.
+
 ### Networks
 
 A network is a kind; KIQR's code names none. An ability that publishes to a social network says what the rest of KIQR needs to know about it, on the kind, with the hosts its profiles live on in its `service` block (`profile_hosts: [linkedin.com]`: the brand crawl recognises the business's profile there):

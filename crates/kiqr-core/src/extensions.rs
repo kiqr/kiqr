@@ -283,6 +283,10 @@ pub struct ExtraTool {
     /// The thing acted on, as a template (`"{{post_url}}"`): the same action
     /// on the same target through one account is refused the second time.
     pub target: String,
+    /// With `attach`: the type of asset a new one gets when the call names no
+    /// `asset` (`audio`, `video`, `image`). Empty: the file's own kind (audio
+    /// becomes an audio asset, video a video, anything else an image).
+    pub asset_type: String,
     #[serde(flatten)]
     pub provide: Provide,
 }

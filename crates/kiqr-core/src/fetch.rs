@@ -401,6 +401,19 @@ pub fn extension_for(mime: &str) -> &'static str {
     }
 }
 
+/// The asset type a file of this MIME type lands on when nothing names one:
+/// `audio` for audio, `video` for video, `image` for everything else.
+pub fn asset_kind_for(mime: &str) -> &'static str {
+    let m = mime.split(';').next().unwrap_or("").trim();
+    if m.starts_with("audio/") {
+        "audio"
+    } else if m.starts_with("video/") {
+        "video"
+    } else {
+        "image"
+    }
+}
+
 /// Cut text at `max` characters on a line boundary where possible; 0 means no cut.
 pub fn cut(text: &str, max: usize) -> (String, bool) {
     if max == 0 || text.chars().count() <= max {
@@ -439,5 +452,19 @@ mod mcp_tests {
         assert_eq!(parse_mcp_fetch(&failed).unwrap_err().to_string(), "out of credits");
         let rpc = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32001, "message": "Sign in required" } }).to_string();
         assert!(parse_mcp_fetch(&rpc).unwrap_err().to_string().contains("Sign in required"));
+    }
+}
+
+#[cfg(test)]
+mod asset_kind_tests {
+    use super::asset_kind_for;
+
+    #[test]
+    fn a_file_lands_on_an_asset_of_its_own_kind() {
+        assert_eq!(asset_kind_for("audio/mpeg"), "audio");
+        assert_eq!(asset_kind_for("audio/wav; charset=binary"), "audio");
+        assert_eq!(asset_kind_for("video/mp4"), "video");
+        assert_eq!(asset_kind_for("image/png"), "image");
+        assert_eq!(asset_kind_for(""), "image");
     }
 }
